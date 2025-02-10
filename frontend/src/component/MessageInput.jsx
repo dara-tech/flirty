@@ -150,7 +150,7 @@ const MessageInput = () => {
       )}
 
       <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-        <div className="flex-1 flex gap-2">
+        <div className="flex-1 flex gap-2 items-center">
           <input
             type="text"
             className="w-full input input-bordered focus:border-none focus:outline-none outline-0 focus:ring-1 rounded-lg input-sm sm:input-md"
@@ -170,7 +170,7 @@ const MessageInput = () => {
 
           <button
             type="button"
-            className="btn btn-circle text-zinc-400 hover:text-emerald-500"
+            className="btn btn-sm btn-circle text-zinc-400 hover:text-emerald-500 p-2"
             onClick={() => fileInputRef.current?.click()}
             disabled={!selectedUser}
           >
@@ -179,10 +179,10 @@ const MessageInput = () => {
         </div>
         <button
           type="submit"
-          className="btn btn-sm btn-circle"
+          className="btn btn-sm btn-circle p-2"
           disabled={(!text.trim() && !imagePreview) || !selectedUser}
         >
-          <Send size={22} />
+          <Send size={20}  />
         </button>
       </form>
     </div>
