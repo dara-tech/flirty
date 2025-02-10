@@ -35,7 +35,7 @@ const Sidebar = () => {
       {/* Mobile Toggle Button */}
       <button
         onClick={() => setIsMobileOpen(true)}
-        className="lg:hidden fixed top-4 left-4 p-2 bg-base-200 rounded-lg z-50"
+        className="lg:hidden fixed top-3 left-4 p-2 bg-base-200 rounded-lg z-50"
       >
         <Menu className="size-6" />
       </button>
@@ -48,13 +48,13 @@ const Sidebar = () => {
         transform transition-transform duration-300 ease-in-out
         ${isMobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
         border-r border-base-300 flex flex-col
-        z-50
+        z-50 
       `}>
         {/* Header */}
         <div className="border-b border-base-300 p-4 space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="p-2 bg-base-200 rounded-lg">
+              <div className="p-2  bg-base-200 rounded-lg">
                 <Users className="size-5 text-primary" />
               </div>
               <span className="font-semibold text-lg">Contacts</span>
@@ -123,7 +123,7 @@ const Sidebar = () => {
                   )}
                 </div>
                 
-                <div className="flex-1 min-w-0">
+                <div className="flex flex-1 justify-between items-center min-w-0">
                   <div className="font-medium truncate">{user.fullname}</div>
                   <div className="text-sm text-zinc-400">
                     {onlineUsers.includes(user._id) ? "Online" : "Offline"}
