@@ -11,7 +11,7 @@ const MessageInput = () => {
   const fileInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const lastTypingEventRef = useRef(0);
-  
+
   const { sendMessage, sendTypingStatus } = useChatStore();
   const { selectedUser } = useChatStore();
   const { authUser } = useAuthStore();
@@ -48,14 +48,19 @@ const MessageInput = () => {
 
     setIsUploading(true);
     const reader = new FileReader();
+
     reader.onloadend = () => {
+      console.log("FileReader: Image loaded");
       setImagePreview(reader.result);
       setIsUploading(false);
     };
+
     reader.onerror = () => {
+      console.error("FileReader: Error loading image");
       toast.error("Failed to read image file");
       setIsUploading(false);
     };
+
     reader.readAsDataURL(file);
   }, []);
 
@@ -81,12 +86,12 @@ const MessageInput = () => {
       setText("");
       setImagePreview(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
-      
+
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
       sendTypingStatus(selectedUser._id, false);
-      
+
     } catch (error) {
       console.error("Failed to send message:", error);
       toast.error("Failed to send message");
@@ -133,7 +138,8 @@ const MessageInput = () => {
               <img
                 src={imagePreview}
                 alt="Preview"
-                className="w-24 h-24 object-cover rounded-lg"
+                className="w-24 h-24 object-cover rounded-lg cursor-pointer"
+                onClick={() => window.open(imagePreview, '_blank')}
               />
               <div className="absolute inset-0 bg-base-300/10 group-hover:bg-base-300/20 transition-all duration-200" />
             </div>
@@ -141,6 +147,7 @@ const MessageInput = () => {
               onClick={removeImage}
               className="absolute -top-2 -right-2 btn btn-circle btn-xs btn-error btn-ghost animate-in fade-in zoom-in"
               type="button"
+              aria-label="Remove image"
             >
               <X className="size-3" />
             </button>
@@ -158,8 +165,9 @@ const MessageInput = () => {
             onChange={handleTyping}
             onBlur={handleBlur}
             disabled={!selectedUser}
+            aria-label="Message input"
           />
-          
+
           <div className="flex items-center gap-2">
             <input
               type="file"
@@ -167,13 +175,15 @@ const MessageInput = () => {
               className="hidden"
               ref={fileInputRef}
               onChange={handleImageChange}
+              aria-label="Upload image"
             />
 
             <button
               type="button"
               className={`btn btn-circle btn-ghost btn-sm ${!selectedUser ? 'opacity-50 cursor-not-allowed' : 'hover:text-primary'}`}
               onClick={() => fileInputRef.current?.click()}
-              disabled={!selectedUser}
+              disabled={!selectedUser || isUploading}
+              aria-label="Upload image"
             >
               {isUploading ? (
                 <Loader className="size-5 animate-spin" />
@@ -188,6 +198,7 @@ const MessageInput = () => {
           type="submit"
           className={`btn btn-circle btn-primary ${(!text.trim() && !imagePreview) || !selectedUser ? 'btn-disabled' : ''}`}
           disabled={(!text.trim() && !imagePreview) || !selectedUser}
+          aria-label="Send message"
         >
           <Send className="size-5" />
         </button>

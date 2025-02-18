@@ -49,7 +49,7 @@ const startServer = async () => {
 
     // Auto-reload mechanism (with an external service or heartbeat)
     setInterval(() => {
-      https.get('https://flirty-bnzf.onrender.com', (res) => {
+      https.get('https://flirty-ffpq.onrender.com', (res) => {
         console.log('Auto-reload request sent. Status:', res.statusCode);
       }).on('error', (err) => {
         console.error('Error during auto-reload request:', err.message);
