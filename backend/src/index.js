@@ -19,7 +19,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(cookieParser());
 app.use(
   cors({
-    origin: "http://localhost:5173", // Make sure this is your frontend URL
+    origin: ["http://localhost:5173", "https://flirty-5gpq.onrender.com"], // Make sure this is your frontend URL
     credentials: true,
   })
 );
@@ -29,13 +29,13 @@ app.use('/api/auth', authRoutes);
 app.use('/api/messages', messageRoute);
 
 // Serve static assets in production
-if (process.env.NODE_ENV === "production") {
+
   app.use(express.static(path.join(__dirname, "../frontend/dist")));
 
   app.get("*", (req, res) => {
     res.sendFile(path.join(__dirname, "../frontend", "dist", "index.html"));
   });
-}
+
 
 // Start the server
 const startServer = async () => {
@@ -49,7 +49,7 @@ const startServer = async () => {
 
     // Auto-reload mechanism (with an external service or heartbeat)
     setInterval(() => {
-      https.get('https://flirty-ffpq.onrender.com', (res) => {
+      https.get('https://flirty-5gpq.onrender.com', (res) => {
         console.log('Auto-reload request sent. Status:', res.statusCode);
       }).on('error', (err) => {
         console.error('Error during auto-reload request:', err.message);
