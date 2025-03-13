@@ -6,6 +6,9 @@ import LoginPage from './pages/LoginPage'
 import SettingPage from './pages/SettingPage'
 import ProfilePage from './pages/ProfilePage'
 import HomePage from './pages/HomePage'
+import MapPage from './pages/MapPage'
+import AddMapPage from './pages/AddMapPage'
+
 import { useAuthStore } from './store/useAuthStore'
 import { useThemeStore } from './store/useThemeStore'
 import { Loader } from 'lucide-react'
@@ -13,15 +16,14 @@ import { Toaster } from 'react-hot-toast'
 
 const App = () => {
   const { authUser, checkAuth, isCheckingAuth } = useAuthStore();
-  const { theme } = useThemeStore(); // Corrected to useThemeStore
+  const { theme } = useThemeStore();
   
   useEffect(() => {
-    checkAuth(); // Check authentication on mount
+    checkAuth();
   }, [checkAuth]);
 
-  console.log({ authUser }); // Debug log
+  console.log({ authUser });
   
-  // Show loading spinner while checking auth status
   if (isCheckingAuth && !authUser)
     return (
       <div className="flex items-center justify-center h-screen">
@@ -29,28 +31,19 @@ const App = () => {
       </div>
     );
 
-
   return (
-    <div data-theme={theme}> {/* Corrected to use theme from useThemeStore */}
+    <div data-theme={theme}>
       <Navbar />
       <Routes>
-        {/* HomePage accessible only when logged in */}
         <Route path="/" element={authUser ? <HomePage /> : <Navigate to="/login" />} />
-        
-        {/* SignupPage accessible only when not logged in */}
         <Route path="/signup" element={!authUser ? <SignUpPage /> : <Navigate to="/" />} />
-        
-        {/* LoginPage accessible only when not logged in */}
         <Route path="/login" element={!authUser ? <LoginPage /> : <Navigate to="/" />} />
-        
-        {/* SettingPage is always accessible */}
         <Route path="/settings" element={<SettingPage />} />
-        
-        {/* ProfilePage accessible only when logged in */}
+        <Route path="/map" element={authUser ? <MapPage /> : <Navigate to="/login" />} />
+        <Route path="/add-map" element={authUser ? <AddMapPage /> : <Navigate to="/login" />} />
         <Route path="/profile" element={authUser ? <ProfilePage /> : <Navigate to="/login" />} />
       </Routes>
-
-      <Toaster /> {/* Global toast notifications */}
+      <Toaster />
     </div>
   )
 }

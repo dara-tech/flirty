@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
-import { Camera, Mail, User, Calendar, Shield, Edit2 } from "lucide-react";
+import { Camera, Mail, User, Calendar, Shield, Edit2, Map, Plus, Trash } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const ProfilePage = () => {
   const { authUser, isUpdatingProfile, updateProfile } = useAuthStore();
@@ -173,6 +174,14 @@ const ProfilePage = () => {
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* Add Map Button */}
+            <div className="mt-6">
+              <Link to="/add-map" className="btn btn-primary btn-block">
+                <Map className="size-5 mr-2" />
+                Add New Map
+              </Link>
             </div>
 
           </div>

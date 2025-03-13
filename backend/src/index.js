@@ -6,6 +6,7 @@ import { connectDB } from './lib/db.js';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import path from 'path';
+import mapRoute from './routes/map.route.js';
 import https from 'https';  // Import the https module for auto-reload
 import { app, server } from './lib/socket.js';  // Use the app instance from socket.js
 
@@ -19,7 +20,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(cookieParser());
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://flirty-5gpq.onrender.com"], // Make sure this is your frontend URL
+    origin: ["http://localhost:5173", "https://flirty-ffpq.onrender.com"], // Make sure this is your frontend URL
     credentials: true,
   })
 );
@@ -27,6 +28,7 @@ app.use(
 // Route setup
 app.use('/api/auth', authRoutes);
 app.use('/api/messages', messageRoute);
+app.use('/api/maps', mapRoute);
 
 // Serve static assets in production
 
@@ -49,7 +51,7 @@ const startServer = async () => {
 
     // Auto-reload mechanism (with an external service or heartbeat)
     setInterval(() => {
-      https.get('https://flirty-5gpq.onrender.com', (res) => {
+      https.get('https://flirty-ffpq.onrender.com', (res) => {
         console.log('Auto-reload request sent. Status:', res.statusCode);
       }).on('error', (err) => {
         console.error('Error during auto-reload request:', err.message);
