@@ -2,4 +2,55 @@
 @plugin "daisyui";
 @plugin "daisyui" {
     themes: all;  }
+
+/* Safe area support for mobile devices */
+@supports (padding: max(0px)) {
+  .safe-area-inset-bottom {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  
+  .pb-safe {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+}
+
+/* Hide scrollbar but keep scroll functionality */
+.hide-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari and Opera */
+}
+  
+/* Smooth fade-out animation for deleted items */
+@keyframes fadeOutSlide {
+  0% {
+    opacity: 1;
+    transform: translateX(0);
+    max-height: 100px;
+    margin-bottom: 0;
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-100%);
+    max-height: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+.conversation-item-removing {
+  animation: fadeOutSlide 0.2s ease-out forwards;
+  overflow: hidden;
+}
+
+/* Smooth transitions for conversation items */
+.conversation-item {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
   

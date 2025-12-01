@@ -1,12 +1,13 @@
 import express from 'express';
-import authRoutes from './routes/auth.route.js';
 import messageRoute from './routes/message.route.js';
+import authRoutes from './routes/auth.route.js';
+import groupRoute from './routes/group.route.js';
+import contactRoute from './routes/contact.route.js';
 import dotenv from 'dotenv';
 import { connectDB } from './lib/db.js';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import path from 'path';
-import mapRoute from './routes/map.route.js';
 import https from 'https';  // Import the https module for auto-reload
 import { app, server } from './lib/socket.js';  // Use the app instance from socket.js
 
@@ -20,15 +21,36 @@ app.use(express.json({ limit: '50mb' }));
 app.use(cookieParser());
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://flirty-ffpq.onrender.com"], // Make sure this is your frontend URL
-    credentials: true,
+    origin: function (origin, callback) {
+      // Allow requests with no origin (mobile apps, Postman, etc.)
+      if (!origin) return callback(null, true);
+      
+      const allowedOrigins = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "https://flirty-ffpq.onrender.com"
+      ];
+      
+      if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true, // Required for cookies
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 
 // Route setup
 app.use('/api/auth', authRoutes);
 app.use('/api/messages', messageRoute);
-app.use('/api/maps', mapRoute);
+app.use('/api/groups', groupRoute);
+app.use('/api/contacts', contactRoute);
 
 // Serve static assets in production
 

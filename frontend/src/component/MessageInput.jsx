@@ -1,41 +1,104 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useChatStore } from "../store/useChatStore";
-import { Image, Send, X, Loader } from "lucide-react";
+import { FaImage, FaPaperPlane, FaTimes, FaSpinner, FaPaperclip, FaSmile, FaMicrophone, FaStop } from "react-icons/fa";
 import { useAuthStore } from "../store/useAuthStore";
 import toast from "react-hot-toast";
 
 const MessageInput = () => {
   const [text, setText] = useState("");
   const [imagePreview, setImagePreview] = useState(null);
+  const [audioPreview, setAudioPreview] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [isRecordingSupported, setIsRecordingSupported] = useState(false);
   const fileInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const lastTypingEventRef = useRef(0);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const audioBase64Ref = useRef(null);
+  const audioBlobUrlRef = useRef(null); // Store blob URL for cleanup
+  const recordingTimerRef = useRef(null);
 
-  const { sendMessage, sendTypingStatus } = useChatStore();
-  const { selectedUser } = useChatStore();
+  const { sendMessage, sendGroupMessage, sendTypingStatus, sendUploadingPhotoStatus, sendGroupTypingStatus, sendGroupUploadingPhotoStatus } = useChatStore();
+  const { selectedUser, selectedGroup } = useChatStore();
   const { authUser } = useAuthStore();
   const socket = useAuthStore.getState().socket;
 
+  const isGroupChat = !!selectedGroup;
+
+  // Check if recording is supported on this browser
   useEffect(() => {
-    return () => {
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-        if (selectedUser?._id) {
-          sendTypingStatus(selectedUser._id, false);
-        }
+    const checkRecordingSupport = () => {
+      // Check if MediaRecorder is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setIsRecordingSupported(false);
+        return;
       }
+      
+      // Check if MediaRecorder is available
+      if (typeof MediaRecorder === 'undefined') {
+        setIsRecordingSupported(false);
+        return;
+      }
+      
+      // Check if at least one audio format is supported
+      const isSupported = MediaRecorder.isTypeSupported('audio/webm') || 
+                         MediaRecorder.isTypeSupported('audio/mp4') ||
+                         MediaRecorder.isTypeSupported('audio/ogg') ||
+                         MediaRecorder.isTypeSupported('audio/wav');
+      
+      setIsRecordingSupported(isSupported);
     };
-  }, [selectedUser?._id]);
+    
+    checkRecordingSupport();
+  }, []);
 
   useEffect(() => {
+    // Cleanup audio blob URL when switching chats
+    if (audioBlobUrlRef.current) {
+      URL.revokeObjectURL(audioBlobUrlRef.current);
+      audioBlobUrlRef.current = null;
+    }
+    
     setText("");
     setImagePreview(null);
+    setAudioPreview(null);
+    audioChunksRef.current = [];
+    audioBase64Ref.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
-  }, [selectedUser?._id]);
+    // Stop recording if switching chats
+    if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+    }
+  }, [selectedUser?._id, selectedGroup?._id, isRecording]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Revoke blob URL on unmount
+      if (audioBlobUrlRef.current) {
+        URL.revokeObjectURL(audioBlobUrlRef.current);
+        audioBlobUrlRef.current = null;
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleImageChange = useCallback((e) => {
     const file = e.target.files?.[0];
@@ -50,13 +113,11 @@ const MessageInput = () => {
     const reader = new FileReader();
 
     reader.onloadend = () => {
-      console.log("FileReader: Image loaded");
       setImagePreview(reader.result);
       setIsUploading(false);
     };
 
     reader.onerror = () => {
-      console.error("FileReader: Error loading image");
       toast.error("Failed to read image file");
       setIsUploading(false);
     };
@@ -69,46 +130,213 @@ const MessageInput = () => {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!text.trim() && !imagePreview) return;
-    if (!selectedUser?._id) {
-      toast.error("No chat selected");
+  const removeAudio = useCallback(() => {
+    // Revoke blob URL to free memory
+    if (audioBlobUrlRef.current) {
+      URL.revokeObjectURL(audioBlobUrlRef.current);
+      audioBlobUrlRef.current = null;
+    }
+    setAudioPreview(null);
+    audioChunksRef.current = [];
+    audioBase64Ref.current = null;
+  }, []);
+
+  const startRecording = useCallback(async () => {
+    // Check if recording is supported
+    if (!isRecordingSupported) {
+      toast.error("Voice recording is not supported in your browser");
       return;
     }
-
+    
     try {
-      await sendMessage({
-        text: text.trim(),
-        image: imagePreview,
+      // Request microphone permission
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
       });
-
-      setText("");
-      setImagePreview(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
+      
+      // Reset chunks
+      audioChunksRef.current = [];
+      
+      // Determine best supported mime type
+      let mimeType = 'audio/webm';
+      if (MediaRecorder.isTypeSupported('audio/webm')) {
+        mimeType = 'audio/webm';
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        mimeType = 'audio/mp4';
+      } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
+        mimeType = 'audio/ogg';
+      } else if (MediaRecorder.isTypeSupported('audio/wav')) {
+        mimeType = 'audio/wav';
+      } else {
+        // Use default format
+        mimeType = '';
       }
-      sendTypingStatus(selectedUser._id, false);
-
+      
+      // Create MediaRecorder
+      const options = mimeType ? { mimeType } : {};
+      const mediaRecorder = new MediaRecorder(stream, options);
+      
+      mediaRecorderRef.current = mediaRecorder;
+      
+      // Handle errors during recording
+      mediaRecorder.onerror = (event) => {
+        console.error("MediaRecorder error:", event.error);
+        toast.error("Recording error occurred. Please try again.");
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+        setIsRecording(false);
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = null;
+        }
+      };
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+      
+      mediaRecorder.onstop = () => {
+        // Stop all tracks to release microphone
+        stream.getTracks().forEach(track => {
+          track.stop();
+        });
+        
+        // Get the current duration from state (will be updated by the interval)
+        // We'll validate minimum duration based on actual blob size instead
+        
+        // Check if we have any audio data
+        if (audioChunksRef.current.length === 0) {
+          toast.error("No audio was recorded. Please try again.");
+          setAudioPreview(null);
+          audioChunksRef.current = [];
+          audioBase64Ref.current = null;
+          return;
+        }
+        
+        // Create blob from chunks
+        const audioBlob = new Blob(audioChunksRef.current, { 
+          type: mediaRecorder.mimeType || 'audio/webm' 
+        });
+        
+        // Check if blob has content (at least 1KB)
+        if (audioBlob.size < 1024) {
+          toast.error("Recording is too short or empty. Please try again.");
+          setAudioPreview(null);
+          audioChunksRef.current = [];
+          audioBase64Ref.current = null;
+          return;
+        }
+        
+        // Revoke previous blob URL if exists
+        if (audioBlobUrlRef.current) {
+          URL.revokeObjectURL(audioBlobUrlRef.current);
+        }
+        
+        // Create preview URL
+        const audioUrl = URL.createObjectURL(audioBlob);
+        audioBlobUrlRef.current = audioUrl;
+        setAudioPreview(audioUrl);
+        
+        // Convert to base64 for sending
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64Audio = reader.result;
+          // Store base64 in separate ref for sending
+          audioBase64Ref.current = base64Audio;
+        };
+        reader.onerror = () => {
+          console.error("Error reading audio file");
+          toast.error("Failed to process audio. Please try again.");
+        };
+        reader.readAsDataURL(audioBlob);
+      };
+      
+      // Start recording with timeslice to get data chunks
+      mediaRecorder.start(100); // Collect data every 100ms
+      setIsRecording(true);
+      setRecordingDuration(0);
+      
+      // Start recording timer
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+      
     } catch (error) {
-      console.error("Failed to send message:", error);
-      toast.error("Failed to send message");
+      console.error("Error starting recording:", error);
+      
+      // Provide specific error messages
+      let errorMessage = "Failed to access microphone. ";
+      
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        errorMessage += "Please allow microphone access in your browser settings.";
+      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+        errorMessage += "No microphone found. Please connect a microphone.";
+      } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+        errorMessage += "Microphone is being used by another application.";
+      } else if (error.name === 'OverconstrainedError' || error.name === 'ConstraintNotSatisfiedError') {
+        errorMessage += "Microphone constraints could not be satisfied.";
+      } else if (error.name === 'NotSupportedError') {
+        errorMessage += "Recording is not supported in this browser.";
+      } else {
+        errorMessage += "Please check your microphone permissions.";
+      }
+      
+      toast.error(errorMessage);
+      setIsRecording(false);
     }
-  };
+  }, [isRecordingSupported]);
+
+  const stopRecording = useCallback(() => {
+    // Get current duration before stopping
+    const currentDuration = recordingDuration;
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    
+    setIsRecording(false);
+    
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    
+    // Note: Duration validation happens in mediaRecorder.onstop callback
+    // which has access to the duration at the time of recording stop
+  }, [recordingDuration]);
 
   const handleTyping = useCallback((e) => {
     const newText = e.target.value;
     setText(newText);
 
-    if (!selectedUser?._id) return;
-
     const now = Date.now();
     const THROTTLE_MS = 1000;
 
+    if (isGroupChat && selectedGroup?._id) {
+      // Group typing indicator
     const shouldSendTyping = now - lastTypingEventRef.current >= THROTTLE_MS;
+      if (shouldSendTyping) {
+        lastTypingEventRef.current = now;
+        sendGroupTypingStatus(selectedGroup._id, true);
+      }
 
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+
+      typingTimeoutRef.current = setTimeout(() => {
+        sendGroupTypingStatus(selectedGroup._id, false);
+      }, 2000);
+    } else if (selectedUser?._id) {
+      // Direct message typing indicator
+      const shouldSendTyping = now - lastTypingEventRef.current >= THROTTLE_MS;
     if (shouldSendTyping) {
       lastTypingEventRef.current = now;
       sendTypingStatus(selectedUser._id, true);
@@ -121,89 +349,294 @@ const MessageInput = () => {
     typingTimeoutRef.current = setTimeout(() => {
       sendTypingStatus(selectedUser._id, false);
     }, 2000);
-  }, [selectedUser?._id, sendTypingStatus]);
-
-  const handleBlur = useCallback(() => {
-    if (selectedUser?._id && !text.trim()) {
-      sendTypingStatus(selectedUser._id, false);
     }
-  }, [selectedUser?._id, text, sendTypingStatus]);
+  }, [selectedUser?._id, selectedGroup?._id, isGroupChat, sendTypingStatus, sendGroupTypingStatus]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!text.trim() && !imagePreview && !audioPreview) return;
+    if (isSending) return; // Prevent double submission
+    
+    // Stop recording if still recording
+    if (isRecording) {
+      stopRecording();
+      // Wait a bit for the recording to finish processing
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    setIsSending(true);
+    
+    // Get audio data from base64 ref
+    let audioData = audioBase64Ref.current || null;
+    
+    // Emit uploading photo status if sending an image
+    if (imagePreview) {
+      if (isGroupChat && selectedGroup?._id) {
+        sendGroupUploadingPhotoStatus(selectedGroup._id, true);
+      } else if (selectedUser?._id) {
+      sendUploadingPhotoStatus(selectedUser._id, true);
+      }
+    }
+    
+    if (isGroupChat) {
+      if (!selectedGroup?._id) {
+        toast.error("No group selected");
+        setIsSending(false);
+        return;
+      }
+      try {
+        await sendGroupMessage(selectedGroup._id, {
+          text: text.trim(),
+          image: imagePreview,
+          audio: audioData,
+        });
+        // Revoke blob URL after sending
+        if (audioBlobUrlRef.current) {
+          URL.revokeObjectURL(audioBlobUrlRef.current);
+          audioBlobUrlRef.current = null;
+        }
+        setText("");
+        setImagePreview(null);
+        setAudioPreview(null);
+        audioChunksRef.current = [];
+        audioBase64Ref.current = null;
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      } catch (error) {
+        console.error("Failed to send message:", error);
+        toast.error("Failed to send message");
+        if (imagePreview) {
+          if (isGroupChat && selectedGroup?._id) {
+            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+          } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+          }
+        }
+      } finally {
+        setIsSending(false);
+      }
+    } else {
+      if (!selectedUser?._id) {
+        toast.error("No chat selected");
+        setIsSending(false);
+        return;
+      }
+      const hadImage = !!imagePreview;
+      try {
+        await sendMessage({
+          text: text.trim(),
+          image: imagePreview,
+          audio: audioData,
+        });
+        // Revoke blob URL after sending
+        if (audioBlobUrlRef.current) {
+          URL.revokeObjectURL(audioBlobUrlRef.current);
+          audioBlobUrlRef.current = null;
+        }
+        setText("");
+        setImagePreview(null);
+        setAudioPreview(null);
+        audioChunksRef.current = [];
+        audioBase64Ref.current = null;
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        if (typingTimeoutRef.current) {
+          clearTimeout(typingTimeoutRef.current);
+        }
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupTypingStatus(selectedGroup._id, false);
+          if (hadImage) {
+            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+          }
+        } else if (selectedUser?._id) {
+        sendTypingStatus(selectedUser._id, false);
+        if (hadImage) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to send message:", error);
+        toast.error("Failed to send message");
+        if (hadImage) {
+          if (isGroupChat && selectedGroup?._id) {
+            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+          } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+          }
+        }
+      } finally {
+        setIsSending(false);
+      }
+    }
+  };
 
   return (
-    <div className="p-4 w-full bg-base-200/50 backdrop-blur-sm border-t border-base-300">
-      {imagePreview && (
-        <div className="mb-3">
-          <div className="relative inline-block group">
-            <div className="relative overflow-hidden rounded-lg border-2 border-primary/20 transition-all duration-200 hover:border-primary/40">
-              <img
-                src={imagePreview}
-                alt="Preview"
-                className="w-24 h-24 object-cover rounded-lg cursor-pointer"
-                onClick={() => window.open(imagePreview, '_blank')}
-              />
-              <div className="absolute inset-0 bg-base-300/10 group-hover:bg-base-300/20 transition-all duration-200" />
-            </div>
-            <button
-              onClick={removeImage}
-              className="absolute -top-2 -right-2 btn btn-circle btn-xs btn-error btn-ghost animate-in fade-in zoom-in"
-              type="button"
-              aria-label="Remove image"
-            >
-              <X className="size-3" />
-            </button>
+    <form onSubmit={handleSubmit} className="px-4 pt-3 border-t border-base-200/50 bg-base-100 lg:relative lg:py-3" style={{ paddingBottom: `calc(0.5rem + env(safe-area-inset-bottom, 0px))` }}>
+      {/* Recording Indicator */}
+      {isRecording && (
+        <div className="mb-3 flex items-center gap-3 px-4 py-3 bg-error/10 border border-error/30 rounded-xl">
+          <div className="flex items-center gap-2 flex-1">
+            <div className="size-3 bg-error rounded-full animate-pulse"></div>
+            <span className="text-sm font-medium text-error">
+              Recording... {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}
+            </span>
           </div>
+          <button
+            type="button"
+            className="size-8 rounded-full bg-error text-error-content hover:bg-error/90 flex items-center justify-center transition-all"
+            onClick={stopRecording}
+            title="Stop recording"
+          >
+            <FaStop className="size-3.5" />
+          </button>
         </div>
       )}
 
-      <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-        <div className="flex-1 flex gap-2 items-center bg-base-100 rounded-full px-4 py-2 shadow-lg">
-          <input
-            type="text"
-            className="flex-1 bg-transparent border-none focus:outline-none text-base-content placeholder:text-base-content/50"
-            placeholder={selectedUser ? "Type a message..." : "Select a chat to start messaging"}
-            value={text}
-            onChange={handleTyping}
-            onBlur={handleBlur}
-            disabled={!selectedUser}
-            aria-label="Message input"
+      {/* Image Preview */}
+      {imagePreview && (
+        <div className="mb-3 relative w-fit rounded-xl overflow-hidden group shadow-sm">
+          <img
+            src={imagePreview}
+            alt="Selected"
+            className="w-32 h-32 object-cover rounded-xl"
           />
-
-          <div className="flex items-center gap-2">
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              ref={fileInputRef}
-              onChange={handleImageChange}
-              aria-label="Upload image"
-            />
-
+          {isSending && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
+              <div className="flex flex-col items-center gap-2">
+                <FaSpinner className="size-5 text-white animate-spin" />
+                <span className="text-xs text-white font-medium">Uploading...</span>
+              </div>
+            </div>
+          )}
+          {!isSending && (
             <button
               type="button"
-              className={`btn btn-circle btn-ghost btn-sm ${!selectedUser ? 'opacity-50 cursor-not-allowed' : 'hover:text-primary'}`}
-              onClick={() => fileInputRef.current?.click()}
-              disabled={!selectedUser || isUploading}
-              aria-label="Upload image"
+              className="absolute top-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md"
+              onClick={removeImage}
+              title="Remove image"
             >
-              {isUploading ? (
-                <Loader className="size-5 animate-spin" />
-              ) : (
-                <Image className="size-5" />
-              )}
+              <FaTimes className="size-3.5 text-base-content" />
             </button>
-          </div>
+          )}
         </div>
+      )}
+
+      {/* Audio Preview */}
+      {audioPreview && !isRecording && (
+        <div className="mb-3 relative px-4 py-3 bg-base-200 rounded-xl group shadow-sm">
+          <div className="flex items-center gap-3">
+            <FaMicrophone className="size-5 text-primary flex-shrink-0" />
+            <audio
+              src={audioPreview}
+              controls
+              className="flex-1 h-8"
+              controlsList="nodownload"
+            />
+            {!isSending && (
+              <button
+                type="button"
+                className="size-7 rounded-full hover:bg-base-300 flex items-center justify-center transition-all flex-shrink-0"
+                onClick={removeAudio}
+                title="Remove audio"
+              >
+                <FaTimes className="size-3.5 text-base-content" />
+              </button>
+            )}
+          </div>
+          {isSending && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
+              <div className="flex flex-col items-center gap-2">
+                <FaSpinner className="size-5 text-white animate-spin" />
+                <span className="text-xs text-white font-medium">Sending...</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 bg-base-200/90 rounded-2xl px-4 py-3 border border-base-300/30 shadow-inner">
+        <button
+          type="button"
+          className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Attach file"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isUploading || isSending}
+        >
+          {isUploading ? (
+            <div className="loading loading-spinner loading-xs"></div>
+          ) : (
+            <FaPaperclip className="size-4" />
+          )}
+        </button>
+
+        <input
+          type="text"
+          placeholder={isSending ? "Sending..." : "Write a message..."}
+          className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 disabled:opacity-60 disabled:cursor-not-allowed"
+          value={text}
+          onChange={handleTyping}
+          disabled={isSending}
+        />
+
+        <input
+          type="file"
+          className="hidden"
+          ref={fileInputRef}
+          onChange={handleImageChange}
+          accept="image/*"
+        />
 
         <button
-          type="submit"
-          className={`btn btn-circle btn-primary ${(!text.trim() && !imagePreview) || !selectedUser ? 'btn-disabled' : ''}`}
-          disabled={(!text.trim() && !imagePreview) || !selectedUser}
-          aria-label="Send message"
+          type="button"
+          className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Emoji"
+          disabled={isSending}
         >
-          <Send className="size-5" />
+          <FaSmile className="size-4" />
         </button>
-      </form>
-    </div>
+
+        <button
+          type="button"
+          className={`flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 ${
+            isRecording ? 'bg-error text-error-content animate-pulse' : 'text-primary'
+          } disabled:opacity-50 disabled:cursor-not-allowed`}
+          title={
+            !isRecordingSupported 
+              ? "Voice recording not supported" 
+              : isRecording 
+                ? "Stop recording" 
+                : "Voice message"
+          }
+          disabled={!isRecordingSupported || isSending || (isUploading && !isRecording)}
+          onClick={(e) => {
+            e.preventDefault();
+            if (isRecording) {
+              stopRecording();
+            } else {
+              startRecording();
+            }
+          }}
+        >
+          {isRecording ? <FaStop className="size-4" /> : <FaMicrophone className="size-4" />}
+        </button>
+
+        {/* Send Button */}
+        <button
+          type="submit"
+          className={`flex items-center justify-center size-7 rounded-lg transition-all duration-200 ${
+            (!text.trim() && !imagePreview && !audioPreview) || isSending
+              ? 'opacity-40 cursor-not-allowed'
+              : 'text-primary hover:bg-base-300/50 active:scale-95'
+          }`}
+          title={isSending ? "Sending..." : "Send message"}
+          disabled={(!text.trim() && !imagePreview && !audioPreview) || isSending}
+        >
+          {isSending ? (
+            <FaSpinner className="size-4 animate-spin" />
+          ) : (
+            <FaPaperPlane className="size-4" />
+          )}
+        </button>
+      </div>
+    </form>
   );
 };
 

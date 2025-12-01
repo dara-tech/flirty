@@ -1,8 +1,9 @@
 import React, { useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
-import { Eye, EyeOff, Loader2, Lock, Mail, MessageSquare, User } from "lucide-react";
+import { FaEye, FaEyeSlash, FaSpinner, FaLock, FaEnvelope, FaComment, FaUser } from "react-icons/fa";
 import { Link } from "react-router-dom";
 import AuthImagePattern from "../component/AuthImagePattern";
+import GoogleSignInButton from "../component/GoogleSignInButton";
 import toast from "react-hot-toast";
 
 const SignUpPage = () => {
@@ -60,7 +61,7 @@ const SignUpPage = () => {
                 className="size-12 rounded-xl bg-primary/10 flex items-center justify-center 
               group-hover:bg-primary/20 transition-colors"
               >
-                <MessageSquare className="size-6 text-primary" />
+                <FaComment className="size-6 text-primary" />
               </div>
               <h1 className="text-2xl font-bold mt-2">Create Account</h1>
               <p className="text-base-content/60">Get started with your free account</p>
@@ -76,11 +77,11 @@ const SignUpPage = () => {
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <User className="size-5 text-base-content/40" />
+                  <FaUser className="size-5 text-base-content/40" />
                 </div>
                 <input
                   type="text"
-                  className={`input input-bordered w-full pl-10`}
+                  className="w-full px-4 py-3 pl-10 bg-base-100 border-2 border-base-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all duration-200"
                   placeholder="John Doe"
                   value={formData.fullname}
                   onChange={(e) => setFormData({ ...formData, fullname: e.target.value })}
@@ -95,11 +96,11 @@ const SignUpPage = () => {
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Mail className="size-5 text-base-content/40" />
+                  <FaEnvelope className="size-5 text-base-content/40" />
                 </div>
                 <input
                   type="email"
-                  className={`input input-bordered w-full pl-10`}
+                  className="w-full px-4 py-3 pl-10 bg-base-100 border-2 border-base-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all duration-200"
                   placeholder="you@example.com"
                   value={formData.email}
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
@@ -114,11 +115,11 @@ const SignUpPage = () => {
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Lock className="size-5 text-base-content/40" />
+                  <FaLock className="size-5 text-base-content/40" />
                 </div>
                 <input
                   type={showPassword ? "text" : "password"}
-                  className={`input input-bordered w-full pl-10`}
+                  className="w-full px-4 py-3 pl-10 pr-10 bg-base-100 border-2 border-base-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all duration-200"
                   placeholder="••••••••"
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
@@ -129,9 +130,9 @@ const SignUpPage = () => {
                   onClick={() => setShowPassword(!showPassword)}
                 >
                   {showPassword ? (
-                    <EyeOff className="size-5 text-base-content/40" />
+                    <FaEyeSlash className="size-5 text-base-content/40" />
                   ) : (
-                    <Eye className="size-5 text-base-content/40" />
+                    <FaEye className="size-5 text-base-content/40" />
                   )}
                 </button>
               </div>
@@ -141,7 +142,7 @@ const SignUpPage = () => {
             <button type="submit" className="btn btn-primary w-full" disabled={isSigningUp}>
               {isSigningUp ? (
                 <>
-                  <Loader2 className="size-5 animate-spin" />
+                  <FaSpinner className="size-5 animate-spin" />
                   Loading...
                 </>
               ) : (
@@ -150,8 +151,18 @@ const SignUpPage = () => {
             </button>
           </form>
 
+          {/* Divider */}
+          <div className="flex items-center gap-4 my-6">
+            <div className="flex-1 h-px bg-base-300"></div>
+            <span className="text-sm text-base-content/60">or</span>
+            <div className="flex-1 h-px bg-base-300"></div>
+          </div>
+
+          {/* Google Sign In */}
+          <GoogleSignInButton text="Sign up with Google" />
+
           {/* Link to Login */}
-          <div className="text-center">
+          <div className="text-center mt-6">
             <p className="text-base-content/60">
               Already have an account?{" "}
               <Link to="/login" className="link link-primary">

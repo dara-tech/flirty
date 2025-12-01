@@ -13,8 +13,22 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: true,
-      minlength: 6,
+      required: function() {
+        return !this.googleId; // Password not required if user signed up with Google
+      },
+      validate: {
+        validator: function(value) {
+          // If googleId exists, password is optional (can be empty)
+          if (this.googleId) return true;
+          // If no googleId, password must exist and be at least 6 characters
+          return value && value.length >= 6;
+        },
+        message: 'Password must be at least 6 characters'
+      }
+    },
+    googleId: {
+      type: String,
+      default: null,
     },
     profilePic: {
       type: String,
