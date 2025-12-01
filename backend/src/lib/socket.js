@@ -11,15 +11,17 @@ const server = http.createServer(app);
 // Allowed origins for Socket.io - must match Express CORS configuration
 const getAllowedSocketOrigins = () => {
   const allowedOrigins = [
+    // Development origins
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
-    // Production URLs - add your Netlify URL here
-    process.env.FRONTEND_URL, // e.g., https://your-app.netlify.app
-    "https://flirty-ffpq.onrender.com"
-  ].filter(Boolean); // Remove undefined values
+    // Production frontend URL from environment variable
+    process.env.FRONTEND_URL,
+    // Additional allowed origins (comma-separated, optional)
+    ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [])
+  ].filter(Boolean); // Remove undefined/null/empty values
   
   return allowedOrigins;
 };
