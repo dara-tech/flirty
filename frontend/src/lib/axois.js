@@ -82,16 +82,19 @@ axiosInstance.interceptors.response.use(
   }
 );
 
-// Request interceptor to log requests in production (for debugging)
+// Request interceptor to log requests and verify cookies in production
 axiosInstance.interceptors.request.use(
   (config) => {
     // Log in production for debugging
     if (import.meta.env.MODE === 'production') {
+      // Check if cookies are available (for debugging)
+      const hasCookies = document.cookie.includes('jwt');
       console.log('📤 Request:', {
         url: config.url,
         method: config.method,
         hasCredentials: config.withCredentials,
         baseURL: config.baseURL,
+        cookiesAvailable: hasCookies,
       });
     }
     return config;

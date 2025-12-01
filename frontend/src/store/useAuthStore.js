@@ -77,11 +77,32 @@ export const useAuthStore = create((set, get) => ({
     set({ isLoggingIn: true });
     try {
       const res = await axiosInstance.post("/auth/login", data);
+      
+      // Check if cookie was set (in production, verify cookie is available)
+      if (import.meta.env.MODE === 'production') {
+        console.log('✅ Login successful, checking cookie...');
+        // Small delay to ensure cookie is set by browser
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
       set({ authUser: res.data });
       toast.success("Logged in successfully");
+      
+      // Verify auth immediately after login
+      try {
+        await get().checkAuth();
+      } catch (checkError) {
+        console.warn('⚠️ Auth check after login failed:', checkError);
+        // If check fails, the cookie might not be set - but continue anyway
+        // The user might need to refresh or the cookie will be set on next request
+      }
+      
       get().connectSocket(); // ✅ Connect socket after login
     } catch (error) {
-      toast.error(error.response?.data?.message || "Login failed");
+      console.error('Login error:', error);
+      const errorMessage = error.response?.data?.message || error.message || "Login failed";
+      toast.error(errorMessage);
+      throw error; // Re-throw to allow component to handle
     } finally {
       set({ isLoggingIn: false });
     }

@@ -68,7 +68,20 @@ export const login = async (req, res) => {
         if (!isMatch) {
             return res.status(401).send("Invalid credentials"); // Invalid credentials
         }
-        generateToken(user._id, res); // Generating and sending token for authentication
+        
+        // Generate and set token cookie
+        generateToken(user._id, res);
+        
+        // Log in production for debugging
+        if (process.env.NODE_ENV === 'production') {
+            console.log('✅ Login successful for user:', user.email);
+            console.log('🍪 Cookie should be set with options:', {
+                sameSite: 'none',
+                secure: true,
+                httpOnly: true,
+                path: '/',
+            });
+        }
 
         // Return user data (same format as signup)
         res.status(200).json({
