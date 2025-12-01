@@ -256,6 +256,10 @@ export const getGroupMessages = async (req, res) => {
     const { id } = req.params;
     const userId = req.user._id;
 
+    // Pagination parameters (Telegram-style: newest first, load last N messages)
+    const limit = parseInt(req.query.limit) || 50; // Default: last 50 messages
+    const before = req.query.before; // Message ID to load messages before (for pagination)
+
     // Check if user is a member of the group
     const group = await Group.findById(id);
     if (!group) {
@@ -270,12 +274,39 @@ export const getGroupMessages = async (req, res) => {
       return res.status(403).json({ error: "You are not a member of this group" });
     }
 
-    const messages = await Message.find({ groupId: id })
+    // Build query
+    const query = { groupId: id };
+    
+    // If 'before' is provided, load messages older than that message
+    if (before) {
+      try {
+        const beforeMessage = await Message.findById(before);
+        if (beforeMessage) {
+          query.createdAt = { $lt: beforeMessage.createdAt };
+        }
+      } catch (e) {
+        // Invalid before ID, ignore
+      }
+    }
+
+    // Sort descending (newest first) and limit
+    const messages = await Message.find(query)
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
-      .sort({ createdAt: 1 });
+      .sort({ createdAt: -1 }) // Newest first (Telegram-style)
+      .limit(limit);
 
-    res.status(200).json(messages);
+    // Check if there are more messages before reversing
+    const hasMore = messages.length === limit;
+
+    // Reverse to get chronological order for display (oldest to newest)
+    // Frontend will display in reverse (newest at top)
+    const reversedMessages = messages.reverse();
+
+    res.status(200).json({
+      messages: reversedMessages,
+      hasMore: hasMore, // If we got full limit, there might be more
+    });
   } catch (error) {
     console.error("Error in getGroupMessages: ", error.message);
     res.status(500).json({ error: "Internal server error" });

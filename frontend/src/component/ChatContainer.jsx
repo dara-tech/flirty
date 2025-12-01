@@ -16,7 +16,11 @@ const ChatContainer = () => {
     messages, 
     getMessages,
     getGroupMessages,
-    isMessagesLoading, 
+    loadMoreMessages,
+    loadMoreGroupMessages,
+    isMessagesLoading,
+    isLoadingMoreMessages,
+    hasMoreMessages,
     selectedUser,
     selectedGroup,
     subscribeToGroupMessages,
@@ -41,6 +45,8 @@ const ChatContainer = () => {
   } = useChatStore();
   const { authUser, socket } = useAuthStore();
   const messageEndRef = useRef(null);
+  const messageTopRef = useRef(null); // For detecting scroll to top
+  const messagesContainerRef = useRef(null); // Container ref for scroll detection
   const [isTyping, setIsTyping] = useState(false);
   const typingTimeoutRef = useRef(null);
   const [editingMessage, setEditingMessage] = useState(null);
@@ -185,9 +191,51 @@ const ChatContainer = () => {
     }
   }, [selectedUser, selectedGroup, socket, isGroupChat, authUser, messages, normalizeId]);
 
+  // Scroll to top (newest messages) when messages load initially
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messages.length > 0 && !isLoadingMoreMessages) {
+      // Scroll to top for Telegram-style (newest at top)
+      messagesContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [selectedUser?._id, selectedGroup?._id]); // Only on chat change
+
+  // Scroll to bottom when new message arrives (if user is at bottom)
+  useEffect(() => {
+    if (messages.length > 0) {
+      const container = messagesContainerRef.current;
+      if (container) {
+        // Check if user is near bottom (within 100px)
+        const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+        if (isNearBottom) {
+          // Scroll to bottom for new messages
+          messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+      }
+    }
   }, [messages.length, messages.map((msg) => msg.seen).join(","), typingUsers]);
+
+  // Infinite scroll: Load more messages when scrolling to top
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container || !hasMoreMessages || isLoadingMoreMessages) return;
+
+    const handleScroll = () => {
+      // Check if scrolled to top (within 200px)
+      if (container.scrollTop < 200 && messages.length > 0) {
+        const oldestMessage = messages[0]; // First message in array (oldest)
+        if (oldestMessage?._id) {
+          if (isGroupChat && selectedGroup?._id) {
+            loadMoreGroupMessages(selectedGroup._id, oldestMessage._id);
+          } else if (!isGroupChat && selectedUser?._id) {
+            loadMoreMessages(selectedUser._id, oldestMessage._id);
+          }
+        }
+      }
+    };
+
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [hasMoreMessages, isLoadingMoreMessages, messages, isGroupChat, selectedUser?._id, selectedGroup?._id, loadMoreMessages, loadMoreGroupMessages]);
 
   const handleTyping = (e) => {
     if (!selectedUser?._id || isGroupChat) return;
@@ -654,7 +702,22 @@ const ChatContainer = () => {
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-base-100 h-full relative">
       <ChatHeader />
-      <div className="flex-1 overflow-y-auto hide-scrollbar p-4 sm:p-6 space-y-2 min-h-0 relative">
+      {/* Telegram-style: newest at top, load more when scrolling up */}
+      <div 
+        ref={messagesContainerRef}
+        className="flex-1 overflow-y-auto hide-scrollbar p-4 sm:p-6 space-y-2 min-h-0 relative flex flex-col-reverse"
+      >
+        {/* Loading indicator for pagination */}
+        {isLoadingMoreMessages && (
+          <div className="flex justify-center py-2">
+            <div className="flex items-center gap-2 text-base-content/60">
+              <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-xs">Loading older messages...</span>
+            </div>
+          </div>
+        )}
+        
+        {/* Messages - displayed in reverse (newest at top) */}
         {messages.map((message) => {
           const senderId = typeof message.senderId === 'object' ? message.senderId._id : message.senderId;
           const isMyMessage = senderId === authUser._id;
@@ -991,6 +1054,7 @@ const ChatContainer = () => {
           );
         })}
         
+        {/* Typing/action indicators at bottom (newest messages area) */}
         {!isGroupChat && (
           <>
             {isUserTyping && (
@@ -1056,6 +1120,9 @@ const ChatContainer = () => {
             })()}
           </>
         )}
+        
+        {/* Top anchor for scroll detection */}
+        <div ref={messageTopRef} />
       </div>
       {/* Message Input - Only visible on mobile (desktop shows in bottom toolbar) */}
       <div className="lg:hidden flex-shrink-0 mt-auto w-full">

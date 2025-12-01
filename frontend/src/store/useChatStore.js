@@ -5,6 +5,8 @@ import { useAuthStore } from "./useAuthStore";
 
 export const useChatStore = create((set, get) => ({
   messages: [],
+  hasMoreMessages: false, // Track if there are more messages to load
+  isLoadingMoreMessages: false, // Track loading state for pagination
   users: [],
   contacts: [],
   pendingRequests: [],
@@ -153,10 +155,22 @@ export const useChatStore = create((set, get) => ({
   },
 
   getMessages: async (userId) => {
-    set({ isMessagesLoading: true });
+    set({ isMessagesLoading: true, hasMoreMessages: false });
     try {
       const res = await axiosInstance.get(`/messages/${userId}`);
-      set({ messages: res.data });
+      
+      // Handle new pagination format: { messages: [], hasMore: boolean }
+      // Or fallback to old format: array directly
+      const messagesData = res.data.messages || res.data;
+      const hasMore = res.data.hasMore || false;
+      
+      // Reverse messages for display (newest at top, Telegram-style)
+      const reversedMessages = Array.isArray(messagesData) ? [...messagesData].reverse() : [];
+      
+      set({ 
+        messages: reversedMessages,
+        hasMoreMessages: hasMore,
+      });
 
       const authUser = useAuthStore.getState().authUser;
       if (!authUser || !authUser._id) return;
@@ -181,9 +195,9 @@ export const useChatStore = create((set, get) => ({
       
       // Only mark messages as seen if we actually loaded messages (not empty array)
       // This prevents marking messages as seen if the conversation was deleted
-      if (res.data && res.data.length > 0) {
+      if (reversedMessages && reversedMessages.length > 0) {
         const authUserId = normalizeId(authUser._id);
-        const unseenMessages = res.data.filter(msg => {
+        const unseenMessages = reversedMessages.filter(msg => {
           if (msg.seen) return false;
           const msgSenderId = normalizeId(msg.senderId);
           return msgSenderId !== authUserId;
@@ -203,6 +217,37 @@ export const useChatStore = create((set, get) => ({
       toast.error(error.response?.data?.message || "Failed to load messages");
     } finally {
       set({ isMessagesLoading: false });
+    }
+  },
+
+  // Load more messages (older messages) for pagination
+  loadMoreMessages: async (userId, beforeMessageId) => {
+    const { isLoadingMoreMessages, hasMoreMessages } = get();
+    if (isLoadingMoreMessages || !hasMoreMessages || !beforeMessageId) return;
+    
+    set({ isLoadingMoreMessages: true });
+    try {
+      const res = await axiosInstance.get(`/messages/${userId}?before=${beforeMessageId}`);
+      
+      // Handle new pagination format
+      const messagesData = res.data.messages || res.data;
+      const hasMore = res.data.hasMore || false;
+      
+      if (Array.isArray(messagesData) && messagesData.length > 0) {
+        // Reverse for display and prepend to existing messages (older messages go to top)
+        const reversedNewMessages = [...messagesData].reverse();
+        set((state) => ({
+          messages: [...reversedNewMessages, ...state.messages], // Prepend older messages
+          hasMoreMessages: hasMore,
+        }));
+      } else {
+        set({ hasMoreMessages: false });
+      }
+    } catch (error) {
+      console.error("Failed to load more messages:", error);
+      toast.error("Failed to load more messages");
+    } finally {
+      set({ isLoadingMoreMessages: false });
     }
   },
 
@@ -1800,10 +1845,22 @@ export const useChatStore = create((set, get) => ({
   },
 
   getGroupMessages: async (groupId) => {
-    set({ isMessagesLoading: true });
+    set({ isMessagesLoading: true, hasMoreMessages: false });
     try {
       const res = await axiosInstance.get(`/groups/${groupId}/messages`);
-      set({ messages: res.data });
+      
+      // Handle new pagination format: { messages: [], hasMore: boolean }
+      // Or fallback to old format: array directly
+      const messagesData = res.data.messages || res.data;
+      const hasMore = res.data.hasMore || false;
+      
+      // Reverse messages for display (newest at top, Telegram-style)
+      const reversedMessages = Array.isArray(messagesData) ? [...messagesData].reverse() : [];
+      
+      set({ 
+        messages: reversedMessages,
+        hasMoreMessages: hasMore,
+      });
       
       // Clear unread count for this group when viewing messages
       set((state) => ({
@@ -1816,6 +1873,37 @@ export const useChatStore = create((set, get) => ({
       toast.error(error.response?.data?.error || "Failed to load group messages");
     } finally {
       set({ isMessagesLoading: false });
+    }
+  },
+
+  // Load more group messages (older messages) for pagination
+  loadMoreGroupMessages: async (groupId, beforeMessageId) => {
+    const { isLoadingMoreMessages, hasMoreMessages } = get();
+    if (isLoadingMoreMessages || !hasMoreMessages || !beforeMessageId) return;
+    
+    set({ isLoadingMoreMessages: true });
+    try {
+      const res = await axiosInstance.get(`/groups/${groupId}/messages?before=${beforeMessageId}`);
+      
+      // Handle new pagination format
+      const messagesData = res.data.messages || res.data;
+      const hasMore = res.data.hasMore || false;
+      
+      if (Array.isArray(messagesData) && messagesData.length > 0) {
+        // Reverse for display and prepend to existing messages (older messages go to top)
+        const reversedNewMessages = [...messagesData].reverse();
+        set((state) => ({
+          messages: [...reversedNewMessages, ...state.messages], // Prepend older messages
+          hasMoreMessages: hasMore,
+        }));
+      } else {
+        set({ hasMoreMessages: false });
+      }
+    } catch (error) {
+      console.error("Failed to load more group messages:", error);
+      toast.error("Failed to load more messages");
+    } finally {
+      set({ isLoadingMoreMessages: false });
     }
   },
 

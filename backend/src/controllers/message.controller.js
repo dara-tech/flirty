@@ -65,19 +65,51 @@ export const getUsersForSidebar = async (req, res) => {
     try {
       const { id: userToChatId } = req.params;
       const myId = req.user._id;
+      
+      // Pagination parameters (Telegram-style: newest first, load last N messages)
+      const limit = parseInt(req.query.limit) || 50; // Default: last 50 messages
+      const before = req.query.before; // Message ID to load messages before (for pagination)
   
       // Use ObjectId for proper comparison
       const myObjectId = new mongoose.Types.ObjectId(myId);
       const otherUserObjectId = new mongoose.Types.ObjectId(userToChatId);
   
-      const messages = await Message.find({
+      // Build query
+      const query = {
         $or: [
           { senderId: myObjectId, receiverId: otherUserObjectId },
           { senderId: otherUserObjectId, receiverId: myObjectId },
         ],
-      }).sort({ createdAt: 1 }); // Sort by creation time ascending
+      };
+      
+      // If 'before' is provided, load messages older than that message
+      if (before) {
+        try {
+          const beforeMessage = await Message.findById(before);
+          if (beforeMessage) {
+            query.createdAt = { $lt: beforeMessage.createdAt };
+          }
+        } catch (e) {
+          // Invalid before ID, ignore
+        }
+      }
   
-      res.status(200).json(messages);
+      // Sort descending (newest first) and limit
+      const messages = await Message.find(query)
+        .sort({ createdAt: -1 }) // Newest first (Telegram-style)
+        .limit(limit);
+  
+      // Check if there are more messages before reversing
+      const hasMore = messages.length === limit;
+  
+      // Reverse to get chronological order for display (oldest to newest)
+      // Frontend will display in reverse (newest at top)
+      const reversedMessages = messages.reverse();
+  
+      res.status(200).json({
+        messages: reversedMessages,
+        hasMore: hasMore, // If we got full limit, there might be more
+      });
     } catch (error) {
       console.log("Error in getMessages controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
