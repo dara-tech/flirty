@@ -59,23 +59,23 @@ axiosInstance.interceptors.response.use(
       // Only clear if we have an auth user (session expired/invalid)
       if (authStore.authUser) {
         console.warn('⚠️ Session expired or invalid. Clearing auth state.');
-        // Clear auth state without calling logout endpoint (to avoid circular 401)
-        authStore.set({ authUser: null });
-        authStore.disconnectSocket();
-        
-        // Optionally redirect to login (if using React Router)
-        // This will be handled by the app's routing logic
+        // Clear auth state using Zustand's setState method
+        useAuthStore.setState({ authUser: null });
+        // Disconnect socket if connected
+        if (authStore.socket) {
+          authStore.disconnectSocket();
+        }
       }
       
       return Promise.reject(error);
     }
     
-    // Log other errors
-    if (error.response) {
+    // Log other errors (but suppress 401s as they're handled above)
+    if (error.response && error.response.status !== 401) {
       console.error("API Error:", error.response.status, error.response.data);
-    } else if (error.request) {
+    } else if (error.request && !is401) {
       console.error("Network Error:", error.request);
-    } else {
+    } else if (!is401) {
       console.error("Error:", error.message);
     }
     return Promise.reject(error);
