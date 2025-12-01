@@ -28,21 +28,41 @@ const getAllowedSocketOrigins = () => {
 
 // Socket.io CORS origin checker - matches Express CORS logic
 const socketCorsOrigin = (origin, callback) => {
-  // Allow requests with no origin (mobile apps, Postman, etc.)
-  if (!origin) {
-    return callback(null, true);
+  try {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    const allowedOrigins = getAllowedSocketOrigins();
+    
+    // Log for debugging (only in production if needed)
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Socket.IO CORS check:', {
+        origin,
+        allowedOrigins,
+        isAllowed: allowedOrigins.includes(origin),
+        frontendUrl: process.env.FRONTEND_URL
+      });
+    }
+    
+    // In development, allow all origins (for flexibility)
+    if (process.env.NODE_ENV === 'development') {
+      return callback(null, true);
+    }
+    
+    // In production, only allow whitelisted origins
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Origin not allowed
+    console.warn(`Socket.IO CORS blocked origin: ${origin}. Allowed origins:`, allowedOrigins);
+    return callback(new Error(`Origin ${origin} is not allowed by Socket.io CORS policy`), false);
+  } catch (error) {
+    console.error('Socket.IO CORS error:', error);
+    return callback(new Error('Socket.IO CORS configuration error'), false);
   }
-  
-  const allowedOrigins = getAllowedSocketOrigins();
-  
-  // In development, allow all origins (for flexibility)
-  // In production, only allow whitelisted origins
-  if (process.env.NODE_ENV === 'development' || allowedOrigins.indexOf(origin) !== -1) {
-    return callback(null, true);
-  }
-  
-  // Origin not allowed
-  return callback(new Error('Not allowed by Socket.io CORS'), false);
 };
 
 const io = new Server(server, {
