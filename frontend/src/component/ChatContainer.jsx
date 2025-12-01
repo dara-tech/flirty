@@ -193,48 +193,114 @@ const ChatContainer = () => {
 
   // Scroll to top (newest messages) when messages load initially
   useEffect(() => {
-    if (messages.length > 0 && !isLoadingMoreMessages) {
-      // Scroll to top for Telegram-style (newest at top)
-      messagesContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-  }, [selectedUser?._id, selectedGroup?._id]); // Only on chat change
-
-  // Scroll to bottom when new message arrives (if user is at bottom)
-  useEffect(() => {
-    if (messages.length > 0) {
+    if (messages.length > 0 && !isLoadingMoreMessages && !isMessagesLoading) {
+      // With flex-col-reverse, scrollTop 0 shows newest messages at top
       const container = messagesContainerRef.current;
       if (container) {
-        // Check if user is near bottom (within 100px)
-        const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+        // Use requestAnimationFrame to ensure DOM is ready
+        requestAnimationFrame(() => {
+          container.scrollTo({ top: 0, behavior: 'auto' }); // Use 'auto' for instant scroll on initial load
+        });
+      }
+    }
+  }, [selectedUser?._id, selectedGroup?._id, isMessagesLoading]); // Only on chat change
+
+  // Scroll to bottom when new message arrives (if user is near bottom)
+  useEffect(() => {
+    if (messages.length > 0 && !isLoadingMoreMessages) {
+      const container = messagesContainerRef.current;
+      if (container) {
+        // With flex-col-reverse, "bottom" means scrollTop is near scrollHeight
+        // Check if user is near the bottom (where new messages appear)
+        const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        const isNearBottom = scrollBottom < 150;
+        
         if (isNearBottom) {
-          // Scroll to bottom for new messages
-          messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          // Scroll to bottom for new messages (newest area)
+          requestAnimationFrame(() => {
+            messageEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          });
         }
       }
     }
-  }, [messages.length, messages.map((msg) => msg.seen).join(","), typingUsers]);
+  }, [messages.length, isLoadingMoreMessages]);
 
-  // Infinite scroll: Load more messages when scrolling to top
+  // Infinite scroll: Load more messages when scrolling to top (with debouncing and scroll preservation)
   useEffect(() => {
     const container = messagesContainerRef.current;
-    if (!container || !hasMoreMessages || isLoadingMoreMessages) return;
+    if (!container || !hasMoreMessages) return;
 
-    const handleScroll = () => {
-      // Check if scrolled to top (within 200px)
-      if (container.scrollTop < 200 && messages.length > 0) {
-        const oldestMessage = messages[0]; // First message in array (oldest)
-        if (oldestMessage?._id) {
-          if (isGroupChat && selectedGroup?._id) {
-            loadMoreGroupMessages(selectedGroup._id, oldestMessage._id);
-          } else if (!isGroupChat && selectedUser?._id) {
-            loadMoreMessages(selectedUser._id, oldestMessage._id);
-          }
-        }
-      }
+    let scrollTimeout;
+    let isRequestPending = false;
+
+    // Function to preserve and restore scroll position
+    const preserveScrollPosition = () => {
+      if (!container) return null;
+      // With flex-col-reverse, scrollTop 0 is at the "top" (newest messages)
+      // We need to preserve the scroll position relative to the content
+      const scrollHeight = container.scrollHeight;
+      const scrollTop = container.scrollTop;
+      return { scrollHeight, scrollTop };
     };
 
-    container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
+    const restoreScrollPosition = (previousState) => {
+      if (!container || !previousState) return;
+      requestAnimationFrame(() => {
+        const newScrollHeight = container.scrollHeight;
+        const heightDifference = newScrollHeight - previousState.scrollHeight;
+        // Adjust scroll position to maintain visual position
+        container.scrollTop = previousState.scrollTop + heightDifference;
+      });
+    };
+
+    const handleScroll = () => {
+      // Debounce scroll handler
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        if (isRequestPending || isLoadingMoreMessages) return;
+        
+        // With flex-col-reverse, scrollTop near 0 means we're at the top (newest messages)
+        // We want to load more when scrolling "up" which means scrollTop is increasing
+        // Actually, with flex-col-reverse, scrollTop 0 is at top, and increasing scrollTop goes down
+        // So we check if we're near the "bottom" of the reversed container (which shows oldest messages)
+        const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        
+        // Load more when near bottom (within 300px) - this is where older messages are
+        if (scrollBottom < 300 && messages.length > 0) {
+          const oldestMessage = messages[0]; // First message in array (oldest)
+          if (oldestMessage?._id) {
+            isRequestPending = true;
+            const previousState = preserveScrollPosition();
+            
+            const onScrollPreserve = (prevState) => {
+              if (prevState) {
+                restoreScrollPosition(prevState);
+              } else {
+                return previousState;
+              }
+            };
+            
+            if (isGroupChat && selectedGroup?._id) {
+              loadMoreGroupMessages(selectedGroup._id, oldestMessage._id, onScrollPreserve)
+                .finally(() => {
+                  isRequestPending = false;
+                });
+            } else if (!isGroupChat && selectedUser?._id) {
+              loadMoreMessages(selectedUser._id, oldestMessage._id, onScrollPreserve)
+                .finally(() => {
+                  isRequestPending = false;
+                });
+            }
+          }
+        }
+      }, 150); // Debounce 150ms
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      clearTimeout(scrollTimeout);
+      container.removeEventListener('scroll', handleScroll);
+    };
   }, [hasMoreMessages, isLoadingMoreMessages, messages, isGroupChat, selectedUser?._id, selectedGroup?._id, loadMoreMessages, loadMoreGroupMessages]);
 
   const handleTyping = (e) => {
@@ -707,12 +773,12 @@ const ChatContainer = () => {
         ref={messagesContainerRef}
         className="flex-1 overflow-y-auto hide-scrollbar p-4 sm:p-6 space-y-2 min-h-0 relative flex flex-col-reverse"
       >
-        {/* Loading indicator for pagination */}
+        {/* Loading indicator for pagination - shown at top (oldest messages area) */}
         {isLoadingMoreMessages && (
-          <div className="flex justify-center py-2">
-            <div className="flex items-center gap-2 text-base-content/60">
-              <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-              <span className="text-xs">Loading older messages...</span>
+          <div className="flex justify-center py-3 sticky top-0 bg-base-100/80 backdrop-blur-sm z-10 -mx-4 sm:-mx-6 px-4 sm:px-6">
+            <div className="flex items-center gap-2 text-base-content/70 bg-base-200/80 px-3 py-1.5 rounded-full">
+              <div className="w-3.5 h-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-xs font-medium">Loading older messages...</span>
             </div>
           </div>
         )}

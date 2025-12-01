@@ -1,4 +1,5 @@
 import axios from "axios";
+import { useAuthStore } from "../store/useAuthStore";
 
 // Get backend URL from environment variable or use relative path
 const getBackendURL = () => {
@@ -37,21 +38,35 @@ export const axiosInstance = axios.create({
   withCredentials: true,
 });
 
-// Response interceptor to handle errors silently
+// Response interceptor to handle errors and authentication
 axiosInstance.interceptors.response.use(
   (response) => response,
   (error) => {
     const isCheckEndpoint = error.config?.url?.includes('/check');
     const is401 = error.response?.status === 401;
     
-    // Completely suppress 401 errors from /check endpoint (expected when not logged in)
-    if (isCheckEndpoint && is401) {
-      // Silently reject - don't log, don't show errors
-      return Promise.reject(error);
-    }
-    
-    // Don't log other 401 errors either (expected auth failures)
+    // Handle 401 errors (authentication required)
     if (is401) {
+      // For /check endpoint, silently handle (expected when not logged in)
+      if (isCheckEndpoint) {
+        return Promise.reject(error);
+      }
+      
+      // For other endpoints, user needs to log in
+      // Clear auth state if session expired
+      const authStore = useAuthStore.getState();
+      
+      // Only clear if we have an auth user (session expired/invalid)
+      if (authStore.authUser) {
+        console.warn('⚠️ Session expired or invalid. Clearing auth state.');
+        // Clear auth state without calling logout endpoint (to avoid circular 401)
+        authStore.set({ authUser: null });
+        authStore.disconnectSocket();
+        
+        // Optionally redirect to login (if using React Router)
+        // This will be handled by the app's routing logic
+      }
+      
       return Promise.reject(error);
     }
     

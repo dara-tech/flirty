@@ -7,6 +7,7 @@ export const useChatStore = create((set, get) => ({
   messages: [],
   hasMoreMessages: false, // Track if there are more messages to load
   isLoadingMoreMessages: false, // Track loading state for pagination
+  lastLoadBeforeMessageId: null, // Prevent duplicate pagination requests
   users: [],
   contacts: [],
   pendingRequests: [],
@@ -221,11 +222,19 @@ export const useChatStore = create((set, get) => ({
   },
 
   // Load more messages (older messages) for pagination
-  loadMoreMessages: async (userId, beforeMessageId) => {
-    const { isLoadingMoreMessages, hasMoreMessages } = get();
+  loadMoreMessages: async (userId, beforeMessageId, onScrollPreserve) => {
+    const { isLoadingMoreMessages, hasMoreMessages, messages } = get();
     if (isLoadingMoreMessages || !hasMoreMessages || !beforeMessageId) return;
     
-    set({ isLoadingMoreMessages: true });
+    // Prevent duplicate requests for the same beforeMessageId
+    const lastLoadBefore = get().lastLoadBeforeMessageId;
+    if (lastLoadBefore === beforeMessageId) return;
+    
+    set({ 
+      isLoadingMoreMessages: true,
+      lastLoadBeforeMessageId: beforeMessageId,
+    });
+    
     try {
       const res = await axiosInstance.get(`/messages/${userId}?before=${beforeMessageId}`);
       
@@ -236,16 +245,26 @@ export const useChatStore = create((set, get) => ({
       if (Array.isArray(messagesData) && messagesData.length > 0) {
         // Reverse for display and prepend to existing messages (older messages go to top)
         const reversedNewMessages = [...messagesData].reverse();
+        const previousScrollHeight = onScrollPreserve?.();
+        
         set((state) => ({
           messages: [...reversedNewMessages, ...state.messages], // Prepend older messages
           hasMoreMessages: hasMore,
         }));
+        
+        // Restore scroll position after DOM update
+        if (onScrollPreserve && previousScrollHeight) {
+          requestAnimationFrame(() => {
+            onScrollPreserve(previousScrollHeight);
+          });
+        }
       } else {
         set({ hasMoreMessages: false });
       }
     } catch (error) {
       console.error("Failed to load more messages:", error);
       toast.error("Failed to load more messages");
+      set({ lastLoadBeforeMessageId: null });
     } finally {
       set({ isLoadingMoreMessages: false });
     }
@@ -1845,7 +1864,11 @@ export const useChatStore = create((set, get) => ({
   },
 
   getGroupMessages: async (groupId) => {
-    set({ isMessagesLoading: true, hasMoreMessages: false });
+    set({ 
+      isMessagesLoading: true, 
+      hasMoreMessages: false,
+      lastLoadBeforeMessageId: null, // Reset pagination state
+    });
     try {
       const res = await axiosInstance.get(`/groups/${groupId}/messages`);
       
@@ -1877,11 +1900,19 @@ export const useChatStore = create((set, get) => ({
   },
 
   // Load more group messages (older messages) for pagination
-  loadMoreGroupMessages: async (groupId, beforeMessageId) => {
+  loadMoreGroupMessages: async (groupId, beforeMessageId, onScrollPreserve) => {
     const { isLoadingMoreMessages, hasMoreMessages } = get();
     if (isLoadingMoreMessages || !hasMoreMessages || !beforeMessageId) return;
     
-    set({ isLoadingMoreMessages: true });
+    // Prevent duplicate requests for the same beforeMessageId
+    const lastLoadBefore = get().lastLoadBeforeMessageId;
+    if (lastLoadBefore === beforeMessageId) return;
+    
+    set({ 
+      isLoadingMoreMessages: true,
+      lastLoadBeforeMessageId: beforeMessageId,
+    });
+    
     try {
       const res = await axiosInstance.get(`/groups/${groupId}/messages?before=${beforeMessageId}`);
       
@@ -1892,16 +1923,26 @@ export const useChatStore = create((set, get) => ({
       if (Array.isArray(messagesData) && messagesData.length > 0) {
         // Reverse for display and prepend to existing messages (older messages go to top)
         const reversedNewMessages = [...messagesData].reverse();
+        const previousScrollHeight = onScrollPreserve?.();
+        
         set((state) => ({
           messages: [...reversedNewMessages, ...state.messages], // Prepend older messages
           hasMoreMessages: hasMore,
         }));
+        
+        // Restore scroll position after DOM update
+        if (onScrollPreserve && previousScrollHeight) {
+          requestAnimationFrame(() => {
+            onScrollPreserve(previousScrollHeight);
+          });
+        }
       } else {
         set({ hasMoreMessages: false });
       }
     } catch (error) {
       console.error("Failed to load more group messages:", error);
       toast.error("Failed to load more messages");
+      set({ lastLoadBeforeMessageId: null });
     } finally {
       set({ isLoadingMoreMessages: false });
     }
