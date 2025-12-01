@@ -364,107 +364,97 @@ const MessageInput = () => {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     
+    // Clear input immediately for instant feedback
+    const messageText = text.trim();
+    const messageImage = imagePreview;
+    const messageAudio = audioBase64Ref.current;
+    
+    setText("");
+    setImagePreview(null);
+    setAudioPreview(null);
+    audioChunksRef.current = [];
+    audioBase64Ref.current = null;
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    
+    // Revoke blob URL immediately
+    if (audioBlobUrlRef.current) {
+      URL.revokeObjectURL(audioBlobUrlRef.current);
+      audioBlobUrlRef.current = null;
+    }
+    
+    // Clear typing status
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    
     setIsSending(true);
     
-    // Get audio data from base64 ref
-    let audioData = audioBase64Ref.current || null;
-    
     // Emit uploading photo status if sending an image
-    if (imagePreview) {
+    if (messageImage) {
       if (isGroupChat && selectedGroup?._id) {
         sendGroupUploadingPhotoStatus(selectedGroup._id, true);
       } else if (selectedUser?._id) {
-      sendUploadingPhotoStatus(selectedUser._id, true);
+        sendUploadingPhotoStatus(selectedUser._id, true);
       }
     }
     
+    // Send message in background (no loading spinner)
     if (isGroupChat) {
       if (!selectedGroup?._id) {
         toast.error("No group selected");
         setIsSending(false);
         return;
       }
-      try {
-        await sendGroupMessage(selectedGroup._id, {
-          text: text.trim(),
-          image: imagePreview,
-          audio: audioData,
-        });
-        // Revoke blob URL after sending
-        if (audioBlobUrlRef.current) {
-          URL.revokeObjectURL(audioBlobUrlRef.current);
-          audioBlobUrlRef.current = null;
-        }
-        setText("");
-        setImagePreview(null);
-        setAudioPreview(null);
-        audioChunksRef.current = [];
-        audioBase64Ref.current = null;
-        if (fileInputRef.current) fileInputRef.current.value = "";
-      } catch (error) {
+      sendGroupMessage(selectedGroup._id, {
+        text: messageText,
+        image: messageImage,
+        audio: messageAudio,
+      }).catch((error) => {
         console.error("Failed to send message:", error);
         toast.error("Failed to send message");
-        if (imagePreview) {
+        if (messageImage) {
           if (isGroupChat && selectedGroup?._id) {
             sendGroupUploadingPhotoStatus(selectedGroup._id, false);
           } else if (selectedUser?._id) {
-          sendUploadingPhotoStatus(selectedUser._id, false);
+            sendUploadingPhotoStatus(selectedUser._id, false);
           }
         }
-      } finally {
+      }).finally(() => {
         setIsSending(false);
-      }
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupTypingStatus(selectedGroup._id, false);
+          if (messageImage) {
+            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+          }
+        }
+      });
     } else {
       if (!selectedUser?._id) {
         toast.error("No chat selected");
         setIsSending(false);
         return;
       }
-      const hadImage = !!imagePreview;
-      try {
-        await sendMessage({
-          text: text.trim(),
-          image: imagePreview,
-          audio: audioData,
-        });
-        // Revoke blob URL after sending
-        if (audioBlobUrlRef.current) {
-          URL.revokeObjectURL(audioBlobUrlRef.current);
-          audioBlobUrlRef.current = null;
-        }
-        setText("");
-        setImagePreview(null);
-        setAudioPreview(null);
-        audioChunksRef.current = [];
-        audioBase64Ref.current = null;
-        if (fileInputRef.current) fileInputRef.current.value = "";
-        if (typingTimeoutRef.current) {
-          clearTimeout(typingTimeoutRef.current);
-        }
-        if (isGroupChat && selectedGroup?._id) {
-          sendGroupTypingStatus(selectedGroup._id, false);
-          if (hadImage) {
-            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-          }
-        } else if (selectedUser?._id) {
-        sendTypingStatus(selectedUser._id, false);
-        if (hadImage) {
-          sendUploadingPhotoStatus(selectedUser._id, false);
-          }
-        }
-      } catch (error) {
+      sendMessage({
+        text: messageText,
+        image: messageImage,
+        audio: messageAudio,
+      }).catch((error) => {
         console.error("Failed to send message:", error);
         toast.error("Failed to send message");
-        if (hadImage) {
-          if (isGroupChat && selectedGroup?._id) {
-            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-          } else if (selectedUser?._id) {
-          sendUploadingPhotoStatus(selectedUser._id, false);
+        if (messageImage) {
+          if (selectedUser?._id) {
+            sendUploadingPhotoStatus(selectedUser._id, false);
           }
         }
-      } finally {
+      }).finally(() => {
         setIsSending(false);
-      }
+        if (selectedUser?._id) {
+          sendTypingStatus(selectedUser._id, false);
+          if (messageImage) {
+            sendUploadingPhotoStatus(selectedUser._id, false);
+          }
+        }
+      });
     }
   };
 
@@ -498,14 +488,6 @@ const MessageInput = () => {
             alt="Selected"
             className="w-32 h-32 object-cover rounded-xl"
           />
-          {isSending && (
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
-              <div className="flex flex-col items-center gap-2">
-                <FaSpinner className="size-5 text-white animate-spin" />
-                <span className="text-xs text-white font-medium">Uploading...</span>
-              </div>
-            </div>
-          )}
           {!isSending && (
             <button
               type="button"
@@ -530,25 +512,15 @@ const MessageInput = () => {
               className="flex-1 h-8"
               controlsList="nodownload"
             />
-            {!isSending && (
-              <button
-                type="button"
-                className="size-7 rounded-full hover:bg-base-300 flex items-center justify-center transition-all flex-shrink-0"
-                onClick={removeAudio}
-                title="Remove audio"
-              >
-                <FaTimes className="size-3.5 text-base-content" />
-              </button>
-            )}
+            <button
+              type="button"
+              className="size-7 rounded-full hover:bg-base-300 flex items-center justify-center transition-all flex-shrink-0"
+              onClick={removeAudio}
+              title="Remove audio"
+            >
+              <FaTimes className="size-3.5 text-base-content" />
+            </button>
           </div>
-          {isSending && (
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
-              <div className="flex flex-col items-center gap-2">
-                <FaSpinner className="size-5 text-white animate-spin" />
-                <span className="text-xs text-white font-medium">Sending...</span>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
@@ -569,11 +541,10 @@ const MessageInput = () => {
 
         <input
           type="text"
-          placeholder={isSending ? "Sending..." : "Write a message..."}
-          className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 disabled:opacity-60 disabled:cursor-not-allowed"
+          placeholder="Write a message..."
+          className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50"
           value={text}
           onChange={handleTyping}
-          disabled={isSending}
         />
 
         <input
@@ -586,9 +557,8 @@ const MessageInput = () => {
 
         <button
           type="button"
-          className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary"
           title="Emoji"
-          disabled={isSending}
         >
           <FaSmile className="size-4" />
         </button>
@@ -605,7 +575,7 @@ const MessageInput = () => {
                 ? "Stop recording" 
                 : "Voice message"
           }
-          disabled={!isRecordingSupported || isSending || (isUploading && !isRecording)}
+          disabled={!isRecordingSupported || (isUploading && !isRecording)}
           onClick={(e) => {
             e.preventDefault();
             if (isRecording) {
@@ -622,18 +592,14 @@ const MessageInput = () => {
         <button
           type="submit"
           className={`flex items-center justify-center size-7 rounded-lg transition-all duration-200 ${
-            (!text.trim() && !imagePreview && !audioPreview) || isSending
+            (!text.trim() && !imagePreview && !audioPreview)
               ? 'opacity-40 cursor-not-allowed'
               : 'text-primary hover:bg-base-300/50 active:scale-95'
           }`}
-          title={isSending ? "Sending..." : "Send message"}
-          disabled={(!text.trim() && !imagePreview && !audioPreview) || isSending}
+          title="Send message"
+          disabled={(!text.trim() && !imagePreview && !audioPreview)}
         >
-          {isSending ? (
-            <FaSpinner className="size-4 animate-spin" />
-          ) : (
-            <FaPaperPlane className="size-4" />
-          )}
+          <FaPaperPlane className="size-4" />
         </button>
       </div>
     </form>

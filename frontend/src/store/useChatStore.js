@@ -165,11 +165,11 @@ export const useChatStore = create((set, get) => ({
       const messagesData = res.data.messages || res.data;
       const hasMore = res.data.hasMore || false;
       
-      // Reverse messages for display (newest at top, Telegram-style)
-      const reversedMessages = Array.isArray(messagesData) ? [...messagesData].reverse() : [];
+      // Keep messages in normal order (oldest first, newest last)
+      const orderedMessages = Array.isArray(messagesData) ? messagesData : [];
       
       set({ 
-        messages: reversedMessages,
+        messages: orderedMessages,
         hasMoreMessages: hasMore,
       });
 
@@ -196,9 +196,9 @@ export const useChatStore = create((set, get) => ({
       
       // Only mark messages as seen if we actually loaded messages (not empty array)
       // This prevents marking messages as seen if the conversation was deleted
-      if (reversedMessages && reversedMessages.length > 0) {
+      if (orderedMessages && orderedMessages.length > 0) {
         const authUserId = normalizeId(authUser._id);
-        const unseenMessages = reversedMessages.filter(msg => {
+        const unseenMessages = orderedMessages.filter(msg => {
           if (msg.seen) return false;
           const msgSenderId = normalizeId(msg.senderId);
           return msgSenderId !== authUserId;
@@ -243,12 +243,11 @@ export const useChatStore = create((set, get) => ({
       const hasMore = res.data.hasMore || false;
       
       if (Array.isArray(messagesData) && messagesData.length > 0) {
-        // Reverse for display and prepend to existing messages (older messages go to top)
-        const reversedNewMessages = [...messagesData].reverse();
+        // Prepend older messages to the beginning of the array
         const previousScrollHeight = onScrollPreserve?.();
         
         set((state) => ({
-          messages: [...reversedNewMessages, ...state.messages], // Prepend older messages
+          messages: [...messagesData, ...state.messages], // Prepend older messages at the beginning
           hasMoreMessages: hasMore,
         }));
         
@@ -1877,11 +1876,11 @@ export const useChatStore = create((set, get) => ({
       const messagesData = res.data.messages || res.data;
       const hasMore = res.data.hasMore || false;
       
-      // Reverse messages for display (newest at top, Telegram-style)
-      const reversedMessages = Array.isArray(messagesData) ? [...messagesData].reverse() : [];
+      // Keep messages in normal order (oldest first, newest last)
+      const orderedMessages = Array.isArray(messagesData) ? messagesData : [];
       
       set({ 
-        messages: reversedMessages,
+        messages: orderedMessages,
         hasMoreMessages: hasMore,
       });
       
@@ -1921,12 +1920,11 @@ export const useChatStore = create((set, get) => ({
       const hasMore = res.data.hasMore || false;
       
       if (Array.isArray(messagesData) && messagesData.length > 0) {
-        // Reverse for display and prepend to existing messages (older messages go to top)
-        const reversedNewMessages = [...messagesData].reverse();
+        // Prepend older messages to the beginning of the array
         const previousScrollHeight = onScrollPreserve?.();
         
         set((state) => ({
-          messages: [...reversedNewMessages, ...state.messages], // Prepend older messages
+          messages: [...messagesData, ...state.messages], // Prepend older messages at the beginning
           hasMoreMessages: hasMore,
         }));
         

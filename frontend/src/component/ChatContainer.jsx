@@ -191,15 +191,14 @@ const ChatContainer = () => {
     }
   }, [selectedUser, selectedGroup, socket, isGroupChat, authUser, messages, normalizeId]);
 
-  // Scroll to top (newest messages) when messages load initially
+  // Scroll to bottom (newest messages) when messages load initially
   useEffect(() => {
     if (messages.length > 0 && !isLoadingMoreMessages && !isMessagesLoading) {
-      // With flex-col-reverse, scrollTop 0 shows newest messages at top
       const container = messagesContainerRef.current;
       if (container) {
         // Use requestAnimationFrame to ensure DOM is ready
         requestAnimationFrame(() => {
-          container.scrollTo({ top: 0, behavior: 'auto' }); // Use 'auto' for instant scroll on initial load
+          container.scrollTo({ top: container.scrollHeight, behavior: 'auto' }); // Scroll to bottom
         });
       }
     }
@@ -210,15 +209,14 @@ const ChatContainer = () => {
     if (messages.length > 0 && !isLoadingMoreMessages) {
       const container = messagesContainerRef.current;
       if (container) {
-        // With flex-col-reverse, "bottom" means scrollTop is near scrollHeight
         // Check if user is near the bottom (where new messages appear)
         const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
         const isNearBottom = scrollBottom < 150;
         
         if (isNearBottom) {
-          // Scroll to bottom for new messages (newest area)
+          // Scroll to bottom for new messages
           requestAnimationFrame(() => {
-            messageEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
           });
         }
       }
@@ -236,8 +234,8 @@ const ChatContainer = () => {
     // Function to preserve and restore scroll position
     const preserveScrollPosition = () => {
       if (!container) return null;
-      // With flex-col-reverse, scrollTop 0 is at the "top" (newest messages)
-      // We need to preserve the scroll position relative to the content
+      // Preserve the scroll position relative to the content
+      // When loading older messages at top, we need to maintain the user's scroll position
       const scrollHeight = container.scrollHeight;
       const scrollTop = container.scrollTop;
       return { scrollHeight, scrollTop };
@@ -259,14 +257,11 @@ const ChatContainer = () => {
       scrollTimeout = setTimeout(() => {
         if (isRequestPending || isLoadingMoreMessages) return;
         
-        // With flex-col-reverse, scrollTop near 0 means we're at the top (newest messages)
-        // We want to load more when scrolling "up" which means scrollTop is increasing
-        // Actually, with flex-col-reverse, scrollTop 0 is at top, and increasing scrollTop goes down
-        // So we check if we're near the "bottom" of the reversed container (which shows oldest messages)
-        const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+        // Load more when scrolling to top (within 300px from top) - this is where older messages are
+        const scrollTop = container.scrollTop;
         
-        // Load more when near bottom (within 300px) - this is where older messages are
-        if (scrollBottom < 300 && messages.length > 0) {
+        // Load more when near top (within 300px) - this is where older messages are
+        if (scrollTop < 300 && messages.length > 0) {
           const oldestMessage = messages[0]; // First message in array (oldest)
           if (oldestMessage?._id) {
             isRequestPending = true;
@@ -768,10 +763,10 @@ const ChatContainer = () => {
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-base-100 h-full relative">
       <ChatHeader />
-      {/* Telegram-style: newest at top, load more when scrolling up */}
+      {/* Standard chat: newest at bottom, load more when scrolling up */}
       <div 
         ref={messagesContainerRef}
-        className="flex-1 overflow-y-auto hide-scrollbar p-4 sm:p-6 space-y-2 min-h-0 relative flex flex-col-reverse"
+        className="flex-1 overflow-y-auto hide-scrollbar p-4 sm:p-6 space-y-2 min-h-0 relative flex flex-col"
       >
         {/* Loading indicator for pagination - shown at top (oldest messages area) */}
         {isLoadingMoreMessages && (
@@ -783,7 +778,7 @@ const ChatContainer = () => {
           </div>
         )}
         
-        {/* Messages - displayed in reverse (newest at top) */}
+        {/* Messages - displayed in normal order (oldest first, newest last) */}
         {messages.map((message) => {
           const senderId = typeof message.senderId === 'object' ? message.senderId._id : message.senderId;
           const isMyMessage = senderId === authUser._id;
@@ -1186,9 +1181,6 @@ const ChatContainer = () => {
             })()}
           </>
         )}
-        
-        {/* Top anchor for scroll detection */}
-        <div ref={messageTopRef} />
       </div>
       {/* Message Input - Only visible on mobile (desktop shows in bottom toolbar) */}
       <div className="lg:hidden flex-shrink-0 mt-auto w-full">
