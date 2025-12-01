@@ -8,9 +8,47 @@ import User from "../model/user.model.js";
 const app = express();
 const server = http.createServer(app);
 
+// Allowed origins for Socket.io - must match Express CORS configuration
+const getAllowedSocketOrigins = () => {
+  const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    // Production URLs - add your Netlify URL here
+    process.env.FRONTEND_URL, // e.g., https://your-app.netlify.app
+    "https://flirty-ffpq.onrender.com"
+  ].filter(Boolean); // Remove undefined values
+  
+  return allowedOrigins;
+};
+
+// Socket.io CORS origin checker - matches Express CORS logic
+const socketCorsOrigin = (origin, callback) => {
+  // Allow requests with no origin (mobile apps, Postman, etc.)
+  if (!origin) {
+    return callback(null, true);
+  }
+  
+  const allowedOrigins = getAllowedSocketOrigins();
+  
+  // In development, allow all origins (for flexibility)
+  // In production, only allow whitelisted origins
+  if (process.env.NODE_ENV === 'development' || allowedOrigins.indexOf(origin) !== -1) {
+    return callback(null, true);
+  }
+  
+  // Origin not allowed
+  return callback(new Error('Not allowed by Socket.io CORS'), false);
+};
+
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173"], // Your frontend URL
+    origin: socketCorsOrigin, // Function-based origin checking (matches Express)
+    credentials: true, // Required for cookies/authentication
+    methods: ['GET', 'POST'], // WebSocket uses GET/POST
+    allowedHeaders: ['Content-Type', 'Authorization'],
   },
 });
 

@@ -31,10 +31,14 @@ app.use(
         "http://localhost:3000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
+        // Production URLs - add your Netlify URL here
+        process.env.FRONTEND_URL, // e.g., https://your-app.netlify.app
+        // Keep your Render URL if needed
         "https://flirty-ffpq.onrender.com"
-      ];
+      ].filter(Boolean); // Remove undefined values
       
-      if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+      // Allow in development mode or if origin is in allowed list
+      if (process.env.NODE_ENV === 'development' || allowedOrigins.indexOf(origin) !== -1) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));

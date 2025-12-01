@@ -1,9 +1,19 @@
 import axios from "axios";
 
+// Get backend URL from environment variable or use relative path
+const getBackendURL = () => {
+  // In development, use relative path (Vite proxy handles it)
+  if (import.meta.env.MODE === 'development') {
+    return '/api';
+  }
+  
+  // In production, use environment variable if set (for separate hosting)
+  // Otherwise fallback to relative path (for same-domain hosting)
+  return import.meta.env.VITE_API_URL || '/api';
+};
+
 export const axiosInstance = axios.create({
-  // Use relative URL in development (Vite proxy handles it)
-  // Use relative URL in production (same domain)
-  baseURL: "/api",
+  baseURL: getBackendURL(),
   withCredentials: true,
 });
 

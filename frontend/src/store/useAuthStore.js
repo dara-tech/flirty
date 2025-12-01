@@ -3,7 +3,26 @@ import { axiosInstance } from "../lib/axois";
 import toast from "react-hot-toast";
 import { io } from "socket.io-client";
 
-const BASE_URL = import.meta.env.MODE === "development" ? "http://localhost:5002" : "/";
+// Get Socket.IO server URL from environment variable
+// For separate hosting: use VITE_API_URL (without /api suffix)
+// For same-domain: use relative path "/"
+const getSocketURL = () => {
+  if (import.meta.env.MODE === 'development') {
+    return "http://localhost:5002";
+  }
+  
+  // In production, if VITE_API_URL is set, use it (for separate hosting)
+  // Remove /api suffix if present since Socket.IO connects to root
+  const apiUrl = import.meta.env.VITE_API_URL;
+  if (apiUrl) {
+    return apiUrl.replace('/api', '');
+  }
+  
+  // Fallback to relative path (same-domain hosting)
+  return "/";
+};
+
+const BASE_URL = getSocketURL();
 
 
 export const useAuthStore = create((set, get) => ({

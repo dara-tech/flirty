@@ -378,18 +378,18 @@ const SettingsPage = () => {
             </div>
           </button>
         </div>
-      </div>
+        </div>
 
       {/* Logout Section - Fixed at Bottom */}
       <div className="flex-shrink-0 border-t border-base-200/50 bg-base-100 px-3 sm:px-4 py-4 sm:py-6">
-        <button
-          onClick={logout}
+          <button
+            onClick={logout}
           className="btn w-full flex items-center justify-center gap-2 rounded-full"
           style={{ backgroundColor: '#e68b7d', border: 'none', color: 'white' }}
         >
           <FaSignOutAlt className="size-4" />
           Logout
-        </button>
+          </button>
       </div>
     </div>
   );

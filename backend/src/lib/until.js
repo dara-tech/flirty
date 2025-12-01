@@ -20,9 +20,11 @@ export const generateToken = (userId, res) => {
         cookieOptions.secure = false; // HTTP is fine for localhost
         // Don't set domain - let browser handle localhost automatically
     } else {
-        // Production settings
-        cookieOptions.sameSite = 'strict';
-        cookieOptions.secure = true; // Requires HTTPS
+        // Production settings - for cross-origin (separate frontend/backend hosting)
+        // Use 'none' for cross-origin cookies (frontend on Netlify, backend on Render)
+        cookieOptions.sameSite = 'none';
+        cookieOptions.secure = true; // Required when sameSite is 'none'
+        // Don't set domain - let browser handle it automatically
     }
     
     res.cookie("jwt", token, cookieOptions);

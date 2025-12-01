@@ -1,0 +1,37 @@
+# Netlify Configuration File
+# This file configures Netlify build and deployment settings
+
+[build]
+  # Base directory - where the frontend code is located
+  base = "frontend"
+  
+  # Build command - run inside the base directory
+  command = "npm run build"
+  
+  # Publish directory - where built files are output (relative to base directory)
+  publish = "dist"
+
+# Build environment variables
+[build.environment]
+  NODE_VERSION = "20"
+
+# Redirect rules for SPA (Single Page Application)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Headers for security and CORS
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Cache static assets
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
