@@ -8,12 +8,32 @@ const getBackendURL = () => {
   }
   
   // In production, use environment variable if set (for separate hosting)
-  // Otherwise fallback to relative path (for same-domain hosting)
-  return import.meta.env.VITE_API_URL || '/api';
+  // VITE_API_URL should be the full backend URL (e.g., https://backend.onrender.com/api)
+  // If it doesn't end with /api, append it
+  const apiUrl = import.meta.env.VITE_API_URL;
+  
+  if (apiUrl) {
+    // Remove trailing slash if present
+    const cleanUrl = apiUrl.replace(/\/$/, '');
+    
+    // Ensure the URL ends with /api for API routes
+    const finalUrl = cleanUrl.endsWith('/api') ? cleanUrl : `${cleanUrl}/api`;
+    
+    // Log in production for debugging (can be removed later)
+    console.log('🌐 Backend API URL configured:', finalUrl);
+    
+    return finalUrl;
+  }
+  
+  // Fallback to relative path (for same-domain hosting)
+  console.warn('⚠️ VITE_API_URL not set, using relative path /api');
+  return '/api';
 };
 
+const backendBaseURL = getBackendURL();
+
 export const axiosInstance = axios.create({
-  baseURL: getBackendURL(),
+  baseURL: backendBaseURL,
   withCredentials: true,
 });
 
