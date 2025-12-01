@@ -82,9 +82,20 @@ axiosInstance.interceptors.response.use(
   }
 );
 
-// Request interceptor to suppress console errors for expected 401s
+// Request interceptor to log requests in production (for debugging)
 axiosInstance.interceptors.request.use(
-  (config) => config,
+  (config) => {
+    // Log in production for debugging
+    if (import.meta.env.MODE === 'production') {
+      console.log('📤 Request:', {
+        url: config.url,
+        method: config.method,
+        hasCredentials: config.withCredentials,
+        baseURL: config.baseURL,
+      });
+    }
+    return config;
+  },
   (error) => {
     // Don't log request errors for auth check endpoint
     if (!error.config?.url?.includes('/check')) {

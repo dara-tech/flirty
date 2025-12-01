@@ -83,14 +83,24 @@ export const login = async (req, res) => {
 }
 
 export const logout = (req, res) => {
-    try {
-      res.cookie("jwt", "", { maxAge: 0 }); // Clearing the jwt cookie to log out
-      res.status(200).json({ message: "Logged out successfully" }); // Logging out successfully
-    } catch (error) {
-      console.log("Error in logout controller", error.message); // Logging error message
-      res.status(500).json({ message: "Internal Server Error" }); // Handling any errors during logout
-    }
-  };
+  try {
+    // Use same cookie options as login to ensure cookie is cleared properly
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    const cookieOptions = {
+      maxAge: 0, // Expire immediately
+      httpOnly: true,
+      path: '/',
+      sameSite: isDevelopment ? 'lax' : 'none',
+      secure: !isDevelopment, // true in production
+    };
+    
+    res.cookie("jwt", "", cookieOptions); // Clearing the jwt cookie to log out
+    res.status(200).json({ message: "Logged out successfully" }); // Logging out successfully
+  } catch (error) {
+    console.log("Error in logout controller", error.message); // Logging error message
+    res.status(500).json({ message: "Internal Server Error" }); // Handling any errors during logout
+  }
+};
 
 export const updateProfile = async (req, res) => {
     try {
