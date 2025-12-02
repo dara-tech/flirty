@@ -5,7 +5,9 @@ import { useChatStore } from "../store/useChatStore";
 import {
   createPeerConnection,
   getLocalStream,
+  getDisplayMedia,
   addLocalStreamTracks,
+  replaceVideoTrack,
   createOffer,
   createAnswer,
   setRemoteDescription,
@@ -33,6 +35,9 @@ const useWebRTC = () => {
     setRemoteStream,
     setCallState,
     endCall,
+    isScreenSharing,
+    screenShareStream,
+    setScreenSharing,
   } = useCallStore();
   
   const { socket } = useAuthStore();
@@ -651,9 +656,80 @@ const useWebRTC = () => {
     };
   }, [callState]);
   
+  // Stop screen sharing and switch back to camera
+  const stopScreenShare = async () => {
+    try {
+      const currentState = useCallStore.getState();
+      const pc = currentState.peerConnection;
+      const screenShareStream = currentState.screenShareStream;
+      
+      if (!pc) return;
+      
+      // Stop screen share tracks
+      screenShareStream?.getTracks().forEach(track => track.stop());
+      
+      // Get camera stream and replace video track
+      const cameraStream = await getLocalStream(currentState.callType);
+      const videoTrack = cameraStream.getVideoTracks()[0];
+      
+      if (videoTrack) {
+        await replaceVideoTrack(pc, videoTrack, cameraStream);
+        setLocalStream(cameraStream);
+      }
+      
+      setScreenSharing(false, null);
+      toast.success("Screen sharing stopped");
+    } catch (error) {
+      console.error('Error stopping screen share:', error);
+      toast.error(error.message || "Failed to stop screen sharing");
+    }
+  };
+  
+  // Toggle screen sharing
+  const toggleScreenShare = async () => {
+    try {
+      const currentState = useCallStore.getState();
+      const pc = currentState.peerConnection;
+      
+      if (!pc) {
+        toast.error("No active call connection");
+        return;
+      }
+      
+      if (currentState.isScreenSharing) {
+        await stopScreenShare();
+        return;
+      }
+      
+      // Start screen sharing
+      const displayStream = await getDisplayMedia();
+      const videoTrack = displayStream.getVideoTracks()[0];
+      
+      if (!videoTrack) {
+        toast.error("Failed to get screen share video track");
+        return;
+      }
+      
+      // Handle browser UI stop event
+      videoTrack.onended = stopScreenShare;
+      
+      // Replace video track with screen share
+      await replaceVideoTrack(pc, videoTrack, displayStream);
+      setScreenSharing(true, displayStream);
+      toast.success("Screen sharing started");
+    } catch (error) {
+      console.error('Error toggling screen share:', error);
+      // Don't show error if user cancelled
+      if (!error.message?.includes('cancelled')) {
+        toast.error(error.message || "Failed to toggle screen sharing");
+      }
+    }
+  };
+  
   return {
     initializeCall,
     answerCallWithMedia,
+    toggleScreenShare,
     isWebRTCSupported: isWebRTCSupported(),
   };
 };

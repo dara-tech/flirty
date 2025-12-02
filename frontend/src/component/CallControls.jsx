@@ -6,15 +6,18 @@ import {
   FaVideoSlash,
   FaVolumeUp,
   FaVolumeMute,
+  FaDesktop,
 } from "react-icons/fa";
 import { useCallStore } from "../store/useCallStore";
 import { formatCallDuration } from "../lib/webrtc";
+import useWebRTC from "../hooks/useWebRTC";
 
 const CallControls = () => {
   const {
     isMuted,
     isVideoEnabled,
     isSpeakerEnabled,
+    isScreenSharing,
     callDuration,
     callType,
     toggleMute,
@@ -22,6 +25,8 @@ const CallControls = () => {
     toggleSpeaker,
     endCall,
   } = useCallStore();
+  
+  const { toggleScreenShare } = useWebRTC();
   
   return (
     <div className="flex flex-col items-center gap-4">
@@ -65,6 +70,21 @@ const CallControls = () => {
             ) : (
               <FaVideoSlash className="w-5 h-5" />
             )}
+          </button>
+        )}
+        
+        {/* Screen Share (only for video calls) */}
+        {callType === 'video' && (
+          <button
+            onClick={toggleScreenShare}
+            className={`btn btn-circle ${
+              isScreenSharing
+                ? 'bg-primary hover:bg-primary/90 text-white'
+                : 'bg-base-300 hover:bg-base-300/80'
+            } border-0`}
+            aria-label={isScreenSharing ? "Stop sharing screen" : "Share screen"}
+          >
+            <FaDesktop className="w-5 h-5" />
           </button>
         )}
         

@@ -22,6 +22,8 @@ export const useCallStore = create((set, get) => ({
   isMuted: false,
   isVideoEnabled: true,
   isSpeakerEnabled: false,
+  isScreenSharing: false,
+  screenShareStream: null,
   
   // Call metadata
   callDuration: 0,
@@ -42,6 +44,12 @@ export const useCallStore = create((set, get) => ({
       localStream.getTracks().forEach(track => track.stop());
     }
     
+    // Stop screen share stream
+    const { screenShareStream } = get();
+    if (screenShareStream) {
+      screenShareStream.getTracks().forEach(track => track.stop());
+    }
+    
     // Close peer connection
     if (peerConnection) {
       peerConnection.close();
@@ -59,6 +67,8 @@ export const useCallStore = create((set, get) => ({
       isMuted: false,
       isVideoEnabled: true,
       isSpeakerEnabled: false,
+      isScreenSharing: false,
+      screenShareStream: null,
       callDuration: 0,
       callStartTime: null,
       durationInterval: null,
@@ -114,6 +124,11 @@ export const useCallStore = create((set, get) => ({
   // Toggle speaker
   toggleSpeaker: () => {
     set({ isSpeakerEnabled: !get().isSpeakerEnabled });
+  },
+
+  // Set screen sharing state
+  setScreenSharing: (isSharing, stream = null) => {
+    set({ isScreenSharing: isSharing, screenShareStream: stream });
   },
   
   // Start call duration timer

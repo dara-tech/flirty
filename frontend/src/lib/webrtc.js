@@ -60,6 +60,66 @@ export const getLocalStream = async (callType) => {
 };
 
 /**
+ * Get display media stream (screen sharing)
+ * @returns {Promise<MediaStream>}
+ */
+export const getDisplayMedia = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        cursor: 'always',
+        displaySurface: 'monitor',
+      },
+      audio: true, // Try to capture system audio if available
+    });
+    return stream;
+  } catch (error) {
+    console.error('Error getting display media:', error);
+    
+    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+      throw new Error('Screen sharing permission denied. Please allow access and try again.');
+    } else if (error.name === 'NotFoundError' || error.name === 'AbortError') {
+      throw new Error('Screen sharing cancelled or not available.');
+    } else {
+      throw new Error('Failed to start screen sharing. Please check your browser settings.');
+    }
+  }
+};
+
+/**
+ * Replace video track in peer connection
+ * @param {RTCPeerConnection} peerConnection
+ * @param {MediaStreamTrack} newTrack
+ * @param {MediaStream} stream
+ * @returns {Promise<void>}
+ */
+export const replaceVideoTrack = async (peerConnection, newTrack, stream) => {
+  if (!peerConnection || !newTrack) {
+    throw new Error('Missing peerConnection or newTrack');
+  }
+  
+  const senders = peerConnection.getSenders();
+  const videoSender = senders.find(sender => sender.track?.kind === 'video');
+  
+  if (videoSender) {
+    const oldTrack = videoSender.track;
+    console.log('🔄 Replacing video track:', {
+      old: oldTrack?.label,
+      new: newTrack.label,
+    });
+    
+    await videoSender.replaceTrack(newTrack);
+    newTrack.enabled = true;
+    console.log('✅ Video track replaced');
+  } else if (stream) {
+    console.log('➕ Adding new video track');
+    peerConnection.addTrack(newTrack, stream);
+  } else {
+    throw new Error('Cannot add track: stream is missing');
+  }
+};
+
+/**
  * Add local stream tracks to peer connection
  */
 export const addLocalStreamTracks = (peerConnection, stream) => {
@@ -381,58 +441,135 @@ export const setupIceCandidateHandler = (peerConnection, socket, callId, receive
 };
 
 /**
- * Setup remote stream handling
+ * Setup remote stream handling with track change detection
  */
 export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
-  peerConnection.ontrack = (event) => {
-    console.log('🎵 Received remote track:', event.track.kind, event.track.id);
+  let remoteStream = null;
+  let trackCheckInterval = null;
+  
+  // Update stream and notify callback
+  const updateRemoteStream = (stream) => {
+    remoteStream = stream;
+    onRemoteStream(stream);
+  };
+  
+  // Set up stream event listeners for track changes
+  const setupStreamListeners = (stream) => {
+    const handleVideoTrackChange = () => {
+      const updatedStream = new MediaStream(stream.getTracks());
+      updateRemoteStream(updatedStream);
+    };
     
-    if (event.streams && event.streams[0]) {
-      const stream = event.streams[0];
-      console.log('📹 Remote stream received:', {
-        id: stream.id,
-        audioTracks: stream.getAudioTracks().length,
-        videoTracks: stream.getVideoTracks().length,
+    // Listen for track additions/removals (screen share replacing camera)
+    stream.onaddtrack = (event) => {
+      if (event.track.kind === 'video') {
+        console.log('🔄 Video track added to remote stream');
+        handleVideoTrackChange();
+      }
+    };
+    
+    stream.onremovetrack = (event) => {
+      if (event.track.kind === 'video') {
+        console.log('🔄 Video track removed from remote stream');
+        handleVideoTrackChange();
+      }
+    };
+  };
+  
+  // Monitor receivers for track changes (when replaceTrack is used)
+  const checkReceiverTracks = () => {
+    if (!remoteStream) return;
+    
+    const receivers = peerConnection.getReceivers();
+    const videoReceiver = receivers.find(r => r.track?.kind === 'video');
+    const currentVideoTrack = remoteStream.getVideoTracks()[0];
+    
+    if (videoReceiver?.track && currentVideoTrack?.id !== videoReceiver.track.id) {
+      console.log('🔄 Video track changed via receiver:', {
+        old: currentVideoTrack?.label,
+        new: videoReceiver.track.label,
       });
       
-      // Log audio track details
-      stream.getAudioTracks().forEach((track, index) => {
-        console.log(`🔊 Audio track ${index}:`, {
-          id: track.id,
-          enabled: track.enabled,
-          muted: track.muted,
-          readyState: track.readyState,
-        });
-      });
+      // Create updated stream with new video track
+      const updatedStream = new MediaStream([
+        ...remoteStream.getAudioTracks(),
+        videoReceiver.track,
+      ]);
       
-      // Log video track details
-      stream.getVideoTracks().forEach((track, index) => {
-        console.log(`🎥 Video track ${index}:`, {
-          id: track.id,
-          enabled: track.enabled,
-          muted: track.muted,
-          readyState: track.readyState,
-        });
-      });
-      
-      onRemoteStream(stream);
+      setupStreamListeners(updatedStream);
+      updateRemoteStream(updatedStream);
     }
   };
   
-  // Log ICE connection state changes
-  peerConnection.oniceconnectionstatechange = () => {
-    console.log('🔌 ICE connection state:', peerConnection.iceConnectionState);
-    if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
-      console.log('✅ WebRTC connection established!');
-    } else if (peerConnection.iceConnectionState === 'failed' || peerConnection.iceConnectionState === 'disconnected') {
-      console.error('❌ WebRTC connection failed:', peerConnection.iceConnectionState);
+  // Start/stop monitoring based on connection state
+  const manageMonitoring = () => {
+    const isActive = peerConnection.connectionState === 'connected' || 
+                     peerConnection.connectionState === 'connecting';
+    
+    if (isActive && !trackCheckInterval) {
+      trackCheckInterval = setInterval(checkReceiverTracks, 500);
+    } else if (!isActive && trackCheckInterval) {
+      clearInterval(trackCheckInterval);
+      trackCheckInterval = null;
     }
   };
   
-  // Log connection state changes
+  // Handle incoming tracks
+  peerConnection.ontrack = (event) => {
+    const track = event.track;
+    const stream = event.streams?.[0];
+    
+    console.log('🎵 Received remote track:', track.kind, {
+      id: track.id,
+      label: track.label,
+    });
+    
+    if (stream) {
+      const isNewStream = !remoteStream || remoteStream.id !== stream.id;
+      const currentVideoTrack = remoteStream?.getVideoTracks()[0];
+      const newVideoTrack = stream.getVideoTracks()[0];
+      const videoTrackChanged = currentVideoTrack && newVideoTrack && 
+                                currentVideoTrack.id !== newVideoTrack.id;
+      
+      if (isNewStream || videoTrackChanged) {
+        if (videoTrackChanged) {
+          console.log('🔄 Video track replaced:', {
+            old: currentVideoTrack.label,
+            new: newVideoTrack.label,
+          });
+        }
+        
+        setupStreamListeners(stream);
+        updateRemoteStream(stream);
+      }
+    } else if (track) {
+      // Track without stream - create new stream
+      const newStream = new MediaStream([track]);
+      setupStreamListeners(newStream);
+      updateRemoteStream(newStream);
+    }
+  };
+  
+  // Connection state management
   peerConnection.onconnectionstatechange = () => {
     console.log('🌐 Connection state:', peerConnection.connectionState);
+    manageMonitoring();
   };
+  
+  peerConnection.oniceconnectionstatechange = () => {
+    const state = peerConnection.iceConnectionState;
+    console.log('🔌 ICE connection state:', state);
+    
+    if (state === 'connected' || state === 'completed') {
+      console.log('✅ WebRTC connection established!');
+      manageMonitoring();
+    } else if (state === 'failed' || state === 'disconnected') {
+      console.error('❌ WebRTC connection failed');
+    }
+  };
+  
+  // Initialize monitoring if already connected
+  manageMonitoring();
 };
 
 /**

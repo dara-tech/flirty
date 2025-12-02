@@ -11,6 +11,8 @@ const VideoCallWindow = () => {
     remoteStream,
     isVideoEnabled,
     isSpeakerEnabled,
+    isScreenSharing,
+    screenShareStream,
   } = useCallStore();
   
   const localVideoRef = useRef(null);
@@ -18,22 +20,60 @@ const VideoCallWindow = () => {
   const [isLocalVideoSmall, setIsLocalVideoSmall] = useState(true);
   
   useEffect(() => {
-    // Attach local stream to video element
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
+    // Attach local stream or screen share to video element
+    if (localVideoRef.current) {
+      if (isScreenSharing && screenShareStream) {
+        localVideoRef.current.srcObject = screenShareStream;
+      } else if (localStream) {
+        localVideoRef.current.srcObject = localStream;
+      }
     }
-  }, [localStream]);
+  }, [localStream, isScreenSharing, screenShareStream]);
   
   useEffect(() => {
-    // Attach remote stream to video element
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-      
-      // Ensure video plays
-      remoteVideoRef.current.play().catch(err => {
-        console.error('Error playing remote video:', err);
-      });
+    const videoElement = remoteVideoRef.current;
+    if (!videoElement || !remoteStream) return;
+    
+    // Update video source if stream changed
+    if (videoElement.srcObject !== remoteStream) {
+      videoElement.srcObject = remoteStream;
     }
+    
+    // Ensure video plays
+    videoElement.play().catch(err => {
+      console.error('Error playing remote video:', err);
+    });
+    
+    // Handle track changes (screen share replacing camera)
+    const handleVideoUpdate = () => {
+      if (videoElement && remoteStream) {
+        videoElement.srcObject = remoteStream;
+        videoElement.play().catch(() => {});
+      }
+    };
+    
+    // Listen for track changes
+    const videoTracks = remoteStream.getVideoTracks();
+    videoTracks.forEach(track => {
+      track.addEventListener('ended', handleVideoUpdate);
+      track.addEventListener('mute', handleVideoUpdate);
+      track.addEventListener('unmute', handleVideoUpdate);
+    });
+    
+    remoteStream.addEventListener('addtrack', (event) => {
+      if (event.track.kind === 'video') {
+        handleVideoUpdate();
+      }
+    });
+    
+    // Cleanup
+    return () => {
+      videoTracks.forEach(track => {
+        track.removeEventListener('ended', handleVideoUpdate);
+        track.removeEventListener('mute', handleVideoUpdate);
+        track.removeEventListener('unmute', handleVideoUpdate);
+      });
+    };
   }, [remoteStream]);
   
   useEffect(() => {
@@ -82,8 +122,8 @@ const VideoCallWindow = () => {
           </div>
         )}
         
-        {/* Local Video (Picture-in-Picture) */}
-        {localStream && isVideoEnabled && (
+        {/* Local Video (Picture-in-Picture) - Screen Share or Camera */}
+        {((isScreenSharing && screenShareStream) || (localStream && isVideoEnabled)) && (
           <div
             className={`absolute ${
               isLocalVideoSmall
@@ -97,13 +137,18 @@ const VideoCallWindow = () => {
               autoPlay
               muted
               playsInline
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
             />
+            {isScreenSharing && (
+              <div className="absolute top-2 left-2 bg-red-500 text-white text-xs px-2 py-1 rounded">
+                Sharing Screen
+              </div>
+            )}
           </div>
         )}
         
-        {/* Local Video Placeholder when disabled */}
-        {localStream && !isVideoEnabled && (
+        {/* Local Video Placeholder when camera disabled and not screen sharing */}
+        {localStream && !isVideoEnabled && !isScreenSharing && (
           <div className="absolute bottom-24 right-4 w-32 h-48 bg-base-200 rounded-lg flex items-center justify-center border-2 border-base-300">
             <div className="text-center">
               <div className="w-16 h-16 rounded-full overflow-hidden mx-auto mb-2">

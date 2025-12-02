@@ -50,6 +50,22 @@ app.use(
           });
         }
         
+        // In production, allow the frontend origin
+        if (process.env.NODE_ENV === 'production') {
+          // Log the origin for debugging
+          console.log('CORS Origin:', origin);
+          console.log('FRONTEND_URL:', process.env.FRONTEND_URL);
+          
+          // Allow if matches FRONTEND_URL or if FRONTEND_URL not set, allow common patterns
+          if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) {
+            return callback(null, true);
+          }
+          // Fallback: allow if origin contains your domain
+          if (origin && origin.includes('netlify.app') || origin.includes('your-domain.com')) {
+            return callback(null, true);
+          }
+        }
+        
         // Allow in development mode or if origin is in allowed list
         if (process.env.NODE_ENV === 'development') {
           return callback(null, true);
