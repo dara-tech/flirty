@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaTimes, FaUsers, FaInfoCircle, FaCog, FaImage, FaEdit, FaTrash, FaSignOutAlt, FaSpinner, FaAngleLeft, FaCheck, FaSearch, FaEllipsisV, FaUserPlus, FaBell, FaBellSlash, FaLink, FaFile, FaMicrophone, FaImage as FaImageIcon } from "react-icons/fa";
+import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 import { formatDistanceToNow } from "date-fns";
 import AddMemberModal from "./AddMemberModal";
@@ -223,7 +224,7 @@ const GroupInfoContent = ({ groupId, onClose, embedded = false }) => {
       <div className="flex-shrink-0 flex flex-col items-center py-6 px-4 space-y-4">
         {/* Large Profile Picture */}
         <div className="relative">
-          <img
+          <ProfileImage
             src={displayPic}
             alt={group.name}
             className="size-32 rounded-full object-cover ring-4 ring-base-200"
@@ -407,8 +408,8 @@ const GroupInfoContent = ({ groupId, onClose, embedded = false }) => {
               {group.admin && (
                 <div className="flex items-center gap-3 p-3 rounded-lg">
                   <div className="relative">
-                    <img
-                      src={group.admin.profilePic || "/avatar.png"}
+                    <ProfileImage
+                      src={group.admin.profilePic}
                       alt={group.admin.fullname}
                       className="size-12 rounded-full object-cover"
                     />
@@ -441,8 +442,8 @@ const GroupInfoContent = ({ groupId, onClose, embedded = false }) => {
                     className="flex items-center gap-3 p-3 rounded-lg hover:bg-base-200/50 transition-colors"
                   >
                     <div className="relative">
-                      <img
-                        src={memberObj?.profilePic || "/avatar.png"}
+                      <ProfileImage
+                        src={memberObj?.profilePic}
                         alt={memberObj?.fullname || "Member"}
                         className="size-12 rounded-full object-cover"
                       />

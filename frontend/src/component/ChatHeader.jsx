@@ -4,6 +4,7 @@ import { useChatStore } from "../store/useChatStore";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import CallButton from "./CallButton";
+import ProfileImage from "./ProfileImage";
 
 const ChatHeader = () => {
   const { selectedUser, selectedGroup, setSelectedUser, setSelectedGroup } = useChatStore();
@@ -62,7 +63,7 @@ const ChatHeader = () => {
         </button>
         
         <div className="relative">
-          <img
+          <ProfileImage
             src={displayPic}
             alt={displayName}
             className="size-10 sm:size-11 rounded-full object-cover ring-2 ring-base-200 shadow-sm"

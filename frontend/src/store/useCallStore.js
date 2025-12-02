@@ -278,7 +278,7 @@ export const useCallStore = create((set, get) => ({
       console.log('✅ Call ended successfully');
       
       // Show toast notification
-      toast("Call ended", { icon: 'ℹ️' });
+      toast("Call ended");
     } catch (error) {
       console.error('❌ Error ending call:', error);
       

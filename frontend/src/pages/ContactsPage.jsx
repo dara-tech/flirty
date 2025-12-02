@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaUsers, FaSearch, FaUserPlus, FaTimes, FaCheck, FaTh, FaClock, FaUserCheck } from "react-icons/fa";
+import ProfileImage from "../component/ProfileImage";
 import { formatDistanceToNow } from "date-fns";
 import toast from "react-hot-toast";
 import SidebarSkeleton from "../component/skeletons/SideBarSkeleton";
@@ -187,8 +188,8 @@ const ContactsPage = () => {
                     }`}
                   >
                     <div className="relative flex-shrink-0">
-                      <img
-                        src={user.profilePic || "/avatar.png"}
+                      <ProfileImage
+                        src={user.profilePic}
                         alt={user.fullname}
                         className="size-12 rounded-full object-cover"
                       />
@@ -231,8 +232,8 @@ const ContactsPage = () => {
                     className="w-full px-4 py-3 flex items-center gap-3 hover:bg-base-200/50 transition-all duration-200 border-l-4 border-transparent"
                   >
                     <div className="relative flex-shrink-0">
-                      <img
-                        src={sender.profilePic || "/avatar.png"}
+                      <ProfileImage
+                        src={sender.profilePic}
                         alt={sender.fullname}
                         className="size-12 rounded-full object-cover"
                       />

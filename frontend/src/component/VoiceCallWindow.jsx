@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useCallStore } from "../store/useCallStore";
 import CallControls from "./CallControls";
+import ProfileImage from "./ProfileImage";
 
 const VoiceCallWindow = () => {
   const {
@@ -59,8 +60,8 @@ const VoiceCallWindow = () => {
       <div className="flex-1 flex flex-col items-center justify-center px-4 pb-24">
         {/* Profile Picture */}
         <div className="mb-8">
-          <img
-            src={displayUser?.profilePic || "/avatar.png"}
+          <ProfileImage
+            src={displayUser?.profilePic}
             alt={displayUser?.fullname}
             className="w-48 h-48 rounded-full object-cover ring-4 ring-primary shadow-2xl"
           />

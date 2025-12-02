@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaTimes, FaUsers, FaInfoCircle, FaCog, FaImage, FaEdit, FaTrash, FaSignOutAlt, FaSpinner, FaUserPlus } from "react-icons/fa";
+import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 import { formatDistanceToNow } from "date-fns";
 import AddMemberModal from "./AddMemberModal";
@@ -142,7 +143,7 @@ const GroupInfoModal = ({ isOpen, onClose, groupId }) => {
         {/* Header */}
         <div className="sticky top-0 bg-base-100 border-b border-base-200/50 p-4 flex items-center justify-between">
           <div className="flex items-center gap-3 flex-1 min-w-0">
-            <img
+            <ProfileImage
               src={displayPic}
               alt={group.name}
               className="size-12 rounded-full object-cover ring-2 ring-base-200 flex-shrink-0"
@@ -327,8 +328,8 @@ const GroupInfoModal = ({ isOpen, onClose, groupId }) => {
               {group.admin && (
                 <div className="flex items-center gap-3 p-2 rounded-lg bg-base-200/50">
                   <div className="relative">
-                    <img
-                      src={group.admin.profilePic || "/avatar.png"}
+                    <ProfileImage
+                      src={group.admin.profilePic}
                       alt={group.admin.fullname}
                       className="size-10 rounded-full object-cover"
                     />
@@ -358,8 +359,8 @@ const GroupInfoModal = ({ isOpen, onClose, groupId }) => {
                     className="flex items-center gap-3 p-2 rounded-lg hover:bg-base-200/50 transition-colors"
                   >
                     <div className="relative">
-                      <img
-                        src={memberObj?.profilePic || "/avatar.png"}
+                      <ProfileImage
+                        src={memberObj?.profilePic}
                         alt={memberObj?.fullname || "Member"}
                         className="size-10 rounded-full object-cover"
                       />

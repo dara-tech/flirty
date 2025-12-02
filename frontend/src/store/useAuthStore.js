@@ -168,6 +168,17 @@ export const useAuthStore = create((set, get) => ({
       if (userData && userData._id) {
         set({ authUser: userData });
         toast.success("Signed in with Google successfully");
+        
+        // Refresh user data to ensure we have the latest profile picture
+        // Wait a moment for the cookie to be set, then check auth again
+        setTimeout(async () => {
+          try {
+            await get().checkAuth();
+          } catch (checkError) {
+            console.warn('⚠️ Auth check after Google login failed:', checkError);
+          }
+        }, 200);
+        
         get().connectSocket(); // ✅ Connect socket after Google auth
       } else {
         throw new Error("Invalid user data received from server");

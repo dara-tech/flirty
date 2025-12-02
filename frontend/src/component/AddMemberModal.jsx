@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaTimes, FaSpinner } from "react-icons/fa";
+import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 
 const AddMemberModal = ({ isOpen, onClose, groupId }) => {
@@ -124,8 +125,8 @@ const AddMemberModal = ({ isOpen, onClose, groupId }) => {
                         className="checkbox checkbox-primary"
                         disabled={isAdding}
                       />
-                      <img
-                        src={user.profilePic || "/avatar.png"}
+                      <ProfileImage
+                        src={user.profilePic}
                         alt={user.fullname}
                         className="size-10 rounded-full object-cover"
                       />

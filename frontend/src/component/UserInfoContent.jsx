@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaTimes, FaAngleLeft, FaSearch, FaEllipsisV, FaBell, FaBellSlash, FaImage, FaSpinner, FaPhone, FaVideo, FaEnvelope } from "react-icons/fa";
+import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 import { formatDistanceToNow } from "date-fns";
 
@@ -100,7 +101,7 @@ const UserInfoContent = ({ userId, onClose, embedded = false }) => {
       <div className="flex-shrink-0 flex flex-col items-center py-6 px-4 space-y-4">
         {/* Large Profile Picture */}
         <div className="relative">
-          <img
+          <ProfileImage
             src={displayPic}
             alt={user.fullname}
             className="size-32 rounded-full object-cover ring-4 ring-base-200"

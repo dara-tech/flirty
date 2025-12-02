@@ -109,10 +109,18 @@ export class AuthService {
       // User exists - update Google ID if not set
       if (!user.googleId) {
         user.googleId = googleId;
-        if (!user.profilePic && profilePic) {
+        // Always update profilePic if Google provides one (for users without profile pic)
+        if (profilePic && (!user.profilePic || user.profilePic === "")) {
           user.profilePic = profilePic;
         }
         await user.save();
+      } else {
+        // User already has Google ID - update profilePic if Google provides a new one
+        // This ensures profile pictures stay up to date
+        if (profilePic) {
+          user.profilePic = profilePic;
+          await user.save();
+        }
       }
     } else {
       // Create new user
@@ -134,7 +142,8 @@ export class AuthService {
       _id: user._id,
       fullname: user.fullname,
       email: user.email,
-      profilePic: user.profilePic
+      // Return null instead of empty string for profilePic to make frontend handling easier
+      profilePic: user.profilePic && user.profilePic.trim() !== "" ? user.profilePic : null
     };
   }
 }

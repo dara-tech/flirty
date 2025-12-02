@@ -8,6 +8,7 @@ import MessageInput from "./MessageInput";
 import MessageSkeleton from "./skeletons/MessageSkeleton";
 import EditMessageModal from "./EditMessageModal";
 import DeleteMessageModal from "./DeleteMessageModal";
+import ProfileImage from "./ProfileImage";
 import { formatMessageTime } from "../lib/utils";
 import toast from "react-hot-toast";
 
@@ -594,7 +595,7 @@ const ChatContainer = () => {
                     className="relative transition-transform hover:scale-110"
                     style={{ zIndex: 2 - idx }}
                   >
-                    <img
+                    <ProfileImage
                       src={userInfo.profilePic}
                       alt={userInfo.fullname}
                       className={`rounded-full object-cover ${isOnImage ? 'w-4 h-4 ring-1 ring-white/30' : 'w-4 h-4 ring-1 ring-primary-content/30'}`}
@@ -658,7 +659,7 @@ const ChatContainer = () => {
                     className="relative transition-transform hover:scale-110"
                     style={{ zIndex: 3 - idx }}
                   >
-                    <img
+                    <ProfileImage
                       src={userInfo.profilePic}
                       alt={userInfo.fullname}
                       className="w-5 h-5 rounded-full object-cover"
@@ -699,7 +700,7 @@ const ChatContainer = () => {
                     return (
                       <div key={idx} className="flex items-center gap-3 group/item hover:bg-base-200/50 rounded-lg p-2 -m-2 transition-all duration-200 cursor-default">
                         <div className="relative flex-shrink-0">
-                          <img
+                          <ProfileImage
                             src={userInfo.profilePic}
                             alt={userInfo.fullname}
                             className="w-9 h-9 rounded-full object-cover ring-2 ring-base-300 shadow-sm"
@@ -788,7 +789,7 @@ const ChatContainer = () => {
       <div className="flex items-end gap-2 max-w-[85%] sm:max-w-[75%]">
         <div className="flex-shrink-0 opacity-60">
           <div className="size-7 rounded-full overflow-hidden ring-1 ring-base-300">
-            <img
+            <ProfileImage
               src={displayPic}
               alt="profile pic"
               className="w-full h-full object-cover"
@@ -864,7 +865,7 @@ const ChatContainer = () => {
       <div className="flex items-end gap-2 max-w-[85%] sm:max-w-[75%]">
         <div className="flex-shrink-0 opacity-60">
           <div className="size-7 rounded-full overflow-hidden ring-1 ring-base-300">
-            <img
+            <ProfileImage
               src={displayPic}
               alt="profile pic"
               className="w-full h-full object-cover"

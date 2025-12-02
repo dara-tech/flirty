@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaTimes, FaUsers, FaInfoCircle, FaCog, FaImage, FaEdit, FaTrash, FaSignOutAlt, FaSpinner, FaUserPlus } from "react-icons/fa";
+import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 import { formatDistanceToNow } from "date-fns";
 import AddMemberModal from "./AddMemberModal";
@@ -135,7 +136,7 @@ const GroupInfoPanel = ({ groupId, onClose }) => {
       {/* Header */}
       <div className="p-4 border-b border-base-200/50 flex items-center justify-between bg-base-100 sticky top-0 z-10">
         <div className="flex items-center gap-3 flex-1 min-w-0">
-          <img
+          <ProfileImage
             src={displayPic}
             alt={group.name}
             className="size-12 rounded-full object-cover ring-2 ring-base-200 flex-shrink-0"
@@ -185,7 +186,7 @@ const GroupInfoPanel = ({ groupId, onClose }) => {
             {/* Group Photo */}
             <div className="flex flex-col items-center gap-3">
               <div className="relative">
-                <img
+                <ProfileImage
                   src={displayPic}
                   alt={group.name}
                   className="size-24 rounded-full object-cover ring-4 ring-base-200"
@@ -321,11 +322,11 @@ const GroupInfoPanel = ({ groupId, onClose }) => {
             {group.admin && (
               <div className="flex items-center gap-3 p-2 rounded-lg bg-base-200/50">
                 <div className="relative">
-                  <img
-                    src={group.admin.profilePic || "/avatar.png"}
-                    alt={group.admin.fullname}
-                    className="size-10 rounded-full object-cover"
-                  />
+                <ProfileImage
+                  src={group.admin.profilePic}
+                  alt={group.admin.fullname}
+                  className="size-10 rounded-full object-cover"
+                />
                   {onlineUsers.includes(normalizeId(group.admin._id || group.admin)) && (
                     <span className="absolute bottom-0 right-0 size-3 bg-green-500 rounded-full ring-2 ring-base-100" />
                   )}
@@ -352,8 +353,8 @@ const GroupInfoPanel = ({ groupId, onClose }) => {
                   className="flex items-center gap-3 p-2 rounded-lg hover:bg-base-200/50 transition-colors"
                 >
                   <div className="relative">
-                    <img
-                      src={memberObj?.profilePic || "/avatar.png"}
+                    <ProfileImage
+                      src={memberObj?.profilePic}
                       alt={memberObj?.fullname || "Member"}
                       className="size-10 rounded-full object-cover"
                     />

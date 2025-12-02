@@ -14,8 +14,8 @@ import { errorHandler, notFoundHandler } from './middleware/error.middleware.js'
 dotenv.config();
 
 const PORT = process.env.PORT || 5002;  // Fallback to 5002 (match your dev port)
-const AUTO_RELOAD_INTERVAL = parseInt(process.env.AUTO_RELOAD_INTERVAL) || 14 * 60 * 1000; // 14 minutes in milliseconds
-const AUTO_RELOAD_ENABLED = process.env.AUTO_RELOAD_ENABLED !== 'false'; // Enabled by default, set to 'false' to disable
+const KEEP_ALIVE_INTERVAL = parseInt(process.env.KEEP_ALIVE_INTERVAL) || 14 * 60 * 1000; // 14 minutes in milliseconds
+const KEEP_ALIVE_ENABLED = process.env.KEEP_ALIVE_ENABLED !== 'false'; // Enabled by default, set to 'false' to disable
 
 // Middleware setup
 app.use(express.json({ limit: '50mb' }));
@@ -134,16 +134,16 @@ app.get('/api', (req, res) => {
 const gracefulShutdown = async (signal) => {
   console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
   
-  // Clear auto-reload timer if it exists
-  if (autoReloadTimer) {
-    clearTimeout(autoReloadTimer);
-    autoReloadTimer = null;
+  // Clear keep-alive timer if it exists
+  if (keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
   }
   
   try {
     // Close Socket.IO connections first (notify clients)
     if (io) {
-      io.emit('server:restarting', { message: 'Server is restarting, please reconnect...' });
+      io.emit('server:shutting_down', { message: 'Server is shutting down...' });
       io.close(() => {
         console.log('✅ Socket.IO server closed');
       });
@@ -177,23 +177,79 @@ const gracefulShutdown = async (signal) => {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Auto-reload mechanism (restart every 14 minutes by default)
-let autoReloadTimer = null;
+// Keep-alive mechanism (ping server every 14 minutes to prevent sleep)
+let keepAliveTimer = null;
 
-const setupAutoReload = () => {
-  if (!AUTO_RELOAD_ENABLED) {
-    console.log('⏸️  Auto-reload is disabled');
+const setupKeepAlive = () => {
+  if (!KEEP_ALIVE_ENABLED) {
+    console.log('⏸️  Keep-alive is disabled');
     return;
   }
   
-  const intervalMinutes = AUTO_RELOAD_INTERVAL / (60 * 1000);
-  console.log(`⏰ Auto-reload enabled: Server will restart every ${intervalMinutes} minutes`);
+  const intervalMinutes = KEEP_ALIVE_INTERVAL / (60 * 1000);
+  console.log(`💓 Keep-alive enabled: Server will ping itself every ${intervalMinutes} minutes`);
   
-  autoReloadTimer = setTimeout(async () => {
-    console.log(`\n🔄 Auto-reload triggered after ${intervalMinutes} minutes`);
-    console.log('🔄 Restarting server...');
-    await gracefulShutdown('AUTO_RELOAD');
-  }, AUTO_RELOAD_INTERVAL);
+  // Ping the health endpoint to keep the server awake
+  const pingServer = async () => {
+    try {
+      const http = await import('http');
+      
+      // Determine hostname based on environment
+      // In production (Render, Heroku, etc.), use the server's own URL or localhost
+      // The server will respond to requests on its own port
+      const hostname = process.env.KEEP_ALIVE_HOST || 'localhost';
+      const pingPort = process.env.KEEP_ALIVE_PORT || PORT;
+      
+      const options = {
+        hostname: hostname,
+        port: pingPort,
+        path: '/health',
+        method: 'GET',
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Keep-Alive-Ping/1.0'
+        }
+      };
+      
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          const timestamp = new Date().toISOString();
+          console.log(`💓 Keep-alive ping successful at ${timestamp}`);
+        });
+      });
+      
+      req.on('error', (error) => {
+        // Don't spam logs if ping fails (might be normal in some environments)
+        if (process.env.NODE_ENV === 'development') {
+          console.warn(`⚠️  Keep-alive ping failed: ${error.message}`);
+        }
+      });
+      
+      req.on('timeout', () => {
+        req.destroy();
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('⚠️  Keep-alive ping timed out');
+        }
+      });
+      
+      req.end();
+    } catch (error) {
+      // Silent fail - keep-alive is best effort
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`⚠️  Keep-alive ping error: ${error.message}`);
+      }
+    }
+  };
+  
+  // Ping immediately on setup
+  pingServer();
+  
+  // Then ping at regular intervals
+  keepAliveTimer = setInterval(() => {
+    pingServer();
+  }, KEEP_ALIVE_INTERVAL);
 };
 
 // Start the server
@@ -206,8 +262,8 @@ const startServer = async () => {
       console.log(`🌐 Server is running on port ${PORT} ✅`);
       console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
       
-      // Setup auto-reload after server starts
-      setupAutoReload();
+      // Setup keep-alive ping after server starts
+      setupKeepAlive();
     });
 
   } catch (error) {

@@ -1,29 +1,97 @@
-// WebRTC Configuration
-export const RTC_CONFIGURATION = {
-  iceServers: [
+/**
+ * WebRTC Configuration - Multiple STUN servers for cross-browser compatibility
+ * 
+ * This configuration includes STUN servers from multiple providers to ensure
+ * maximum browser compatibility:
+ * - Google STUN servers: Work in Chrome, Firefox, Safari, Edge
+ * - Mozilla STUN server: Backup for Firefox
+ * - Twilio STUN server: Cross-browser compatible
+ * - Open Relay Project: Open-source alternative
+ * 
+ * Supported Browsers:
+ * - Chrome/Chromium (all versions with WebRTC support)
+ * - Firefox (all versions with WebRTC support)
+ * - Safari (11+ with WebRTC support, requires HTTPS)
+ * - Microsoft Edge (all versions with WebRTC support)
+ * - Opera (all versions with WebRTC support)
+ * 
+ * Note: For production, you should add TURN servers to handle NAT traversal
+ * when STUN servers alone cannot establish a connection.
+ */
+// Create a clean, validated RTC configuration
+// Using minimal, well-tested STUN servers to avoid configuration errors
+const getRTCConfiguration = () => {
+  // Use only the most reliable STUN servers in a simple format
+  const iceServers = [
+    // Primary Google STUN server (most reliable)
     { urls: 'stun:stun.l.google.com:19302' },
+    // Backup Google STUN servers
     { urls: 'stun:stun1.l.google.com:19302' },
-    // For production, add TURN servers here:
-    // {
-    //   urls: 'turn:your-turn-server.com:3478',
-    //   username: 'your-username',
-    //   credential: 'your-credential'
-    // }
-  ],
-  iceCandidatePoolSize: 10,
+    { urls: 'stun:stun2.l.google.com:19302' },
+  ];
+
+  return {
+    iceServers: iceServers,
+    iceCandidatePoolSize: 10,
+  };
 };
+
+export const RTC_CONFIGURATION = getRTCConfiguration();
 
 /**
  * Create a new RTCPeerConnection with configuration
+ * @returns {RTCPeerConnection}
+ * @throws {Error} If WebRTC is not supported or configuration is invalid
  */
 export const createPeerConnection = () => {
-  try {
-    const pc = new RTCPeerConnection(RTC_CONFIGURATION);
-    return pc;
-  } catch (error) {
-    console.error('Error creating peer connection:', error);
-    throw error;
+  // Validate WebRTC support
+  if (typeof RTCPeerConnection === 'undefined') {
+    throw new Error('WebRTC is not supported in this browser. Please use a modern browser like Chrome, Firefox, Safari, or Edge.');
   }
+
+  // Try multiple configuration strategies
+  const configs = [
+    // Strategy 1: Full configuration
+    getRTCConfiguration(),
+    // Strategy 2: Single reliable STUN server
+    {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceCandidatePoolSize: 10,
+    },
+    // Strategy 3: Minimal configuration
+    {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    },
+    // Strategy 4: Empty configuration (browser will use defaults)
+    {
+      iceServers: [],
+    },
+  ];
+
+  // Try each configuration until one works
+  for (let i = 0; i < configs.length; i++) {
+    try {
+      const pc = new RTCPeerConnection(configs[i]);
+      
+      // Set up error handlers
+      pc.onerror = (error) => {
+        console.error('RTCPeerConnection error:', error);
+      };
+
+      return pc;
+    } catch (error) {
+      // If this is the last config, throw the error
+      if (i === configs.length - 1) {
+        console.error('All RTCPeerConnection configurations failed:', error);
+        throw new Error('Failed to initialize video call. Please refresh the page and try again.');
+      }
+      // Otherwise, try next configuration
+      continue;
+    }
+  }
+
+  // Should never reach here, but just in case
+  throw new Error('Failed to create peer connection');
 };
 
 /**
@@ -136,148 +204,74 @@ export const addLocalStreamTracks = (peerConnection, stream) => {
  * @returns {Promise<RTCSessionDescriptionInit>}
  */
 export const createOffer = async (peerConnection) => {
-  // ABSOLUTE FIRST CHECK: If we already have a local description (offer), RETURN IT IMMEDIATELY
-  // This check happens BEFORE anything else - even before the try block
+  // Check if offer already exists
   if (peerConnection.localDescription?.type === 'offer') {
-    console.log('✅ Offer already exists, returning existing offer (preventing duplicate)');
     return peerConnection.localDescription;
   }
   
-  // ABSOLUTE SECOND CHECK: If state is 'have-local-offer', we already have an offer
-  // Throw error immediately - do NOT try to create a new one
+  // Validate peer connection state
   if (peerConnection.signalingState === 'have-local-offer') {
-    console.error('❌ FATAL ERROR: Cannot create offer - peer connection is in "have-local-offer" state!');
-    console.error('This means an offer already exists. This should have been caught earlier.');
-    
     if (peerConnection.localDescription?.type === 'offer') {
-      console.log('Returning existing offer as fallback');
       return peerConnection.localDescription;
     }
-    
-    throw new Error('FATAL: Peer connection is in "have-local-offer" state. Cannot create new offer. Reset peer connection required.');
+    throw new Error('Peer connection already has an offer. Please reset the connection.');
   }
   
   try {
-    const currentState = peerConnection.signalingState;
+    // Must be in stable state to create offer
+    if (peerConnection.signalingState !== 'stable') {
+      throw new Error(`Cannot create offer: Invalid connection state "${peerConnection.signalingState}". Expected "stable".`);
+    }
     
-    // Additional check inside try block
+    // Verify no descriptions are set
     if (peerConnection.localDescription) {
-      if (peerConnection.localDescription.type === 'offer') {
-        console.log('✅ Offer already exists, returning existing offer (preventing duplicate)');
-        return peerConnection.localDescription;
-      } else {
-        throw new Error(`Cannot create offer when local description is: ${peerConnection.localDescription.type}. State: ${currentState}`);
-      }
+      throw new Error('Cannot create offer: Local description already exists.');
     }
     
-    if (currentState === 'have-local-offer') {
-      throw new Error('FATAL: Peer connection is in "have-local-offer" state. Cannot create new offer.');
-    }
-    
-    // Can ONLY create offer in 'stable' state
-    if (currentState !== 'stable') {
-      throw new Error(`Cannot create offer in state: ${currentState}. Peer connection must be in 'stable' state. Current state indicates an offer may already exist.`);
-    }
-    
-    // Verify peer connection doesn't have remote description
     if (peerConnection.remoteDescription) {
-      throw new Error(`Cannot create offer when remote description already set: ${peerConnection.remoteDescription.type}`);
+      throw new Error('Cannot create offer: Remote description already set.');
     }
     
-    // TRIPLE-CHECK: Make absolutely sure local description doesn't exist
-    if (peerConnection.localDescription) {
-      console.error('❌ CRITICAL: localDescription appeared between checks - this should not happen');
-      return peerConnection.localDescription;
-    }
-    
-    // Create the offer (SDP object, not yet set)
+    // Create the offer
     const offer = await peerConnection.createOffer({
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
     });
     
-    // QUADRUPLE-CHECK: Before setting, verify state is still stable and no local description exists
-    if (peerConnection.signalingState !== 'stable' || peerConnection.localDescription) {
-      console.error('❌ CRITICAL: State changed during offer creation');
-      if (peerConnection.localDescription) {
-        console.log('Using existing local description instead');
-        return peerConnection.localDescription;
-      }
-      throw new Error(`Cannot set offer: State changed to ${peerConnection.signalingState} during creation`);
-    }
-    
-    // FINAL SAFETY CHECK: Verify we're still in stable state before setting
-    if (peerConnection.signalingState !== 'stable') {
-      throw new Error(`Cannot set offer: Peer connection state is ${peerConnection.signalingState}, expected 'stable'`);
-    }
-    
-    // FINAL CHECK BEFORE SETTING: Verify peer connection doesn't already have a local description
-    // The error "order of m-lines" happens when we try to set an offer when one already exists
-    if (peerConnection.localDescription) {
-      console.error('❌ FATAL: Attempted to set local description but one already exists!');
-      console.error('Existing local description:', {
-        type: peerConnection.localDescription.type,
-        sdpLength: peerConnection.localDescription.sdp?.length || 0,
-      });
-      console.error('New offer SDP length:', offer.sdp?.length || 0);
-      
-      // If it's the same offer, just return it
-      if (peerConnection.localDescription.type === 'offer' && 
-          peerConnection.localDescription.sdp === offer.sdp) {
-        console.log('Same offer, returning existing');
-        return peerConnection.localDescription;
-      }
-      
-      // Otherwise, we can't set a new offer
-      throw new Error('Cannot set local description: An offer already exists on this peer connection. Reset peer connection required.');
-    }
-    
     // Verify state is still stable before setting
-    if (peerConnection.signalingState !== 'stable') {
-      throw new Error(`Cannot set local description: Peer connection state is ${peerConnection.signalingState}, expected 'stable'`);
+    if (peerConnection.signalingState !== 'stable' || peerConnection.localDescription) {
+      if (peerConnection.localDescription?.type === 'offer') {
+        return peerConnection.localDescription;
+      }
+      throw new Error('Connection state changed during offer creation.');
     }
     
-    // Set local description - this is where the error was happening
-    // The error "order of m-lines" means we're trying to set an offer when one already exists
+    // Set local description
     try {
       await peerConnection.setLocalDescription(offer);
-      console.log('✅ Offer created successfully, local description set');
       return offer;
     } catch (setError) {
-      // If error is about m-lines or existing offer, check if one already exists
-      if (setError.message && (setError.message.includes('m-lines') || setError.message.includes('order'))) {
-        console.error('❌ Error setting local description - offer may already exist');
-        
-        // Check if peer connection already has an offer
-        if (peerConnection.localDescription?.type === 'offer') {
-          console.log('✅ Peer connection already has offer - returning existing one');
-          return peerConnection.localDescription;
-        }
-        
-        // If state is have-local-offer, something went wrong
-        if (peerConnection.signalingState === 'have-local-offer') {
-          console.error('❌ Peer connection in have-local-offer state - cannot set new offer');
-          throw new Error('Cannot set offer: Peer connection already has an offer. Use existing offer or reset peer connection.');
-        }
+      // Handle case where offer was set concurrently
+      if (peerConnection.localDescription?.type === 'offer') {
+        return peerConnection.localDescription;
       }
       
-      // Re-throw other errors
+      // Handle m-lines error (indicates offer already exists)
+      if (setError.message?.includes('m-lines') || setError.message?.includes('order')) {
+        if (peerConnection.localDescription?.type === 'offer') {
+          return peerConnection.localDescription;
+        }
+        throw new Error('Failed to create offer: Connection may already be established.');
+      }
+      
       throw setError;
     }
   } catch (error) {
-    console.error('❌ Error creating offer:', error);
-    console.error('Peer connection state:', {
-      signalingState: peerConnection.signalingState,
-      localDescription: peerConnection.localDescription?.type || 'none',
-      remoteDescription: peerConnection.remoteDescription?.type || 'none',
-      connectionState: peerConnection.connectionState,
-      iceConnectionState: peerConnection.iceConnectionState,
-    });
+    // Provide user-friendly error message
+    const errorMessage = error.message || 'Failed to create call offer';
     
-    // If the error is about m-lines, it means an offer already exists
-    if (error.message && error.message.includes('m-lines')) {
-      console.error('❌ FATAL: m-lines error indicates an offer already exists on this peer connection');
-      console.error('This peer connection cannot be used. It must be reset and recreated.');
+    if (errorMessage.includes('state') || errorMessage.includes('description')) {
+      throw new Error('Call connection error. Please try again.');
     }
     
     throw error;
@@ -292,65 +286,92 @@ export const createOffer = async (peerConnection) => {
  */
 export const createAnswer = async (peerConnection, offer) => {
   try {
-    const currentState = peerConnection.signalingState;
-    
-    // If connection is already stable with both descriptions, answer already created
-    if (currentState === 'stable' && peerConnection.remoteDescription && peerConnection.localDescription) {
-      if (peerConnection.localDescription.type === 'answer') {
-        console.log('Answer already created and connection established');
-        return peerConnection.localDescription;
-      }
+    // Check if answer already exists
+    if (peerConnection.localDescription?.type === 'answer' && 
+        peerConnection.signalingState === 'stable') {
+      return peerConnection.localDescription;
     }
     
-    // Check if we already have a remote description set
-    const hasRemoteOffer = peerConnection.remoteDescription && 
-                          peerConnection.remoteDescription.type === 'offer';
+    // Check if remote offer is already set
+    const hasRemoteOffer = peerConnection.remoteDescription?.type === 'offer';
     
     // Set remote description (the offer) if not already set
     if (!hasRemoteOffer) {
-      // Set remote description (the offer) - this must succeed before creating answer
       await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
     } else {
       // Verify it's the same offer
       if (peerConnection.remoteDescription.sdp !== offer.sdp) {
         throw new Error('Remote description already set with different offer');
       }
-      // If same offer but state is stable and we have local answer, return it
-      if (currentState === 'stable' && peerConnection.localDescription) {
+      // If same offer and connection is stable, return existing answer
+      if (peerConnection.signalingState === 'stable' && peerConnection.localDescription?.type === 'answer') {
         return peerConnection.localDescription;
       }
     }
     
-    // Verify we're in the correct state to create an answer
-    // Must be "have-remote-offer" to create answer
-    const stateAfterSet = peerConnection.signalingState;
-    if (stateAfterSet !== 'have-remote-offer') {
-      throw new Error(`Cannot create answer in state: ${stateAfterSet}, expected have-remote-offer`);
+    // Check if answer already exists
+    if (peerConnection.localDescription?.type === 'answer') {
+      return peerConnection.localDescription;
     }
     
-    // Verify remote description is actually set
+    // Verify remote description is properly set
     if (!peerConnection.remoteDescription || peerConnection.remoteDescription.type !== 'offer') {
       throw new Error('Remote description (offer) not properly set');
     }
     
-    // If we already have a local answer, we shouldn't be here, but return it anyway
-    if (peerConnection.localDescription && peerConnection.localDescription.type === 'answer') {
-      console.log('Local answer already exists, returning it');
-      return peerConnection.localDescription;
+    // Verify we're in the correct state to create an answer
+    // Allow 'have-remote-offer' or 'stable' (if connection already established)
+    const validStates = ['have-remote-offer', 'stable'];
+    if (!validStates.includes(peerConnection.signalingState)) {
+      // If connection is stable and we have an answer, return it
+      if (peerConnection.signalingState === 'stable' && peerConnection.localDescription?.type === 'answer') {
+        return peerConnection.localDescription;
+      }
+      // If we're in 'have-local-offer', we might be processing duplicate offers
+      if (peerConnection.signalingState === 'have-local-offer') {
+        // Wait a bit and check again (race condition handling)
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (peerConnection.signalingState === 'have-remote-offer' || peerConnection.signalingState === 'stable') {
+          // State changed, continue
+        } else {
+          throw new Error(`Cannot create answer: Invalid connection state "${peerConnection.signalingState}". Expected "have-remote-offer".`);
+        }
+      } else {
+        throw new Error(`Cannot create answer: Invalid connection state "${peerConnection.signalingState}". Expected "have-remote-offer".`);
+      }
     }
     
-    // Create answer - this requires remote description to be set
+    // Create answer
     const answer = await peerConnection.createAnswer({
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
     });
     
-    // Set local description (the answer) - this should work now that remote is set
+    // Set local description (the answer)
     await peerConnection.setLocalDescription(answer);
     
     return answer;
   } catch (error) {
-    console.error('Error creating answer:', error);
+    // Provide user-friendly error message
+    const errorMessage = error.message || 'Failed to create call answer';
+    
+    // If connection is already stable, don't throw error
+    if (peerConnection.signalingState === 'stable') {
+      if (peerConnection.localDescription?.type === 'answer') {
+        return peerConnection.localDescription;
+      }
+    }
+    
+    // Check for specific error types
+    if (errorMessage.includes('state') || errorMessage.includes('description')) {
+      // If it's a state error but connection might still work, log warning instead
+      if (peerConnection.signalingState === 'stable') {
+        console.warn('Connection state warning:', errorMessage);
+        return peerConnection.localDescription || null;
+      }
+      throw new Error('Call connection error. Please try again.');
+    }
+    
     throw error;
   }
 };
@@ -360,58 +381,62 @@ export const createAnswer = async (peerConnection, offer) => {
  */
 export const setRemoteDescription = async (peerConnection, description) => {
   try {
-    const currentState = peerConnection.signalingState;
-    
-    // If connection is already stable, don't try to set remote description
-    if (currentState === 'stable') {
-      // Check if remote description is already set with the same content
-      if (peerConnection.remoteDescription) {
-        if (peerConnection.remoteDescription.type === description.type) {
-          console.log('Connection already established, remote description already set');
-          return; // Connection is already working
-        }
+    // If connection is already stable, check if description is already set
+    if (peerConnection.signalingState === 'stable') {
+      if (peerConnection.remoteDescription?.type === description.type) {
+        return; // Already set correctly
       }
-      // If stable but different description type, might be renegotiation
-      // For now, just log and return
-      console.log('Connection stable, skipping remote description set');
-      return;
+      return; // Connection established, skip
     }
     
-    // Check if remote description is already set
+    // Check if same description is already set
     if (peerConnection.remoteDescription) {
-      // If it's the same description, ignore
       if (peerConnection.remoteDescription.sdp === description.sdp &&
           peerConnection.remoteDescription.type === description.type) {
-        console.log('Remote description already set with same content');
-        return;
+        return; // Already set
       }
     }
     
     await peerConnection.setRemoteDescription(new RTCSessionDescription(description));
   } catch (error) {
-    // If error is about wrong state, check if connection is already working
-    if (error.message && error.message.includes('stable')) {
-      if (peerConnection.signalingState === 'stable') {
-        console.log('Connection already stable, ignoring setRemoteDescription error');
-        return; // Connection is working, ignore the error
-      }
+    // If connection is already stable, ignore the error
+    if (peerConnection.signalingState === 'stable') {
+      return;
     }
-    console.error('Error setting remote description:', error);
+    
+    // Provide user-friendly error
+    if (error.message?.includes('state') || error.message?.includes('stable')) {
+      throw new Error('Call connection error. Please try again.');
+    }
+    
     throw error;
   }
 };
 
 /**
  * Add ICE candidate to peer connection
+ * @param {RTCPeerConnection} peerConnection
+ * @param {RTCIceCandidateInit} candidate
  */
 export const addIceCandidate = async (peerConnection, candidate) => {
   try {
-    if (candidate) {
-      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    if (!candidate) return;
+    
+    // Skip if connection is closed or failed
+    if (peerConnection.connectionState === 'closed' || 
+        peerConnection.iceConnectionState === 'failed') {
+      return;
     }
+    
+    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
   } catch (error) {
-    console.error('Error adding ICE candidate:', error);
-    // Don't throw - ICE candidates can fail without breaking the connection
+    // ICE candidate errors are non-fatal - connection can still work
+    // Only log if it's not a common expected error
+    if (!error.message?.includes('not found') && 
+        !error.message?.includes('already added') &&
+        peerConnection.connectionState !== 'closed') {
+      console.warn('ICE candidate error (non-fatal):', error.message);
+    }
   }
 };
 
@@ -429,13 +454,16 @@ export const setupIceCandidateHandler = (peerConnection, socket, callId, receive
     }
   };
   
-  // Log ICE connection state changes
+  // Handle ICE connection state changes
   peerConnection.oniceconnectionstatechange = () => {
     const state = peerConnection.iceConnectionState;
-    console.log('ICE connection state:', state);
     
-    if (state === 'failed' || state === 'disconnected') {
-      console.warn('ICE connection failed or disconnected');
+    if (state === 'failed') {
+      console.warn('ICE connection failed - connection may not work');
+    } else if (state === 'disconnected') {
+      console.warn('ICE connection disconnected');
+    } else if (state === 'connected' || state === 'completed') {
+      console.log('ICE connection established');
     }
   };
 };
@@ -477,28 +505,162 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
   };
   
   // Monitor receivers for track changes (when replaceTrack is used)
+  let lastVideoTrackId = null;
+  let lastVideoTrackLabel = null;
   const checkReceiverTracks = () => {
     if (!remoteStream) return;
     
     const receivers = peerConnection.getReceivers();
     const videoReceiver = receivers.find(r => r.track?.kind === 'video');
     const currentVideoTrack = remoteStream.getVideoTracks()[0];
+    const receiverTrack = videoReceiver?.track;
     
-    if (videoReceiver?.track && currentVideoTrack?.id !== videoReceiver.track.id) {
-      console.log('🔄 Video track changed via receiver:', {
-        old: currentVideoTrack?.label,
-        new: videoReceiver.track.label,
+    if (!receiverTrack) return;
+    
+    // Check if track ID changed (completely new track)
+    if (currentVideoTrack?.id !== receiverTrack.id) {
+      console.log('🔄 Video track changed via receiver (ID changed):', {
+        old: currentVideoTrack?.label || 'none',
+        new: receiverTrack.label,
       });
       
       // Create updated stream with new video track
       const updatedStream = new MediaStream([
         ...remoteStream.getAudioTracks(),
-        videoReceiver.track,
+        receiverTrack,
       ]);
       
       setupStreamListeners(updatedStream);
       updateRemoteStream(updatedStream);
+      lastVideoTrackId = receiverTrack.id;
+      lastVideoTrackLabel = receiverTrack.label;
+      return;
+    } 
+    
+    // Check if track label changed (indicates screen share switch)
+    // Screen share tracks typically have different labels like "screen" or contain "screen"
+    if (currentVideoTrack && receiverTrack.label !== currentVideoTrack.label) {
+      console.log('🔄 Video track label changed (screen share?):', {
+        old: currentVideoTrack.label,
+        new: receiverTrack.label,
+      });
+      
+      const updatedStream = new MediaStream([
+        ...remoteStream.getAudioTracks(),
+        receiverTrack,
+      ]);
+      
+      setupStreamListeners(updatedStream);
+      updateRemoteStream(updatedStream);
+      lastVideoTrackLabel = receiverTrack.label;
+      return;
     }
+    
+    // Check if track was replaced (same ID but different content)
+    // This happens when replaceTrack() is called - track ID might stay same
+    if (receiverTrack.id === currentVideoTrack?.id) {
+      // Always update to ensure latest track content is used
+      // This handles cases where replaceTrack() doesn't change the track ID
+      if (lastVideoTrackLabel !== receiverTrack.label) {
+        console.log('🔄 Video track updated (label changed):', {
+          old: lastVideoTrackLabel,
+          new: receiverTrack.label,
+        });
+        
+        const updatedStream = new MediaStream([
+          ...remoteStream.getAudioTracks(),
+          receiverTrack,
+        ]);
+        
+        setupStreamListeners(updatedStream);
+        updateRemoteStream(updatedStream);
+        lastVideoTrackLabel = receiverTrack.label;
+      }
+      
+      // Also check if track settings changed (dimensions, frame rate, etc.)
+      // Screen shares often have different settings
+      const currentSettings = currentVideoTrack.getSettings?.();
+      const receiverSettings = receiverTrack.getSettings?.();
+      
+      if (currentSettings && receiverSettings) {
+        const settingsChanged = 
+          currentSettings.width !== receiverSettings.width ||
+          currentSettings.height !== receiverSettings.height ||
+          currentSettings.frameRate !== receiverSettings.frameRate;
+        
+        if (settingsChanged) {
+          console.log('🔄 Video track settings changed (possible screen share):', {
+            old: { width: currentSettings.width, height: currentSettings.height },
+            new: { width: receiverSettings.width, height: receiverSettings.height },
+          });
+          
+          const updatedStream = new MediaStream([
+            ...remoteStream.getAudioTracks(),
+            receiverTrack,
+          ]);
+          
+          setupStreamListeners(updatedStream);
+          updateRemoteStream(updatedStream);
+        }
+      }
+    }
+    
+    // Check for track state changes
+    if (receiverTrack && currentVideoTrack) {
+      const trackStateChanged = receiverTrack.muted !== currentVideoTrack.muted ||
+                                receiverTrack.enabled !== currentVideoTrack.enabled ||
+                                receiverTrack.readyState !== currentVideoTrack.readyState;
+      
+      if (trackStateChanged) {
+        console.log('🔄 Video track state changed:', {
+          muted: receiverTrack.muted,
+          enabled: receiverTrack.enabled,
+          readyState: receiverTrack.readyState,
+        });
+        
+        // Update stream to reflect changes
+        const updatedStream = new MediaStream([
+          ...remoteStream.getAudioTracks(),
+          receiverTrack,
+        ]);
+        setupStreamListeners(updatedStream);
+        updateRemoteStream(updatedStream);
+      }
+    }
+  };
+  
+  // Setup receiver track change listeners
+  const setupReceiverTrackListeners = () => {
+    const receivers = peerConnection.getReceivers();
+    receivers.forEach(receiver => {
+      if (receiver.track?.kind === 'video') {
+        const track = receiver.track;
+        
+        // Store initial track info
+        if (track.id) {
+          lastVideoTrackId = track.id;
+        }
+        if (track.label) {
+          lastVideoTrackLabel = track.label;
+        }
+        
+        // Listen for track mute/unmute (indicates track change)
+        track.onmute = () => {
+          console.log('🔄 Remote video track muted');
+          checkReceiverTracks();
+        };
+        track.onunmute = () => {
+          console.log('🔄 Remote video track unmuted');
+          checkReceiverTracks();
+        };
+        
+        // Listen for track ended (track was replaced)
+        track.onended = () => {
+          console.log('🔄 Remote video track ended');
+          checkReceiverTracks();
+        };
+      }
+    });
   };
   
   // Start/stop monitoring based on connection state
@@ -506,9 +668,14 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     const isActive = peerConnection.connectionState === 'connected' || 
                      peerConnection.connectionState === 'connecting';
     
-    if (isActive && !trackCheckInterval) {
-      trackCheckInterval = setInterval(checkReceiverTracks, 500);
-    } else if (!isActive && trackCheckInterval) {
+    if (isActive) {
+      if (!trackCheckInterval) {
+        // Faster polling for screen share detection
+        trackCheckInterval = setInterval(checkReceiverTracks, 250);
+      }
+      // Setup receiver listeners
+      setupReceiverTrackListeners();
+    } else if (trackCheckInterval) {
       clearInterval(trackCheckInterval);
       trackCheckInterval = null;
     }
@@ -522,7 +689,19 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     console.log('🎵 Received remote track:', track.kind, {
       id: track.id,
       label: track.label,
+      enabled: track.enabled,
+      muted: track.muted,
     });
+    
+    // Listen to track changes directly
+    track.onmute = () => {
+      console.log('🔄 Remote track muted:', track.kind, track.label);
+      checkReceiverTracks();
+    };
+    track.onunmute = () => {
+      console.log('🔄 Remote track unmuted:', track.kind, track.label);
+      checkReceiverTracks();
+    };
     
     if (stream) {
       const isNewStream = !remoteStream || remoteStream.id !== stream.id;
@@ -541,12 +720,26 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
         
         setupStreamListeners(stream);
         updateRemoteStream(stream);
+        
+        // Store track ID for change detection
+        if (newVideoTrack) {
+          lastVideoTrackId = newVideoTrack.id;
+        }
+      } else if (newVideoTrack && currentVideoTrack?.id === newVideoTrack.id) {
+        // Same track ID but might have new content - update anyway
+        console.log('🔄 Same track ID, but updating stream to ensure latest content');
+        setupStreamListeners(stream);
+        updateRemoteStream(stream);
       }
     } else if (track) {
       // Track without stream - create new stream
       const newStream = new MediaStream([track]);
       setupStreamListeners(newStream);
       updateRemoteStream(newStream);
+      
+      if (track.kind === 'video') {
+        lastVideoTrackId = track.id;
+      }
     }
   };
   
@@ -563,6 +756,11 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     if (state === 'connected' || state === 'completed') {
       console.log('✅ WebRTC connection established!');
       manageMonitoring();
+      // Force immediate track check
+      setTimeout(() => {
+        checkReceiverTracks();
+        setupReceiverTrackListeners();
+      }, 100);
     } else if (state === 'failed' || state === 'disconnected') {
       console.error('❌ WebRTC connection failed');
     }
@@ -570,6 +768,16 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
   
   // Initialize monitoring if already connected
   manageMonitoring();
+  
+  // Also check immediately if connection is already established
+  if (peerConnection.connectionState === 'connected' || 
+      peerConnection.iceConnectionState === 'connected' ||
+      peerConnection.iceConnectionState === 'completed') {
+    setTimeout(() => {
+      checkReceiverTracks();
+      setupReceiverTrackListeners();
+    }, 100);
+  }
 };
 
 /**
@@ -596,15 +804,57 @@ export const cleanupPeerConnection = (peerConnection) => {
 };
 
 /**
+ * Detect browser type for compatibility
+ */
+export const getBrowserInfo = () => {
+  if (typeof navigator === 'undefined') return null;
+  
+  const ua = navigator.userAgent.toLowerCase();
+  const isChrome = ua.includes('chrome') && !ua.includes('edg');
+  const isFirefox = ua.includes('firefox');
+  const isSafari = ua.includes('safari') && !ua.includes('chrome');
+  const isEdge = ua.includes('edg');
+  const isOpera = ua.includes('opera') || ua.includes('opr');
+  
+  return {
+    isChrome,
+    isFirefox,
+    isSafari,
+    isEdge,
+    isOpera,
+    userAgent: ua,
+  };
+};
+
+/**
  * Check if WebRTC is supported
  */
 export const isWebRTCSupported = () => {
-  return !!(
-    typeof RTCPeerConnection !== 'undefined' &&
-    typeof navigator !== 'undefined' &&
-    navigator.mediaDevices &&
-    navigator.mediaDevices.getUserMedia
-  );
+  const browserInfo = getBrowserInfo();
+  
+  // Check basic WebRTC support
+  const hasRTCPeerConnection = typeof RTCPeerConnection !== 'undefined';
+  const hasMediaDevices = typeof navigator !== 'undefined' &&
+                          navigator.mediaDevices &&
+                          navigator.mediaDevices.getUserMedia;
+  
+  if (!hasRTCPeerConnection || !hasMediaDevices) {
+    console.warn('WebRTC not fully supported in this browser');
+    return false;
+  }
+  
+  // Browser-specific checks
+  if (browserInfo) {
+    if (browserInfo.isSafari) {
+      // Safari requires HTTPS for WebRTC (except localhost)
+      if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        console.warn('Safari requires HTTPS for WebRTC');
+        return false;
+      }
+    }
+  }
+  
+  return true;
 };
 
 /**

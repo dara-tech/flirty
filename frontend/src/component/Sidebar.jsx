@@ -4,6 +4,7 @@ import { useAuthStore } from "../store/useAuthStore";
 import { FaUsers, FaTimes, FaBars, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaComment } from "react-icons/fa";
 import SidebarSkeleton from "./skeletons/SideBarSkeleton";
 import CreateGroupModal from "./CreateGroupModal";
+import ProfileImage from "./ProfileImage";
 import { formatDistanceToNow } from "date-fns";
 
 const Sidebar = () => {
@@ -242,9 +243,9 @@ const Sidebar = () => {
                 `}
               >
                 <div className="relative">
-                  <img
-                    src={user.profilePic || "/avatar.png"}
-                    alt={user.name}
+                  <ProfileImage
+                    src={user.profilePic}
+                    alt={user.fullname || user.name}
                     className="size-12 object-cover rounded-full"
                   />
                   {onlineUsers.includes(user._id) && (
@@ -368,8 +369,8 @@ const Sidebar = () => {
                     `}
                   >
                     <div className="relative">
-                      <img
-                        src={group.groupPic || "/avatar.png"}
+                      <ProfileImage
+                        src={group.groupPic}
                         alt={group.name}
                         className="size-12 object-cover rounded-full"
                       />

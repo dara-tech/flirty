@@ -115,239 +115,65 @@ const useWebRTC = () => {
         }
         
         try {
-          // Get current state
           const currentState = useCallStore.getState();
           
-          // CRITICAL: Create completely fresh peer connection when call is answered
-          console.log('🔄 Call answered - setting up WebRTC connection...');
-          
-          // Step 1: Clean up any existing peer connection
+          // Clean up any existing peer connection
           if (currentState.peerConnection) {
-            console.log('🗑️ Closing any existing peer connection...');
             try {
               currentState.peerConnection.close();
             } catch (e) {
-              console.warn('Error closing existing peer connection:', e);
+              // Ignore cleanup errors
             }
             useCallStore.getState().setPeerConnection(null);
           }
           
-          // Step 2: Ensure we have media stream
+          // Ensure we have media stream
           let stream = currentState.localStream;
           if (!stream) {
-            console.log('🎤 Getting media stream...');
             stream = await getLocalStream(currentState.callType);
             useCallStore.getState().setLocalStream(stream);
           }
           
-          // Step 3: Create BRAND NEW peer connection (never used before)
-          console.log('✨ Creating brand new peer connection...');
+          // Create new peer connection
           const pc = createPeerConnection();
           
-          // Step 4: Verify it's completely clean before doing anything
-          if (pc.signalingState !== 'stable') {
-            console.error('❌ New peer connection not in stable state!', pc.signalingState);
-            throw new Error(`New peer connection invalid state: ${pc.signalingState}`);
-          }
-          if (pc.localDescription) {
-            console.error('❌ New peer connection has local description!');
-            throw new Error('New peer connection already has local description!');
-          }
-          if (pc.remoteDescription) {
-            console.error('❌ New peer connection has remote description!');
-            throw new Error('New peer connection already has remote description!');
-          }
-          
-          console.log('✅ Peer connection is clean, proceeding...');
-          
-          // Step 5: Add tracks
-          console.log('📡 Adding local stream tracks...');
+          // Add tracks and setup handlers
           addLocalStreamTracks(pc, stream);
-          
-          // Step 6: Setup handlers
           setupRemoteStreamHandler(pc, (remoteStream) => {
             useCallStore.getState().setRemoteStream(remoteStream);
-            console.log('✅ Remote stream received and set');
           });
           
-          // Step 7: Store peer connection
+          // Store peer connection
           useCallStore.getState().setPeerConnection(pc);
           
-          // Step 8: Verify still clean after adding tracks
-          if (pc.signalingState !== 'stable') {
-            console.warn('⚠️ Warning: State changed after adding tracks:', pc.signalingState);
-          }
-          if (pc.localDescription) {
-            console.error('❌ ERROR: Local description appeared after adding tracks!');
-            throw new Error('Local description was set unexpectedly after adding tracks');
-          }
-          
-          // Get receiver ID
           const receiverId = currentState.receiver?.userId;
           
           if (pc && socket && receiverId && stream) {
             // Setup ICE candidate handler
             setupIceCandidateHandler(pc, socket, callId, receiverId);
             
-            // Check peer connection state BEFORE attempting to create offer
-            const signalingState = pc.signalingState;
-            const connectionState = pc.connectionState;
-            
-            // Final safety check - ensure peer connection is in valid state
-            if (connectionState === 'closed') {
-              throw new Error('Peer connection is closed');
-            }
-            
-            // ABSOLUTE FINAL CHECK: Never create offer if one already exists
-            // This is the last chance to prevent the error
-            if (pc.localDescription || signalingState === 'have-local-offer' || pc.signalingState === 'have-local-offer') {
-              console.error('❌ BLOCKED: Attempted to create offer when one already exists!');
-              console.error('Current state:', {
-                signalingState: pc.signalingState,
-                localDescription: pc.localDescription?.type || 'none',
-                offerCreatedFlag: offerCreatedRef.current,
-              });
-              
-              // If we have a valid offer, resend it
-              if (pc.localDescription?.type === 'offer') {
-                console.log('✅ Reusing existing offer - resending to receiver');
-                socket.emit('webrtc:offer', {
-                  callId,
-                  offer: pc.localDescription,
-                  receiverId: receiverId,
-                });
-                offerCreatedRef.current = true;
-                return; // CRITICAL: EXIT immediately - DO NOT create new offer
-              } else {
-                // Something is wrong - reset everything
-                console.error('❌ Invalid state detected, resetting peer connection');
-                pc.close();
-                useCallStore.getState().setPeerConnection(null);
-                throw new Error(`Cannot create offer: Peer connection is in invalid state "${signalingState}" with localDescription "${pc.localDescription?.type || 'none'}". Reset required.`);
-              }
-            }
-            
-            // MUST be in 'stable' state to create an offer
-            if (signalingState !== 'stable' || pc.signalingState !== 'stable') {
-              console.error(`❌ Cannot create offer: state is ${signalingState} or ${pc.signalingState}, must be 'stable'`);
-              throw new Error(`Cannot create offer when peer connection is in state: ${signalingState || pc.signalingState}. Must be 'stable'.`);
-            }
-            
-            // Triple-check that we don't have a local description
-            if (pc.localDescription) {
-              console.error('❌ CRITICAL: localDescription exists at final check - this should not happen!');
-              socket.emit('webrtc:offer', {
-                callId,
-                offer: pc.localDescription,
-                receiverId: receiverId,
-              });
-              offerCreatedRef.current = true;
-              return; // Exit immediately
-            }
-            
-            // Set flag BEFORE creating offer to prevent duplicates
+            // Set flag to prevent duplicate offers
             offerCreatedRef.current = true;
             
-            // FINAL ABSOLUTE CHECK: Verify peer connection is clean before calling createOffer
-            // This is the last line of defense - if this fails, we throw an error
-            const finalState = pc.signalingState;
-            const finalLocalDesc = pc.localDescription;
-            
-            // If peer connection has ANY existing offer, DO NOT call createOffer
-            if (finalState === 'have-local-offer' || finalLocalDesc?.type === 'offer') {
-              console.error('❌❌❌ CRITICAL BLOCK: Peer connection has existing offer - CANNOT create new one!');
-              console.error('Blocking createOffer() call. State:', {
-                signalingState: finalState,
-                localDescription: finalLocalDesc?.type || 'none',
-                connectionState: pc.connectionState,
-              });
-              
-              // If we have a valid offer, resend it
-              if (finalLocalDesc?.type === 'offer') {
-                console.log('✅ Reusing existing offer instead of creating new one');
-                socket.emit('webrtc:offer', {
-                  callId,
-                  offer: finalLocalDesc,
-                  receiverId: receiverId,
-                });
-                offerCreatedRef.current = true;
-                return; // EXIT - DO NOT call createOffer
-              } else {
-                // State says we have an offer but no local description - corrupted state
-                console.error('❌ FATAL: Peer connection in corrupted state - resetting');
-                pc.close();
-                useCallStore.getState().setPeerConnection(null);
-                throw new Error(`Peer connection in corrupted state: ${finalState} without valid localDescription. Reset required.`);
-              }
-            }
-            
-            // MUST be in 'stable' state
-            if (finalState !== 'stable') {
-              throw new Error(`Cannot create offer: Peer connection state is ${finalState}, must be 'stable'`);
-            }
-            
-            // Verify no local description exists
-            if (finalLocalDesc) {
-              throw new Error(`Cannot create offer: Local description already exists (${finalLocalDesc.type})`);
-            }
-            
-            // LAST-MILLISECOND CHECK: Verify state one more time RIGHT before calling createOffer
-            // Read fresh state values directly from peer connection (no caching)
-            const immediateState = pc.signalingState;
-            const immediateLocalDesc = pc.localDescription;
-            
-            if (immediateState === 'have-local-offer' || immediateLocalDesc?.type === 'offer') {
-              console.error('❌❌❌ LAST-MILLISECOND BLOCK: Offer detected right before createOffer call!');
-              console.error('State at last moment:', {
-                signalingState: immediateState,
-                localDescription: immediateLocalDesc?.type || 'none',
-              });
-              
-              if (immediateLocalDesc?.type === 'offer') {
-                socket.emit('webrtc:offer', {
-                  callId,
-                  offer: immediateLocalDesc,
-                  receiverId: receiverId,
-                });
-                offerCreatedRef.current = true;
-                return; // Exit - do NOT call createOffer
-              } else {
-                throw new Error(`FATAL: State is ${immediateState} but no valid offer found. Peer connection corrupted.`);
-              }
-            }
-            
-            // Now it's safe to create the offer (createOffer will do its own checks too)
-            console.log('📞 All checks passed - attempting to create offer...');
-            console.log('Peer connection state before createOffer:', {
-              signalingState: pc.signalingState,
-              localDescription: pc.localDescription?.type || 'none',
-              connectionState: pc.connectionState,
-            });
-            
-            // Try to create offer - it will return existing one if it already exists
+            // Create and send offer (createOffer handles all validation)
             const offer = await createOffer(pc);
             
-            // After createOffer returns, verify we got a valid offer
             if (!offer) {
-              throw new Error('createOffer returned null - this should not happen');
+              throw new Error('Failed to create call offer');
             }
-            
-            console.log('✅ Offer obtained (either created or existing):', offer.type);
             
             socket.emit('webrtc:offer', {
               callId,
               offer,
               receiverId: receiverId,
             });
-            console.log('✅ Call answered, offer created and sent to receiver');
           } else {
-            console.error('Missing required components:', { pc: !!pc, socket: !!socket, receiverId: !!receiverId, stream: !!stream });
             toast.error("Failed to initialize call");
           }
         } catch (error) {
-          offerCreatedRef.current = false; // Reset flag on error
-          console.error('Error creating offer after call answered:', error);
-          toast.error("Failed to establish connection");
+          offerCreatedRef.current = false;
+          console.error('Error creating offer:', error);
+          toast.error(error.message || "Failed to establish connection");
           endCall();
         }
       }
@@ -395,13 +221,19 @@ const useWebRTC = () => {
       processingOfferRef.current = true;
       
       try {
-        // If peer connection doesn't exist yet, initialize it first
+        // Get or create peer connection
         let pc = peerConnection || useCallStore.getState().peerConnection;
+        
+        // If peer connection doesn't exist yet, create it (fallback)
         if (!pc) {
           try {
             const currentState = useCallStore.getState();
-            const stream = await getLocalStream(currentState.callType);
-            useCallStore.getState().setLocalStream(stream);
+            let stream = currentState.localStream;
+            
+            if (!stream) {
+              stream = await getLocalStream(currentState.callType);
+              useCallStore.getState().setLocalStream(stream);
+            }
             
             pc = createPeerConnection();
             useCallStore.getState().setPeerConnection(pc);
@@ -412,17 +244,46 @@ const useWebRTC = () => {
             setupRemoteStreamHandler(pc, (remoteStream) => {
               useCallStore.getState().setRemoteStream(remoteStream);
             });
-            
-            // Setup ICE candidate handler
-            if (socket && offerCallerId) {
-              setupIceCandidateHandler(pc, socket, callId, offerCallerId);
-            }
           } catch (error) {
             console.error('Error initializing call on offer receive:', error);
-            toast.error(error.message || "Failed to initialize call");
-            processingOfferRef.current = false;
-            endCall();
-            return;
+            
+            // If it's a configuration error, try with minimal config
+            if (error.message?.includes('Configuration') || error.message?.includes('Bad Configuration')) {
+              try {
+                const currentState = useCallStore.getState();
+                const fallbackConfig = {
+                  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                };
+                pc = new RTCPeerConnection(fallbackConfig);
+                useCallStore.getState().setPeerConnection(pc);
+                
+                const stream = currentState.localStream || await getLocalStream(currentState.callType);
+                if (stream) {
+                  addLocalStreamTracks(pc, stream);
+                  setupRemoteStreamHandler(pc, (remoteStream) => {
+                    useCallStore.getState().setRemoteStream(remoteStream);
+                  });
+                }
+              } catch (fallbackError) {
+                toast.error("Failed to establish connection");
+                processingOfferRef.current = false;
+                endCall();
+                return;
+              }
+            } else {
+              toast.error(error.message || "Failed to initialize call");
+              processingOfferRef.current = false;
+              endCall();
+              return;
+            }
+          }
+        }
+        
+        // Setup ICE candidate handler if not already set up (with callerId)
+        if (socket && offerCallerId) {
+          // Check if handler is already set up by checking if onicecandidate exists
+          if (!pc.onicecandidate) {
+            setupIceCandidateHandler(pc, socket, callId, offerCallerId);
           }
         }
         
@@ -438,7 +299,7 @@ const useWebRTC = () => {
         const answer = await createAnswer(pc, offer);
         answerCreatedRef.current = true;
         
-        if (socket) {
+        if (socket && answer) {
           socket.emit('webrtc:answer', {
             callId,
             answer,
@@ -447,10 +308,44 @@ const useWebRTC = () => {
         }
       } catch (error) {
         console.error('Error handling offer:', error);
-        if (error.message && error.message.includes('already established')) {
-          console.log('Connection already established, ignoring error');
+        
+        // Check if connection is already established (stable state)
+        if (pc.signalingState === 'stable') {
+          // Connection is stable, answer might already exist
+          if (pc.localDescription?.type === 'answer') {
+            // Answer already exists, connection is working
+            answerCreatedRef.current = true;
+            processingOfferRef.current = false;
+            return;
+          }
+        }
+        
+        // Handle specific error types
+        if (error.message?.includes('already established') || 
+            error.message?.includes('stable') ||
+            error.message?.includes('Invalid connection state')) {
+          // Connection state issue - might be a race condition
+          // Check if connection is actually working
+          if (pc.signalingState === 'stable' || pc.connectionState === 'connected' || pc.connectionState === 'connecting') {
+            // Connection seems to be working, don't end call
+            console.warn('Connection state warning, but connection appears to be working');
+            answerCreatedRef.current = true;
+            processingOfferRef.current = false;
+            return;
+          }
+        }
+        
+        // Only end call if it's a critical error
+        if (error.message?.includes('Configuration') || error.message?.includes('Bad Configuration')) {
+          // Configuration error - try to continue, connection might still work
+          toast.error("Connection issue. Attempting to continue...");
+        } else if (error.message?.includes('Call connection error')) {
+          // Connection error - might be recoverable
+          console.warn('Call connection error, but continuing...');
+          // Don't end call immediately, let it try to recover
         } else {
-          toast.error("Failed to answer call");
+          // Critical error - end call
+          toast.error(error.message || "Failed to answer call");
           endCall();
         }
       } finally {
@@ -504,28 +399,28 @@ const useWebRTC = () => {
         pendingAnswerRef.current = null; // Clear buffered answer
       } catch (error) {
         console.error('Error handling answer:', error);
-        // If connection is already stable, it's fine - connection is established
-        if (error.message && (error.message.includes('stable') || error.message.includes('wrong state'))) {
-          console.log('Connection already established, ignoring duplicate answer');
+        
+        // If connection is already stable, ignore
+        if (error.message?.includes('stable') || error.message?.includes('wrong state')) {
           pendingAnswerRef.current = null;
-        } else {
-          // Retry after a short delay
-          setTimeout(async () => {
-            const currentPc = useCallStore.getState().peerConnection;
-            if (currentPc && currentPc.signalingState === 'have-local-offer') {
-              try {
-                await setRemoteDescription(currentPc, answer);
-                pendingAnswerRef.current = null;
-              } catch (retryError) {
-                console.error('Error retrying answer:', retryError);
-                if (!retryError.message.includes('stable')) {
-                  toast.error("Failed to establish connection");
-                  endCall();
-                }
+          return;
+        }
+        
+        // Retry after a short delay
+        setTimeout(async () => {
+          const currentPc = useCallStore.getState().peerConnection;
+          if (currentPc && currentPc.signalingState === 'have-local-offer') {
+            try {
+              await setRemoteDescription(currentPc, answer);
+              pendingAnswerRef.current = null;
+            } catch (retryError) {
+              if (!retryError.message?.includes('stable')) {
+                toast.error("Failed to establish connection");
+                endCall();
               }
             }
-          }, 500);
-        }
+          }
+        }, 500);
       }
     };
     
@@ -543,8 +438,12 @@ const useWebRTC = () => {
         // Can add candidates even before remote description is set (they'll be queued)
         await addIceCandidate(pc, candidate);
       } catch (error) {
-        console.error('Error adding ICE candidate:', error);
-        // Don't fail the call, just log the error
+        // ICE candidate errors are non-fatal - connection can still work
+        // Only log unexpected errors
+        if (!error.message?.includes('not found') && 
+            !error.message?.includes('already added')) {
+          console.warn('ICE candidate error (non-fatal):', error.message);
+        }
       }
     };
     
@@ -590,11 +489,10 @@ const useWebRTC = () => {
       // Clean up any existing peer connection first
       const currentState = useCallStore.getState();
       if (currentState.peerConnection) {
-        console.log('🧹 Cleaning up existing peer connection during initialization...');
         try {
           currentState.peerConnection.close();
         } catch (e) {
-          console.warn('Error closing peer connection:', e);
+          // Ignore cleanup errors
         }
         useCallStore.getState().setPeerConnection(null);
       }
@@ -602,8 +500,6 @@ const useWebRTC = () => {
       // Get media stream
       const stream = await getLocalStream(callType);
       setLocalStream(stream);
-      
-      console.log('✅ Media stream obtained. Peer connection will be created when call is answered.');
     } catch (error) {
       console.error('Error initializing call:', error);
       toast.error(error.message || "Failed to start call");
@@ -628,21 +524,66 @@ const useWebRTC = () => {
   // Answer call with media
   const answerCallWithMedia = async () => {
     try {
-      // First initialize media and peer connection
+      // First initialize media stream
       await initializeCall(false);
       
-      // Set that we're ready to receive the offer
-      // The answer will be created automatically when offer is received via handleWebRTCOffer
+      // Create peer connection immediately when answering (not waiting for offer)
+      const currentState = useCallStore.getState();
+      let stream = currentState.localStream;
+      
+      if (!stream) {
+        stream = await getLocalStream(currentState.callType);
+        useCallStore.getState().setLocalStream(stream);
+      }
+      
+      // Create peer connection now so it's ready when offer arrives
+      let pc = currentState.peerConnection;
+      if (!pc) {
+        try {
+          pc = createPeerConnection();
+        } catch (pcError) {
+          console.error('Failed to create peer connection:', pcError);
+          // Don't reject call immediately - try to continue without peer connection
+          // The offer handler will retry creating the peer connection
+          toast.error("Connection error. Please try again.");
+          // Still send answer signal - connection might work
+        }
+        
+        if (pc) {
+          useCallStore.getState().setPeerConnection(pc);
+          
+          // Add local stream tracks
+          addLocalStreamTracks(pc, stream);
+          
+          // Setup handlers
+          setupRemoteStreamHandler(pc, (remoteStream) => {
+            useCallStore.getState().setRemoteStream(remoteStream);
+          });
+        }
+      }
       
       // Send the answer signal to notify caller we've answered
+      // This should happen even if peer connection creation failed
       const { answerCall } = useCallStore.getState();
       await answerCall();
-      
-      console.log('Call answered, waiting for offer from caller');
     } catch (error) {
       console.error('Error answering call:', error);
-      toast.error(error.message || "Failed to answer call");
-      useCallStore.getState().rejectCall();
+      
+      // Only reject if it's a critical error (not peer connection config)
+      if (error.message?.includes('Configuration') || error.message?.includes('Bad Configuration')) {
+        // Try to continue - peer connection will be created when offer arrives
+        toast.error("Connection setup issue. Attempting to continue...");
+        const { answerCall } = useCallStore.getState();
+        try {
+          await answerCall();
+        } catch (answerError) {
+          toast.error("Failed to answer call");
+          useCallStore.getState().rejectCall();
+        }
+      } else {
+        toast.error(error.message || "Failed to answer call");
+        useCallStore.getState().rejectCall();
+      }
     }
   };
   

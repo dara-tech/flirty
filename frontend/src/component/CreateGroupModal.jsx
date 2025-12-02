@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaTimes, FaUsers, FaImage, FaSpinner } from "react-icons/fa";
+import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 
 const CreateGroupModal = ({ isOpen, onClose }) => {
@@ -173,8 +174,8 @@ const CreateGroupModal = ({ isOpen, onClose }) => {
                       onChange={() => toggleMember(user._id)}
                       className="checkbox checkbox-primary"
                     />
-                    <img
-                      src={user.profilePic || "/avatar.png"}
+                    <ProfileImage
+                      src={user.profilePic}
                       alt={user.fullname}
                       className="size-10 rounded-full object-cover"
                     />

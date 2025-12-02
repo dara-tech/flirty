@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useCallStore } from "../store/useCallStore";
 import CallControls from "./CallControls";
+import ProfileImage from "./ProfileImage";
 
 const VideoCallWindow = () => {
   const {
@@ -34,21 +35,52 @@ const VideoCallWindow = () => {
     const videoElement = remoteVideoRef.current;
     if (!videoElement || !remoteStream) return;
     
+    let isMounted = true;
+    let playPromise = null;
+    
     // Update video source if stream changed
     if (videoElement.srcObject !== remoteStream) {
+      // Cancel any pending play operations
+      if (playPromise) {
+        playPromise.catch(() => {}); // Ignore abort errors
+      }
       videoElement.srcObject = remoteStream;
     }
     
-    // Ensure video plays
-    videoElement.play().catch(err => {
-      console.error('Error playing remote video:', err);
-    });
+    // Ensure video plays with proper error handling
+    const playVideo = async () => {
+      if (!isMounted || !videoElement || !remoteStream) return;
+      
+      try {
+        // Cancel previous play promise if exists
+        if (playPromise) {
+          playPromise.catch(() => {}); // Ignore abort errors
+        }
+        
+        playPromise = videoElement.play();
+        await playPromise;
+        playPromise = null;
+      } catch (err) {
+        // Ignore AbortError (happens when video is removed/changed during play)
+        if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+          // Only log non-abort errors
+          if (isMounted) {
+            console.warn('Error playing remote video:', err.name);
+          }
+        }
+        playPromise = null;
+      }
+    };
+    
+    playVideo();
     
     // Handle track changes (screen share replacing camera)
     const handleVideoUpdate = () => {
-      if (videoElement && remoteStream) {
-        videoElement.srcObject = remoteStream;
-        videoElement.play().catch(() => {});
+      if (isMounted && videoElement && remoteStream) {
+        if (videoElement.srcObject !== remoteStream) {
+          videoElement.srcObject = remoteStream;
+        }
+        playVideo();
       }
     };
     
@@ -60,34 +92,45 @@ const VideoCallWindow = () => {
       track.addEventListener('unmute', handleVideoUpdate);
     });
     
-    remoteStream.addEventListener('addtrack', (event) => {
+    const addTrackHandler = (event) => {
       if (event.track.kind === 'video') {
         handleVideoUpdate();
       }
-    });
+    };
+    
+    remoteStream.addEventListener('addtrack', addTrackHandler);
     
     // Cleanup
     return () => {
+      isMounted = false;
+      if (playPromise) {
+        playPromise.catch(() => {}); // Ignore abort errors
+      }
       videoTracks.forEach(track => {
         track.removeEventListener('ended', handleVideoUpdate);
         track.removeEventListener('mute', handleVideoUpdate);
         track.removeEventListener('unmute', handleVideoUpdate);
       });
+      remoteStream.removeEventListener('addtrack', addTrackHandler);
     };
   }, [remoteStream]);
   
   useEffect(() => {
     // Handle speaker output for audio and ensure it plays
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.volume = 1.0;
-      remoteVideoRef.current.setAttribute('playsinline', 'true');
-      
-      // Try to play if paused
-      if (remoteVideoRef.current.paused && remoteStream) {
-        remoteVideoRef.current.play().catch(err => {
-          console.error('Error playing video:', err);
-        });
-      }
+    const videoElement = remoteVideoRef.current;
+    if (!videoElement || !remoteStream) return;
+    
+    videoElement.volume = 1.0;
+    videoElement.setAttribute('playsinline', 'true');
+    
+    // Try to play if paused (with error handling)
+    if (videoElement.paused) {
+      videoElement.play().catch(err => {
+        // Ignore AbortError (happens when video is removed/changed)
+        if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+          console.warn('Error playing video:', err.name);
+        }
+      });
     }
   }, [isSpeakerEnabled, remoteStream]);
   
@@ -111,8 +154,8 @@ const VideoCallWindow = () => {
           <div className="absolute inset-0 flex items-center justify-center bg-base-100">
             <div className="text-center">
               <div className="w-24 h-24 rounded-full overflow-hidden mx-auto mb-4 ring-4 ring-primary">
-                <img
-                  src={displayUser?.profilePic || "/avatar.png"}
+                <ProfileImage
+                  src={displayUser?.profilePic}
                   alt={displayUser?.fullname}
                   className="w-full h-full object-cover"
                 />
@@ -152,8 +195,8 @@ const VideoCallWindow = () => {
           <div className="absolute bottom-24 right-4 w-32 h-48 bg-base-200 rounded-lg flex items-center justify-center border-2 border-base-300">
             <div className="text-center">
               <div className="w-16 h-16 rounded-full overflow-hidden mx-auto mb-2">
-                <img
-                  src={caller?.profilePic || "/avatar.png"}
+                <ProfileImage
+                  src={caller?.profilePic}
                   alt="You"
                   className="w-full h-full object-cover"
                 />

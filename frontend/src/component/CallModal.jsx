@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { FaPhone, FaVideo, FaTimes } from "react-icons/fa";
 import { useCallStore } from "../store/useCallStore";
+import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 
 const CallModal = ({ answerCallWithMedia }) => {
@@ -46,8 +47,8 @@ const CallModal = ({ answerCallWithMedia }) => {
         {/* Caller Info */}
         <div className="mb-6">
           <div className="relative inline-block mb-4">
-            <img
-              src={caller.profilePic || "/avatar.png"}
+            <ProfileImage
+              src={caller.profilePic}
               alt={caller.fullname}
               className="w-32 h-32 rounded-full object-cover ring-4 ring-primary"
             />

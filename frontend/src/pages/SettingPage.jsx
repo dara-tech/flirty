@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
 import { useNavigate } from "react-router-dom";
 import { FaCamera, FaEye, FaEyeSlash, FaPalette, FaSignOutAlt, FaUser, FaEdit } from "react-icons/fa";
+import ProfileImage from "../component/ProfileImage";
 import toast from "react-hot-toast";
 
 const SettingsPage = () => {
@@ -126,8 +127,8 @@ const SettingsPage = () => {
         <div className="px-3 sm:px-4 py-4 sm:py-6">
           <div className="flex flex-col items-center gap-3 sm:gap-4">
             <div className="relative flex-shrink-0">
-              <img
-                src={selectedImg || authUser?.profilePic || "/avatar.png"}
+              <ProfileImage
+                src={selectedImg || authUser?.profilePic}
                 alt="Profile"
                 className="size-20 sm:size-24 rounded-full object-cover"
               />

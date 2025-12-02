@@ -5,6 +5,7 @@ import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUser
 import CreateGroupModal from "../component/CreateGroupModal";
 import DeleteConversationModal from "../component/DeleteConversationModal";
 import DeleteGroupModal from "../component/DeleteGroupModal";
+import ProfileImage from "../component/ProfileImage";
 import { formatDistanceToNow } from "date-fns";
 import SidebarSkeleton from "../component/skeletons/SideBarSkeleton";
 import toast from "react-hot-toast";
@@ -394,8 +395,8 @@ const ConversationsListPage = () => {
                         }`}
                       >
                         <div className="relative flex-shrink-0">
-                          <img
-                            src={user.profilePic || "/avatar.png"}
+                          <ProfileImage
+                            src={user.profilePic}
                             alt={user.fullname}
                             className="size-12 rounded-full object-cover"
                           />
@@ -492,8 +493,8 @@ const ConversationsListPage = () => {
                       }`}
                     >
                       <div className="relative flex-shrink-0">
-                        <img
-                          src={group.groupPic || "/avatar.png"}
+                        <ProfileImage
+                          src={group.groupPic}
                           alt={group.name}
                           className="size-12 rounded-full object-cover"
                         />
