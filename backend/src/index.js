@@ -5,14 +5,17 @@ import groupRoute from './routes/group.route.js';
 import contactRoute from './routes/contact.route.js';
 import dotenv from 'dotenv';
 import { connectDB } from './lib/db.js';
+import mongoose from 'mongoose';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import { app, server } from './lib/socket.js';  // Use the app instance from socket.js
+import { app, server, io } from './lib/socket.js';  // Use the app instance from socket.js
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
 
 dotenv.config();
 
 const PORT = process.env.PORT || 5002;  // Fallback to 5002 (match your dev port)
+const AUTO_RELOAD_INTERVAL = parseInt(process.env.AUTO_RELOAD_INTERVAL) || 14 * 60 * 1000; // 14 minutes in milliseconds
+const AUTO_RELOAD_ENABLED = process.env.AUTO_RELOAD_ENABLED !== 'false'; // Enabled by default, set to 'false' to disable
 
 // Middleware setup
 app.use(express.json({ limit: '50mb' }));
@@ -127,6 +130,72 @@ app.get('/api', (req, res) => {
 // Note: Static file serving removed for separate hosting
 // Frontend is hosted on Netlify, backend only serves API endpoints
 
+// Graceful shutdown function
+const gracefulShutdown = async (signal) => {
+  console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
+  
+  // Clear auto-reload timer if it exists
+  if (autoReloadTimer) {
+    clearTimeout(autoReloadTimer);
+    autoReloadTimer = null;
+  }
+  
+  try {
+    // Close Socket.IO connections first (notify clients)
+    if (io) {
+      io.emit('server:restarting', { message: 'Server is restarting, please reconnect...' });
+      io.close(() => {
+        console.log('✅ Socket.IO server closed');
+      });
+    }
+    
+    // Close HTTP server (stop accepting new connections)
+    if (server) {
+      server.close(() => {
+        console.log('✅ HTTP server closed');
+      });
+    }
+    
+    // Wait a bit for connections to close gracefully
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Close database connection
+    if (mongoose.connection.readyState === 1) {
+      await mongoose.connection.close();
+      console.log('✅ Database connection closed');
+    }
+    
+    console.log('✅ Graceful shutdown completed');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+};
+
+// Handle shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Auto-reload mechanism (restart every 14 minutes by default)
+let autoReloadTimer = null;
+
+const setupAutoReload = () => {
+  if (!AUTO_RELOAD_ENABLED) {
+    console.log('⏸️  Auto-reload is disabled');
+    return;
+  }
+  
+  const intervalMinutes = AUTO_RELOAD_INTERVAL / (60 * 1000);
+  console.log(`⏰ Auto-reload enabled: Server will restart every ${intervalMinutes} minutes`);
+  
+  autoReloadTimer = setTimeout(async () => {
+    console.log(`\n🔄 Auto-reload triggered after ${intervalMinutes} minutes`);
+    console.log('🔄 Restarting server...');
+    await gracefulShutdown('AUTO_RELOAD');
+  }, AUTO_RELOAD_INTERVAL);
+};
+
 // Start the server
 const startServer = async () => {
   try {
@@ -136,6 +205,9 @@ const startServer = async () => {
     server.listen(PORT, () => {
       console.log(`🌐 Server is running on port ${PORT} ✅`);
       console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+      
+      // Setup auto-reload after server starts
+      setupAutoReload();
     });
 
   } catch (error) {
