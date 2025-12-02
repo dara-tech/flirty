@@ -36,24 +36,48 @@ export const useAuthStore = create((set, get) => ({
   onlineUsers: [],
   socket: null,
   typingTimeout: null, // To handle typing timeout
+  _checkAuthPromise: null, // Prevent duplicate simultaneous calls
 
   // ✅ Check Authentication Status
   checkAuth: async () => {
-    set({ isCheckingAuth: true });
-    try {
-      const res = await axiosInstance.get("/auth/check");
-      set({ authUser: res.data });
-      get().connectSocket(); // ✅ Connect to socket after authentication
-    } catch (error) {
-      // Silently handle 401 errors (expected when not logged in)
-      // Only log unexpected errors
-      if (error.response?.status !== 401 && error.response?.status !== 403) {
-        console.error("Error in checking authentication:", error);
-      }
-      set({ authUser: null });
-    } finally {
-      set({ isCheckingAuth: false });
+    // If already checking, return the existing promise
+    if (get()._checkAuthPromise) {
+      return get()._checkAuthPromise;
     }
+
+    // Create a new promise for this auth check
+    const authCheckPromise = (async () => {
+      set({ isCheckingAuth: true });
+      try {
+        const res = await axiosInstance.get("/auth/me");
+        // Handle new response format: { success: true, data: {...} }
+        const userData = res.data?.data || res.data;
+        if (userData && userData._id) {
+          set({ authUser: userData });
+          get().connectSocket(); // ✅ Connect to socket after authentication
+        } else {
+          set({ authUser: null });
+        }
+      } catch (error) {
+        // Silently handle 401/403 errors (expected when not logged in)
+        // These are completely normal and should never be logged
+        // The browser console will still show the HTTP error, but we don't log it ourselves
+        const status = error.response?.status;
+        if (status !== 401 && status !== 403) {
+          // Only log unexpected errors (network issues, server errors, etc.)
+          // 401/403 are expected and handled silently
+          console.error("Error in checking authentication:", error);
+        }
+        // Always set authUser to null on any error (user is not authenticated)
+        set({ authUser: null });
+      } finally {
+        set({ isCheckingAuth: false, _checkAuthPromise: null });
+      }
+    })();
+
+    // Store the promise to prevent duplicate calls
+    set({ _checkAuthPromise: authCheckPromise });
+    return authCheckPromise;
   },
 
   // ✅ Sign Up Function
@@ -61,12 +85,25 @@ export const useAuthStore = create((set, get) => ({
     set({ isSigningUp: true });
     try {
       const res = await axiosInstance.post("/auth/signup", data);
-      set({ authUser: res.data });
-      toast.success("Account created successfully");
-      get().connectSocket(); // ✅ Connect socket after signup
+      // Handle new response format: { success: true, data: {...} }
+      const userData = res.data?.data || res.data;
+      if (userData && userData._id) {
+        set({ authUser: userData });
+        toast.success("Account created successfully");
+        get().connectSocket(); // ✅ Connect socket after signup
+      } else {
+        throw new Error("Invalid user data received");
+      }
     } catch (error) {
       console.error("Error:", error.response?.data || error.message);
-      toast.error(error.response?.data?.message || "An error occurred. Please try again.");
+      // Handle validation errors with field-specific messages
+      const errorData = error.response?.data;
+      if (errorData?.errors && Array.isArray(errorData.errors)) {
+        const errorMessages = errorData.errors.map(e => e.message).join(', ');
+        toast.error(errorMessages || errorData.message || "Validation failed");
+      } else {
+        toast.error(errorData?.message || "An error occurred. Please try again.");
+      }
     } finally {
       set({ isSigningUp: false });
     }
@@ -85,23 +122,36 @@ export const useAuthStore = create((set, get) => ({
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       
-      set({ authUser: res.data });
-      toast.success("Logged in successfully");
-      
-      // Verify auth immediately after login
-      try {
-        await get().checkAuth();
-      } catch (checkError) {
-        console.warn('⚠️ Auth check after login failed:', checkError);
-        // If check fails, the cookie might not be set - but continue anyway
-        // The user might need to refresh or the cookie will be set on next request
+      // Handle new response format: { success: true, data: {...} }
+      const userData = res.data?.data || res.data;
+      if (userData && userData._id) {
+        set({ authUser: userData });
+        toast.success("Logged in successfully");
+        
+        // Verify auth immediately after login
+        try {
+          await get().checkAuth();
+        } catch (checkError) {
+          console.warn('⚠️ Auth check after login failed:', checkError);
+          // If check fails, the cookie might not be set - but continue anyway
+          // The user might need to refresh or the cookie will be set on next request
+        }
+        
+        get().connectSocket(); // ✅ Connect socket after login
+      } else {
+        throw new Error("Invalid user data received from server");
       }
-      
-      get().connectSocket(); // ✅ Connect socket after login
     } catch (error) {
       console.error('Login error:', error);
-      const errorMessage = error.response?.data?.message || error.message || "Login failed";
-      toast.error(errorMessage);
+      const errorData = error.response?.data;
+      // Handle validation errors
+      if (errorData?.errors && Array.isArray(errorData.errors)) {
+        const errorMessages = errorData.errors.map(e => e.message).join(', ');
+        toast.error(errorMessages || errorData.message || "Login failed");
+      } else {
+        const errorMessage = errorData?.message || error.message || "Login failed";
+        toast.error(errorMessage);
+      }
       throw error; // Re-throw to allow component to handle
     } finally {
       set({ isLoggingIn: false });
@@ -113,12 +163,25 @@ export const useAuthStore = create((set, get) => ({
     set({ isGoogleAuthLoading: true });
     try {
       const res = await axiosInstance.post("/auth/google", { token });
-      set({ authUser: res.data });
-      toast.success("Signed in with Google successfully");
-      get().connectSocket(); // ✅ Connect socket after Google auth
+      // Handle new response format: { success: true, data: {...} }
+      const userData = res.data?.data || res.data;
+      if (userData && userData._id) {
+        set({ authUser: userData });
+        toast.success("Signed in with Google successfully");
+        get().connectSocket(); // ✅ Connect socket after Google auth
+      } else {
+        throw new Error("Invalid user data received from server");
+      }
     } catch (error) {
       console.error("Error:", error.response?.data || error.message);
-      toast.error(error.response?.data?.message || "Failed to sign in with Google");
+      const errorData = error.response?.data;
+      // Handle validation errors
+      if (errorData?.errors && Array.isArray(errorData.errors)) {
+        const errorMessages = errorData.errors.map(e => e.message).join(', ');
+        toast.error(errorMessages || errorData.message || "Failed to sign in with Google");
+      } else {
+        toast.error(errorData?.message || "Failed to sign in with Google");
+      }
     } finally {
       set({ isGoogleAuthLoading: false });
     }
@@ -132,7 +195,8 @@ export const useAuthStore = create((set, get) => ({
       toast.success("Logged out successfully");
       get().disconnectSocket(); // ✅ Disconnect socket on logout
     } catch (error) {
-      toast.error(error.response?.data?.message || "Logout failed");
+      const errorData = error.response?.data;
+      toast.error(errorData?.message || "Logout failed");
     }
   },
 
@@ -141,11 +205,20 @@ export const useAuthStore = create((set, get) => ({
     set({ isUpdatingProfile: true });
     try {
       const res = await axiosInstance.put("/auth/update-profile", data);
-      set({ authUser: res.data });
+      // Handle new response format: { success: true, data: {...} }
+      const userData = res.data?.data || res.data;
+      set({ authUser: userData });
       toast.success("Profile updated successfully");
     } catch (error) {
       console.log("Error updating profile:", error);
-      toast.error(error.response?.data?.message || "Update failed");
+      const errorData = error.response?.data;
+      // Handle validation errors
+      if (errorData?.errors && Array.isArray(errorData.errors)) {
+        const errorMessages = errorData.errors.map(e => e.message).join(', ');
+        toast.error(errorMessages || errorData.message || "Update failed");
+      } else {
+        toast.error(errorData?.message || "Update failed");
+      }
     } finally {
       set({ isUpdatingProfile: false });
     }
@@ -160,7 +233,14 @@ export const useAuthStore = create((set, get) => ({
       return true;
     } catch (error) {
       console.log("Error changing password:", error);
-      toast.error(error.response?.data?.message || "Password change failed");
+      const errorData = error.response?.data;
+      // Handle validation errors
+      if (errorData?.errors && Array.isArray(errorData.errors)) {
+        const errorMessages = errorData.errors.map(e => e.message).join(', ');
+        toast.error(errorMessages || errorData.message || "Password change failed");
+      } else {
+        toast.error(errorData?.message || "Password change failed");
+      }
       return false;
     } finally {
       set({ isChangingPassword: false });
@@ -170,7 +250,8 @@ export const useAuthStore = create((set, get) => ({
   // ✅ Connect to Socket.IO
   connectSocket: () => {
     const { authUser, socket } = get();
-    if (!authUser || socket?.connected) return;
+    // Only connect if we have a valid authUser with an _id
+    if (!authUser || !authUser._id || socket?.connected) return;
 
     const newSocket = io(BASE_URL, {
       query: { userId: authUser._id.toString() }, // Ensure userId is string

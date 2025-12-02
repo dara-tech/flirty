@@ -7,6 +7,7 @@ import ContactsPage from "./ContactsPage";
 import SettingPage from "./SettingPage";
 import ThemePage from "./ThemePage";
 import GroupInfoContent from "../component/GroupInfoContent";
+import UserInfoContent from "../component/UserInfoContent";
 import { useSearchParams, useLocation } from "react-router-dom";
 import { FaComment } from "react-icons/fa";
 
@@ -17,6 +18,8 @@ const ChatPage = () => {
   const location = useLocation();
   const [showGroupInfo, setShowGroupInfo] = useState(false);
   const [groupInfoId, setGroupInfoId] = useState(null);
+  const [showUserInfo, setShowUserInfo] = useState(false);
+  const [userInfoId, setUserInfoId] = useState(null);
   const [isDesktop, setIsDesktop] = useState(window.innerWidth >= 1024);
   
   // Draggable resizer state
@@ -40,6 +43,21 @@ const ChatPage = () => {
     window.addEventListener('showGroupInfo', handleShowGroupInfo);
     return () => window.removeEventListener('showGroupInfo', handleShowGroupInfo);
   }, [isDesktop]);
+
+  // Listen for showUserInfo event from ChatHeader (desktop)
+  useEffect(() => {
+    const handleShowUserInfo = (e) => {
+      if (isDesktop) {
+        setUserInfoId(e.detail.userId);
+        setShowUserInfo(true);
+        // Dispatch event to hide input in toolbar
+        window.dispatchEvent(new CustomEvent('userInfoStateChanged', { detail: { isOpen: true } }));
+      }
+    };
+    
+    window.addEventListener('showUserInfo', handleShowUserInfo);
+    return () => window.removeEventListener('showUserInfo', handleShowUserInfo);
+  }, [isDesktop]);
   
   // Dispatch events when group info state changes
   useEffect(() => {
@@ -49,9 +67,21 @@ const ChatPage = () => {
       }));
     }
   }, [isDesktop, showGroupInfo, groupInfoId]);
+
+  // Dispatch events when user info state changes
+  useEffect(() => {
+    if (isDesktop) {
+      window.dispatchEvent(new CustomEvent('userInfoStateChanged', { 
+        detail: { isOpen: showUserInfo && !!userInfoId } 
+      }));
+    }
+  }, [isDesktop, showUserInfo, userInfoId]);
   
   // Extract groupId from route if on group info route
   const groupIdFromRoute = location.pathname.match(/\/group\/([^/]+)\/info/)?.[1];
+  
+  // Extract userId from route if on user info route
+  const userIdFromRoute = location.pathname.match(/\/user\/([^/]+)\/info/)?.[1];
   
   // On desktop/md+, if route is group info, extract groupId and show in panel instead
   useEffect(() => {
@@ -62,6 +92,16 @@ const ChatPage = () => {
       window.history.replaceState({}, '', '/');
     }
   }, [isDesktop, groupIdFromRoute, showGroupInfo]);
+
+  // On desktop/md+, if route is user info, extract userId and show in panel instead
+  useEffect(() => {
+    if (isDesktop && userIdFromRoute && !showUserInfo) {
+      setUserInfoId(userIdFromRoute);
+      setShowUserInfo(true);
+      // Navigate back to main page (we'll show it in panel instead)
+      window.history.replaceState({}, '', '/');
+    }
+  }, [isDesktop, userIdFromRoute, showUserInfo]);
   
   const view = searchParams.get('view') || 'chats'; // Default to chats (conversations)
   const showTheme = searchParams.get('theme') === 'true' || view === 'theme';
@@ -251,7 +291,7 @@ const ChatPage = () => {
           </div>
         )}
         
-        {/* Right Panel - Shows Chat Container, Theme Page, Group Info, or empty state */}
+        {/* Right Panel - Shows Chat Container, Theme Page, Group Info, User Info, or empty state */}
         {/* Desktop: Always show right panel */}
         <div className="hidden lg:flex flex-1 flex-col overflow-hidden min-w-0 bg-base-100 relative">
           {showTheme ? (
@@ -266,6 +306,19 @@ const ChatPage = () => {
                 // Dispatch event to show input in toolbar
                 if (isDesktop) {
                   window.dispatchEvent(new CustomEvent('groupInfoStateChanged', { detail: { isOpen: false } }));
+                }
+              }} 
+            />
+          ) : showUserInfo && userInfoId ? (
+            <UserInfoContent 
+              userId={userInfoId} 
+              embedded={true}
+              onClose={() => {
+                setShowUserInfo(false);
+                setUserInfoId(null);
+                // Dispatch event to show input in toolbar
+                if (isDesktop) {
+                  window.dispatchEvent(new CustomEvent('userInfoStateChanged', { detail: { isOpen: false } }));
                 }
               }} 
             />

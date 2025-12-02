@@ -156,6 +156,7 @@ export const useChatStore = create((set, get) => ({
   },
 
   getMessages: async (userId) => {
+    // Don't clear messages - keep showing cached ones while loading
     set({ isMessagesLoading: true, hasMoreMessages: false });
     try {
       const res = await axiosInstance.get(`/messages/${userId}`);
@@ -1863,6 +1864,7 @@ export const useChatStore = create((set, get) => ({
   },
 
   getGroupMessages: async (groupId) => {
+    // Don't clear messages - keep showing cached ones while loading
     set({ 
       isMessagesLoading: true, 
       hasMoreMessages: false,

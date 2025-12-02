@@ -8,6 +8,7 @@ import { connectDB } from './lib/db.js';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import { app, server } from './lib/socket.js';  // Use the app instance from socket.js
+import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
 
 dotenv.config();
 
@@ -78,6 +79,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/messages', messageRoute);
 app.use('/api/groups', groupRoute);
 app.use('/api/contacts', contactRoute);
+
+// Error handling middleware (must be after routes)
+app.use(notFoundHandler); // 404 handler
+app.use(errorHandler); // Global error handler
 
 // Health check endpoint for Render/monitoring
 app.get('/health', (req, res) => {

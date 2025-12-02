@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaCheckDouble, FaCheck, FaEdit, FaTrash, FaImage, FaSpinner, FaEllipsisV, FaCopy, FaShare, FaThumbtack, FaMicrophone } from "react-icons/fa";
+import { FaEdit, FaTrash, FaImage, FaSpinner, FaEllipsisV, FaCopy, FaShare, FaThumbtack, FaMicrophone } from "react-icons/fa";
 import ChatHeader from "./ChatHeader";
 import MessageInput from "./MessageInput";
 import MessageSkeleton from "./skeletons/MessageSkeleton";
@@ -59,6 +59,7 @@ const ChatContainer = () => {
   const filePickerOpenedRef = useRef(false);
   const [openMenuMessageId, setOpenMenuMessageId] = useState(null);
   const menuRefs = useRef({});
+  const prevChatRef = useRef(null);
 
   const isGroupChat = !!selectedGroup;
   
@@ -78,11 +79,27 @@ const ChatContainer = () => {
   }, [updatingImageMessage, isGroupChat, selectedUser?._id, sendUploadingPhotoStatus]);
 
   useEffect(() => {
+    const currentChatId = selectedUser?._id || selectedGroup?._id;
+    const prevChatId = prevChatRef.current;
+    
+    // Only clear messages if switching to a different chat (to avoid showing wrong messages)
+    if (currentChatId && prevChatId && currentChatId !== prevChatId) {
+      // Clear messages when switching chats - new messages will load immediately
+      useChatStore.setState({ messages: [] });
+    }
+    
+    // Load messages in background without blocking UI (like Telegram)
     if (selectedUser?._id) {
       getMessages(selectedUser._id);
+      prevChatRef.current = selectedUser._id;
     } else if (selectedGroup?._id) {
       getGroupMessages(selectedGroup._id);
       subscribeToGroupMessages();
+      prevChatRef.current = selectedGroup._id;
+    } else {
+      // Clear messages when no chat is selected
+      prevChatRef.current = null;
+      useChatStore.setState({ messages: [] });
     }
 
     return () => {
@@ -341,7 +358,55 @@ const ChatContainer = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [openMenuMessageId]);
 
-  const MessageStatus = ({ message, isOnImage = false }) => {
+  // Clean checkmark icons using DaisyUI compatible SVG
+  const CheckIcon = ({ className, isSeen = false }) => {
+    if (isSeen) {
+      // Double check (seen)
+      return (
+        <svg 
+          viewBox="0 0 20 12" 
+          className={className}
+          fill="none" 
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path 
+            d="M1 6L4.5 9.5L11 3" 
+            stroke="currentColor" 
+            strokeWidth="1.5" 
+            strokeLinecap="round" 
+            strokeLinejoin="round"
+          />
+          <path 
+            d="M6 6L9.5 9.5L16 3" 
+            stroke="currentColor" 
+            strokeWidth="1.5" 
+            strokeLinecap="round" 
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    } else {
+      // Single check (sent)
+      return (
+        <svg 
+          viewBox="0 0 20 12" 
+          className={className}
+          fill="none" 
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path 
+            d="M1 6L4.5 9.5L15 1" 
+            stroke="currentColor" 
+            strokeWidth="1.5" 
+            strokeLinecap="round" 
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    }
+  };
+
+  const MessageStatus = ({ message, isOnImage = false, isInline = false }) => {
     const senderId = typeof message.senderId === 'object' ? message.senderId._id : message.senderId;
     const isMyMessage = senderId === authUser._id;
     const [showTooltip, setShowTooltip] = useState(false);
@@ -488,7 +553,67 @@ const ChatContainer = () => {
       return `Seen ${seenDate.toLocaleDateString()} at ${seenDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     };
     
-    // Return only seen indicator (no timestamp/edited here - they're inside bubble)
+    // Return seen indicator - inline or standalone
+    if (isInline) {
+      // Inline version (inside bubble)
+      return (
+        <span 
+          className="relative inline-flex items-baseline group/status"
+          onMouseEnter={() => message.seen && setShowTooltip(true)}
+          onMouseLeave={() => setShowTooltip(false)}
+        >
+          {isMyMessage && !message.groupId && (
+            <>
+              <CheckIcon 
+                isSeen={message.seen}
+                className={`transition-all duration-300 ${isOnImage 
+                  ? 'w-2.5 h-2.5 text-white/90' 
+                  : 'w-2.5 h-2.5 text-primary-content/90'
+                }`}
+              />
+              {/* Tooltip for seen status */}
+              {showTooltip && message.seen && (
+                <div className={`absolute ${isOnImage ? 'bottom-full right-0 mb-2' : 'bottom-full right-0 mb-2'} px-3 py-2 bg-base-100/95 backdrop-blur-xl text-base-content text-xs rounded-xl shadow-2xl whitespace-nowrap z-50 border border-base-300/50 animate-in fade-in slide-in-from-bottom-2 duration-200`}>
+                  <div className="flex items-center gap-2">
+                    <CheckIcon isSeen={true} className="w-3 h-3 text-primary" />
+                    <span className="font-medium">{getSeenTooltip()}</span>
+                  </div>
+                  <div className="absolute top-full right-4 w-0 h-0 border-x-4 border-x-transparent border-t-base-100 border-solid"></div>
+                </div>
+              )}
+            </>
+          )}
+          {isMyMessage && message.groupId && uniqueSeenBy && uniqueSeenBy.length > 0 && (
+            <div className="flex items-center -space-x-1">
+              {uniqueSeenBy.slice(0, 2).map((seen, idx) => {
+                const userId = seen.userId;
+                const userInfo = getUserInfo(userId);
+                return (
+                  <div
+                    key={idx}
+                    className="relative transition-transform hover:scale-110"
+                    style={{ zIndex: 2 - idx }}
+                  >
+                    <img
+                      src={userInfo.profilePic}
+                      alt={userInfo.fullname}
+                      className={`rounded-full object-cover ${isOnImage ? 'w-4 h-4 ring-1 ring-white/30' : 'w-4 h-4 ring-1 ring-primary-content/30'}`}
+                    />
+                  </div>
+                );
+              })}
+              {uniqueSeenBy.length > 2 && (
+                <div className={`rounded-full flex items-center justify-center text-[8px] font-bold ${isOnImage ? 'w-4 h-4 bg-white/20 text-white ring-1 ring-white/30' : 'w-4 h-4 bg-primary-content/20 text-primary-content ring-1 ring-primary-content/30'}`}>
+                  +{uniqueSeenBy.length - 2}
+                </div>
+              )}
+            </div>
+          )}
+        </span>
+      );
+    }
+    
+    // Standalone version (below bubble - for backward compatibility)
     return (
       <div className="relative flex items-center">
         {isMyMessage && !message.groupId && (
@@ -497,20 +622,18 @@ const ChatContainer = () => {
             onMouseEnter={() => message.seen && setShowTooltip(true)}
             onMouseLeave={() => setShowTooltip(false)}
           >
-            {message.seen ? (
-              <FaCheckDouble 
-                className="w-4 h-4 text-primary transition-all duration-300"
-              />
-            ) : (
-              <FaCheck 
-                className="w-4 h-4 text-base-content/40 transition-all duration-300"
-              />
-            )}
+            <CheckIcon 
+              isSeen={message.seen}
+              className={`transition-all duration-300 ${message.seen 
+                ? 'w-4 h-4 text-primary' 
+                : 'w-4 h-4 text-base-content/50'
+              }`}
+            />
             {/* Tooltip for seen status */}
             {showTooltip && message.seen && (
               <div className="absolute bottom-full right-0 mb-2 px-3 py-2 bg-base-100/95 backdrop-blur-xl text-base-content text-xs rounded-xl shadow-2xl whitespace-nowrap z-50 border border-base-300/50 animate-in fade-in slide-in-from-bottom-2 duration-200">
                 <div className="flex items-center gap-2">
-                  <FaCheckDouble className="w-3 h-3 text-primary" />
+                  <CheckIcon isSeen={true} className="w-3 h-3 text-primary" />
                   <span className="font-medium">{getSeenTooltip()}</span>
                 </div>
                 <div className="absolute top-full right-4 w-0 h-0 border-x-4 border-x-transparent border-t-base-100 border-solid"></div>
@@ -553,7 +676,7 @@ const ChatContainer = () => {
             {showTooltip && (
               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 max-w-[90vw] px-4 py-3 bg-base-100/95 backdrop-blur-xl text-base-content text-xs rounded-xl shadow-2xl z-50 border border-base-300/50 animate-in fade-in slide-in-from-bottom-2 duration-200">
                 <div className="font-semibold mb-2 text-sm flex items-center gap-2">
-                  <FaCheckDouble className="w-3.5 h-3.5 text-primary" />
+                  <CheckIcon isSeen={true} className="w-3.5 h-3.5 text-primary" />
                   <span>Seen by ({uniqueSeenBy.length})</span>
                 </div>
                 <div className="space-y-2 max-h-64 overflow-y-auto hide-scrollbar">
@@ -758,16 +881,24 @@ const ChatContainer = () => {
     );
   };
 
-  if (isMessagesLoading) return <MessageSkeleton />;
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-base-100 h-full relative">
       <ChatHeader />
       {/* Standard chat: newest at bottom, load more when scrolling up */}
       <div 
         ref={messagesContainerRef}
-        className="flex-1 overflow-y-auto hide-scrollbar p-4 sm:p-6 space-y-2 min-h-0 relative flex flex-col"
+        className="flex-1 overflow-y-auto hide-scrollbar p-4 sm:p-6 min-h-0 relative flex flex-col"
       >
+        {/* Subtle loading indicator at top - only show when initially loading and no messages */}
+        {isMessagesLoading && messages.length === 0 && (
+          <div className="flex justify-center py-2 sticky top-0 bg-base-100/80 backdrop-blur-sm z-10 -mx-4 sm:-mx-6 px-4 sm:px-6">
+            <div className="flex items-center gap-2 text-base-content/50 bg-base-200/60 px-2.5 py-1 rounded-full">
+              <div className="w-3 h-3 border-2 border-primary/50 border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-[10px] font-medium">Loading...</span>
+            </div>
+          </div>
+        )}
+        
         {/* Loading indicator for pagination - shown at top (oldest messages area) */}
         {isLoadingMoreMessages && (
           <div className="flex justify-center py-3 sticky top-0 bg-base-100/80 backdrop-blur-sm z-10 -mx-4 sm:-mx-6 px-4 sm:px-6">
@@ -779,16 +910,18 @@ const ChatContainer = () => {
         )}
         
         {/* Messages - displayed in normal order (oldest first, newest last) */}
-        {messages.map((message) => {
+        {messages.map((message, index) => {
           const senderId = typeof message.senderId === 'object' ? message.senderId._id : message.senderId;
           const isMyMessage = senderId === authUser._id;
+          const isLastMessage = index === messages.length - 1;
+          const isLastMyMessage = isMyMessage && isLastMessage;
           
           return (
           <div 
             key={message._id} 
-            className={`flex flex-col ${isMyMessage ? "items-end" : "items-start"} group mb-1 relative`}
+            className={`flex flex-col ${isMyMessage ? "items-end" : "items-start"} group mb-3 relative`}
           >
-            <div className={`flex items-end gap-2 max-w-[85%] sm:max-w-[75%] ${isMyMessage ? "flex-row-reverse" : ""}`}>
+            <div className={`flex items-end gap-3 max-w-[85%] sm:max-w-[75%] ${isMyMessage ? "flex-row-reverse" : ""}`}>
               {/* Message Bubble */}
               {message.image ? (
                 /* Image Message - Special styling */
@@ -807,17 +940,17 @@ const ChatContainer = () => {
                     {/* Gradient overlay for better text readability */}
                     <div className={`absolute inset-0 bg-gradient-to-t ${
                       isMyMessage 
-                        ? "from-black/60 via-black/20 to-transparent" 
-                        : "from-black/50 via-black/10 to-transparent"
+                        ? "from-black/70 via-black/30 to-transparent" 
+                        : "from-black/60 via-black/20 to-transparent"
                     } pointer-events-none`} />
                     
                     
                     {/* Text overlay on image if exists */}
                     {message.text && (
-                      <div className="absolute bottom-0 left-0 right-0 p-3">
-                        <p className={`text-sm leading-relaxed ${
+                      <div className="absolute bottom-0 left-0 right-0 p-4">
+                        <p className={`text-sm leading-relaxed font-medium ${
                           isMyMessage ? 'text-white' : 'text-white'
-                        } drop-shadow-md`}>
+                        } drop-shadow-lg`}>
                           {message.text}
                         </p>
                       </div>
@@ -834,18 +967,21 @@ const ChatContainer = () => {
                       </div>
                     )}
                     
-                    {/* Timestamp and edited on image */}
+                    {/* Inline status indicators on image (Telegram style) */}
                     {isMyMessage && (
-                      <div className={`absolute bottom-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-full backdrop-blur-md ${
-                        "bg-black/40"
+                      <div className={`absolute bottom-3 right-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg backdrop-blur-md ${
+                        "bg-black/60"
                       }`}>
-                        <span className="text-[10px] font-medium text-white/90">
-                          {formatMessageTime(message.createdAt)}
-                        </span>
                         {message.edited && (
-                          <span className="text-[10px] italic text-white/80">
+                          <span className="text-[11px] italic text-white/85">
                             (edited)
                           </span>
+                        )}
+                        {/* Seen indicator inside bubble (only on last message) */}
+                        {isLastMyMessage && (
+                          <div className="ml-1.5">
+                            <MessageStatus message={message} isInline={true} isOnImage={true} />
+                          </div>
                         )}
                       </div>
                     )}
@@ -854,7 +990,7 @@ const ChatContainer = () => {
               ) : message.audio ? (
                 /* Audio Message - Special styling */
                 <div 
-                  className={`relative group/message max-w-[320px] sm:max-w-[360px] px-4 py-3 rounded-2xl shadow-md ${
+                  className={`relative group/message max-w-[320px] sm:max-w-[360px] px-5 py-4 rounded-2xl shadow-md ${
                     isMyMessage 
                       ? "bg-primary text-primary-content rounded-br-md" 
                       : "bg-base-200 text-base-content rounded-bl-md"
@@ -862,83 +998,129 @@ const ChatContainer = () => {
                 >
                   {/* Audio player */}
                   <div className="flex items-center gap-3">
-                    <FaMicrophone className={`size-5 flex-shrink-0 ${isMyMessage ? 'text-primary-content/80' : 'text-primary'}`} />
+                    <div className={`flex-shrink-0 size-10 rounded-full flex items-center justify-center ${
+                      isMyMessage ? 'bg-primary-content/20' : 'bg-primary/10'
+                    }`}>
+                      <FaMicrophone className={`size-5 ${isMyMessage ? 'text-primary-content' : 'text-primary'}`} />
+                    </div>
                     <audio
                       src={message.audio}
                       controls
-                      className="flex-1 h-8"
+                      className="flex-1 h-9"
                       controlsList="nodownload"
                     />
                   </div>
                   
                   {/* Text with audio if exists */}
-                  {message.text && (
-                    <p className={`text-sm mt-2 leading-relaxed ${isMyMessage ? 'text-primary-content/90' : 'text-base-content'}`}>
-                      {message.text}
-                    </p>
+                  {message.text ? (
+                    <div className="mt-3">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className={`text-sm leading-relaxed flex-1 min-w-0 ${isMyMessage ? 'text-primary-content/95' : 'text-base-content'}`}>
+                          {message.text}
+                        </span>
+                        
+                        {/* Inline status indicators (Telegram style) */}
+                        <div className="flex items-baseline gap-1 flex-shrink-0 ml-0.5">
+                          {/* Edited indicator */}
+                          {message.edited && (
+                            <span 
+                              className={`text-[10px] italic opacity-70 ${
+                                isMyMessage ? 'text-primary-content/70' : 'text-base-content/60'
+                              }`}
+                            >
+                              (edited)
+                            </span>
+                          )}
+                          
+                          {/* Seen indicator inside bubble (only for my messages and only on last message) */}
+                          {isLastMyMessage && (
+                            <MessageStatus message={message} isInline={true} />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Inline status indicators when no text (Telegram style) */
+                    <div className="flex items-baseline justify-end gap-1 mt-3">
+                      {/* Edited indicator */}
+                      {message.edited && (
+                        <span 
+                          className={`text-[10px] italic opacity-70 ${
+                            isMyMessage ? 'text-primary-content/70' : 'text-base-content/60'
+                          }`}
+                        >
+                          (edited)
+                        </span>
+                      )}
+                      
+                      {/* Seen indicator inside bubble (only for my messages and only on last message) */}
+                      {isLastMyMessage && (
+                        <MessageStatus message={message} isInline={true} />
+                      )}
+                    </div>
                   )}
-                  
-                  {/* Footer with timestamp and edited */}
-                  <div className={`flex items-center justify-end gap-1.5 mt-2 ${
-                    isMyMessage
-                      ? "text-primary-content/70" 
-                      : "text-base-content/60"
-                  }`}>
-                    <span className="text-[10px] font-medium opacity-70">
-                      {formatMessageTime(message.createdAt)}
-                    </span>
-                    {message.edited && (
-                      <span className="text-[10px] italic opacity-60">
-                        (edited)
-                      </span>
-                    )}
-                  </div>
                 </div>
               ) : (
                 /* Text Message - Standard styling */
                 <div 
-                  className={`relative px-4 py-2.5 rounded-2xl text-sm group/message shadow-sm ${
+                  className={`relative px-5 py-3 text-sm rounded-2xl group/message shadow-sm ${
                     isMyMessage
                       ? "bg-primary text-primary-content rounded-br-md"
                       : "bg-base-200 text-base-content rounded-bl-md"
                   }`}
                 >
                   
-                  {/* Message text */}
-                  {message.text && (
-                    <p className={`leading-relaxed ${isMyMessage ? 'text-primary-content' : 'text-base-content'}`}>
-                      {message.text}
-                    </p>
-                  )}
-                  
-                  {/* Footer with timestamp and edited */}
-                  <div className={`flex items-center justify-end gap-1.5 mt-1.5 ${
-                    isMyMessage
-                      ? "text-primary-content/70" 
-                      : "text-base-content/60"
-                  }`}>
-                    <span className="text-[10px] font-medium opacity-70">
-                      {formatMessageTime(message.createdAt)}
-                    </span>
-                    {message.edited && (
-                      <span className="text-[10px] italic opacity-60">
-                        (edited)
+                  {/* Message text with inline status (Telegram style) */}
+                  <div className="flex items-baseline gap-1.5">
+                    {message.text && (
+                      <span className={`leading-relaxed break-words flex-1 min-w-0 font-normal ${
+                        isMyMessage ? 'text-primary-content' : 'text-base-content'
+                      }`}>
+                        {message.text}
                       </span>
                     )}
+                    
+                    {/* Inline status indicators (Telegram style) */}
+                    <div className="flex items-baseline gap-1 flex-shrink-0 ml-0.5">
+                      {/* Edited indicator */}
+                      {message.edited && (
+                        <span 
+                          className={`text-[10px] italic opacity-75 ${
+                            isMyMessage ? 'text-primary-content/75' : 'text-base-content/65'
+                          }`}
+                        >
+                          (edited)
+                        </span>
+                      )}
+                      
+                      {/* Seen indicator inside bubble (only for my messages and only on last message) */}
+                      {isLastMyMessage && (
+                        <MessageStatus message={message} isInline={true} />
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
               
-              {/* Three dots menu button - outside chat bubble */}
+              {/* Timestamp and three dots menu - outside bubble */}
               {isMyMessage && (
-                <div className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                <div className="flex items-center gap-2 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                  {/* Timestamp outside bubble - left of three dots */}
+                  <span 
+                    className="text-[11px] font-medium whitespace-nowrap text-base-content/50"
+                    title={formatMessageTime(message.createdAt)}
+                  >
+                    {formatMessageTime(message.createdAt)}
+                  </span>
+                  
+                  {/* Three dots menu button */}
                   <div className="relative" ref={(el) => { if (el) menuRefs.current[message._id] = el; }}>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         setOpenMenuMessageId(openMenuMessageId === message._id ? null : message._id);
                       }}
-                      className="p-1.5 rounded-full transition-all bg-base-300/50 hover:bg-base-300/70 text-base-content"
+                      className="p-1.5 rounded-full transition-all bg-base-200/80 hover:bg-base-300 text-base-content/70 hover:text-base-content shadow-sm hover:shadow active:scale-95"
                       title="More options"
                     >
                       <FaEllipsisV className="w-3.5 h-3.5" />
@@ -946,7 +1128,7 @@ const ChatContainer = () => {
                     
                     {/* Dropdown Menu */}
                     {openMenuMessageId === message._id && (
-                      <div className={`absolute ${isMyMessage ? 'right-0' : 'left-0'} top-full mt-1 w-48 bg-base-300 rounded-lg shadow-xl border border-base-200 z-50 overflow-hidden`}>
+                      <div className={`absolute ${isMyMessage ? 'right-0' : 'left-0'} bottom-full mb-2 w-52 bg-base-100 rounded-xl shadow-2xl border border-base-300/50 z-50 overflow-hidden backdrop-blur-sm`}>
                         {message.image ? (
                           <>
                             <button
@@ -1105,12 +1287,6 @@ const ChatContainer = () => {
               )}
             </div>
             
-            {/* Seen indicator - below bubble, only on hover */}
-            {isMyMessage && (
-              <div className={`opacity-0 group-hover:opacity-100 transition-opacity duration-200 mt-1 ${isMyMessage ? "mr-2" : "ml-2"}`}>
-                <MessageStatus message={message} />
-              </div>
-            )}
           </div>
           );
         })}

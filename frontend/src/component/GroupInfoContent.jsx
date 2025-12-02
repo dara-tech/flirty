@@ -5,6 +5,7 @@ import { useAuthStore } from "../store/useAuthStore";
 import { FaTimes, FaUsers, FaInfoCircle, FaCog, FaImage, FaEdit, FaTrash, FaSignOutAlt, FaSpinner, FaAngleLeft, FaCheck, FaSearch, FaEllipsisV, FaUserPlus, FaBell, FaBellSlash, FaLink, FaFile, FaMicrophone, FaImage as FaImageIcon } from "react-icons/fa";
 import toast from "react-hot-toast";
 import { formatDistanceToNow } from "date-fns";
+import AddMemberModal from "./AddMemberModal";
 
 // Shared content component - can be used as page or embedded
 const GroupInfoContent = ({ groupId, onClose, embedded = false }) => {
@@ -20,6 +21,7 @@ const GroupInfoContent = ({ groupId, onClose, embedded = false }) => {
   const [isUpdating, setIsUpdating] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
 
   const group = groups.find((g) => g._id === groupId);
   const isAdmin = group?.admin?._id === authUser?._id || group?.admin === authUser?._id;
@@ -248,12 +250,17 @@ const GroupInfoContent = ({ groupId, onClose, embedded = false }) => {
 
         {/* Action Buttons */}
         <div className="flex gap-4 w-full max-w-xs px-4">
-          <button className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-base-200/50 transition-colors">
-            <div className="size-12 rounded-lg bg-primary/10 flex items-center justify-center">
-              <FaUserPlus className="size-6 text-primary" />
-            </div>
-            <span className="text-xs font-medium text-base-content">Add</span>
-          </button>
+          {isAdmin && (
+            <button 
+              onClick={() => setIsAddMemberModalOpen(true)}
+              className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-base-200/50 transition-colors"
+            >
+              <div className="size-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                <FaUserPlus className="size-6 text-primary" />
+              </div>
+              <span className="text-xs font-medium text-base-content">Add</span>
+            </button>
+          )}
           <button 
             onClick={() => setIsMuted(!isMuted)}
             className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-base-200/50 transition-colors"
@@ -481,6 +488,13 @@ const GroupInfoContent = ({ groupId, onClose, embedded = false }) => {
             </div>
           )}
       </div>
+
+      {/* Add Member Modal */}
+      <AddMemberModal
+        isOpen={isAddMemberModalOpen}
+        onClose={() => setIsAddMemberModalOpen(false)}
+        groupId={groupId}
+      />
     </div>
   );
 };

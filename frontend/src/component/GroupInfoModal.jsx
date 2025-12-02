@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaTimes, FaUsers, FaInfoCircle, FaCog, FaImage, FaEdit, FaTrash, FaSignOutAlt, FaSpinner } from "react-icons/fa";
+import { FaTimes, FaUsers, FaInfoCircle, FaCog, FaImage, FaEdit, FaTrash, FaSignOutAlt, FaSpinner, FaUserPlus } from "react-icons/fa";
 import toast from "react-hot-toast";
 import { formatDistanceToNow } from "date-fns";
+import AddMemberModal from "./AddMemberModal";
 
 const GroupInfoModal = ({ isOpen, onClose, groupId }) => {
   const { groups, updateGroupInfo, leaveGroup, getGroups, removeMemberFromGroup } = useChatStore();
@@ -16,6 +17,7 @@ const GroupInfoModal = ({ isOpen, onClose, groupId }) => {
   const [groupPicPreview, setGroupPicPreview] = useState(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
+  const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
 
   const group = groups.find((g) => g._id === groupId);
   const isAdmin = group?.admin?._id === authUser?._id || group?.admin === authUser?._id;
@@ -310,6 +312,17 @@ const GroupInfoModal = ({ isOpen, onClose, groupId }) => {
 
           {activeTab === "members" && (
             <div className="p-4 space-y-2">
+              {/* Add Member Button - Only for Admin */}
+              {isAdmin && (
+                <button
+                  onClick={() => setIsAddMemberModalOpen(true)}
+                  className="btn btn-primary btn-sm w-full mb-2"
+                >
+                  <FaUserPlus className="mr-2" />
+                  Add Members
+                </button>
+              )}
+
               {/* Admin */}
               {group.admin && (
                 <div className="flex items-center gap-3 p-2 rounded-lg bg-base-200/50">
@@ -426,6 +439,13 @@ const GroupInfoModal = ({ isOpen, onClose, groupId }) => {
           )}
         </div>
       </div>
+
+      {/* Add Member Modal */}
+      <AddMemberModal
+        isOpen={isAddMemberModalOpen}
+        onClose={() => setIsAddMemberModalOpen(false)}
+        groupId={groupId}
+      />
     </div>
   );
 };

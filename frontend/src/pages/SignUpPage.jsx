@@ -38,6 +38,11 @@ const SignUpPage = () => {
       toast.error("Password must be at least 6 characters");
       return false;
     }
+    // Match backend validation: uppercase, lowercase, and number
+    if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(formData.password)) {
+      toast.error("Password must contain at least one uppercase letter, one lowercase letter, and one number");
+      return false;
+    }
     return true; // Only return true if all validations pass
   };
 

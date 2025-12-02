@@ -86,6 +86,23 @@ const ChatHeader = () => {
         {!isGroup && selectedUser && (
           <CallButton userId={selectedUser._id} variant="compact" />
         )}
+        {!isGroup && selectedUser && (
+          <button
+            onClick={() => {
+              if (isMobile) {
+                // Navigate to full page route on mobile
+                navigate(`/user/${selectedUser._id}/info`);
+              } else {
+                // Show in right panel on desktop - trigger via custom event
+                window.dispatchEvent(new CustomEvent('showUserInfo', { detail: { userId: selectedUser._id } }));
+              }
+            }}
+            className="btn btn-ghost btn-sm btn-circle hover:bg-base-200 transition-colors"
+            title="User info"
+          >
+            <FaInfoCircle className="size-5 text-base-content/60" />
+          </button>
+        )}
         {isGroup && (
           <button
             onClick={() => {

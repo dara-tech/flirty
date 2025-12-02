@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
 import { useNavigate } from "react-router-dom";
 import { FaCamera, FaEye, FaEyeSlash, FaPalette, FaSignOutAlt, FaUser, FaEdit } from "react-icons/fa";
+import toast from "react-hot-toast";
 
 const SettingsPage = () => {
   const { authUser, updateProfile, changePassword, isChangingPassword, logout, isUpdatingProfile } = useAuthStore();
@@ -73,14 +74,23 @@ const SettingsPage = () => {
     e.preventDefault();
     
     if (!passwordData.currentPassword || !passwordData.newPassword || !passwordData.confirmPassword) {
+      toast.error("All password fields are required");
       return;
     }
 
     if (passwordData.newPassword.length < 6) {
+      toast.error("New password must be at least 6 characters");
+      return;
+    }
+
+    // Match backend validation: uppercase, lowercase, and number
+    if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(passwordData.newPassword)) {
+      toast.error("New password must contain at least one uppercase letter, one lowercase letter, and one number");
       return;
     }
 
     if (passwordData.newPassword !== passwordData.confirmPassword) {
+      toast.error("Passwords do not match");
       return;
     }
 
@@ -334,6 +344,7 @@ const SettingsPage = () => {
                   !passwordData.newPassword ||
                   !passwordData.confirmPassword ||
                   passwordData.newPassword.length < 6 ||
+                  !/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(passwordData.newPassword) ||
                   passwordData.newPassword !== passwordData.confirmPassword
                 }
               >

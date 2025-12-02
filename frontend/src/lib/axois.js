@@ -36,22 +36,30 @@ const backendBaseURL = getBackendURL();
 export const axiosInstance = axios.create({
   baseURL: backendBaseURL,
   withCredentials: true,
+  // Suppress default axios error logging for cleaner console
+  validateStatus: function (status) {
+    // Don't throw errors for 401/403 on /auth/me (handled silently)
+    return status >= 200 && status < 500; // Accept all status codes < 500
+  },
 });
 
 // Response interceptor to handle errors and authentication
 axiosInstance.interceptors.response.use(
   (response) => response,
   (error) => {
-    const isCheckEndpoint = error.config?.url?.includes('/check');
+    const isMeEndpoint = error.config?.url?.includes('/auth/me');
     const is401 = error.response?.status === 401;
+    const is403 = error.response?.status === 403;
     
-    // Handle 401 errors (authentication required)
+    // Completely suppress logging for /auth/me 401/403 errors (expected when not logged in)
+    if (isMeEndpoint && (is401 || is403)) {
+      // Silently reject without any logging
+      // This prevents console noise for expected authentication checks
+      return Promise.reject(error);
+    }
+    
+    // Handle 401 errors for other endpoints
     if (is401) {
-      // For /check endpoint, silently handle (expected when not logged in)
-      if (isCheckEndpoint) {
-        return Promise.reject(error);
-      }
-      
       // For other endpoints, user needs to log in
       // Clear auth state if session expired
       const authStore = useAuthStore.getState();
@@ -70,9 +78,15 @@ axiosInstance.interceptors.response.use(
       return Promise.reject(error);
     }
     
-    // Log other errors (but suppress 401s as they're handled above)
+    // Log other errors (but not 401s for /auth/me which are already handled above)
     if (error.response && error.response.status !== 401) {
-      console.error("API Error:", error.response.status, error.response.data);
+      const errorData = error.response.data;
+      // Log validation errors with more detail
+      if (errorData?.errors && Array.isArray(errorData.errors)) {
+        console.error("API Validation Error:", error.response.status, errorData.errors);
+      } else {
+        console.error("API Error:", error.response.status, errorData);
+      }
     } else if (error.request && !is401) {
       console.error("Network Error:", error.request);
     } else if (!is401) {
@@ -100,8 +114,8 @@ axiosInstance.interceptors.request.use(
     return config;
   },
   (error) => {
-    // Don't log request errors for auth check endpoint
-    if (!error.config?.url?.includes('/check')) {
+    // Don't log request errors for auth me endpoint
+    if (!error.config?.url?.includes('/auth/me')) {
       console.error("Request Error:", error.message);
     }
     return Promise.reject(error);

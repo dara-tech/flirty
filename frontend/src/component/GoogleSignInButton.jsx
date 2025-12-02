@@ -1,111 +1,84 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaSpinner } from "react-icons/fa";
 
 const GoogleSignInButton = ({ text = "Continue with Google" }) => {
   const { googleAuth, isGoogleAuthLoading } = useAuthStore();
-  const hiddenButtonRef = useRef(null);
-  const initializedRef = useRef(false);
-  const [isInitializing, setIsInitializing] = useState(true);
-  const [initError, setInitError] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [isInitialized, setIsInitialized] = useState(false);
 
+  // Initialize Google One Tap (works in web views, no iframe)
   useEffect(() => {
-    if (initializedRef.current) return;
-
-    const handleCredentialResponse = async (response) => {
-      try {
-        await googleAuth(response.credential);
-      } catch (error) {
-        console.error("Google sign-in error:", error);
-      }
-    };
-
-    // Wait for Google Identity Services to load
-    const initializeGoogleSignIn = () => {
-      if (window.google && window.google.accounts && hiddenButtonRef.current && !initializedRef.current) {
-        try {
-          const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || "283732145047-tu9sdui7iasnf8ul0a0vr4lq3fj190d5.apps.googleusercontent.com";
-          
-          window.google.accounts.id.initialize({
-            client_id: clientId,
-            callback: handleCredentialResponse,
-            // Add error handling for origin issues
-            auto_select: false,
-          });
-
-          // Render a hidden button to trigger the popup
-          window.google.accounts.id.renderButton(hiddenButtonRef.current, {
-            theme: "outline",
-            size: "large",
-            width: "100%",
-            text: "signin_with",
-            locale: "en",
-          });
-
-          initializedRef.current = true;
-          setIsInitializing(false);
-        } catch (error) {
-          // Handle Google Sign-In errors gracefully
-          const errorMessage = error.message || String(error);
-          console.warn("Google Sign-In initialization error:", errorMessage);
-          
-          // Set error state to show helpful message or disable button
-          if (errorMessage?.includes("origin") || errorMessage?.includes("client ID") || errorMessage?.includes("not allowed")) {
-            setInitError("Google Sign-In is not configured for this domain. Please contact support.");
-          } else {
-            setInitError("Google Sign-In failed to initialize. Please try again.");
+    const initializeGoogle = () => {
+      if (window.google && window.google.accounts && window.google.accounts.id) {
+        const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || "283732145047-tu9sdui7iasnf8ul0a0vr4lq3fj190d5.apps.googleusercontent.com";
+        
+        const handleCredentialResponse = async (response) => {
+          setIsLoading(true);
+          try {
+            await googleAuth(response.credential);
+          } catch (error) {
+            console.error("Google sign-in error:", error);
+            setError("Failed to sign in with Google. Please try again.");
+          } finally {
+            setIsLoading(false);
           }
-          setIsInitializing(false);
-        }
-      } else if (!initializedRef.current) {
-        // Retry after a short delay if Google Identity Services hasn't loaded yet
-        setTimeout(initializeGoogleSignIn, 100);
+        };
+
+        window.google.accounts.id.initialize({
+          client_id: clientId,
+          callback: handleCredentialResponse,
+        });
+
+        setIsInitialized(true);
+      } else {
+        // Retry if Google library not loaded yet
+        setTimeout(initializeGoogle, 100);
       }
     };
 
-    // Check if Google Identity Services is already loaded
-    if (window.google && window.google.accounts) {
-      initializeGoogleSignIn();
-    } else {
-      // Wait for the script to load
-      const checkInterval = setInterval(() => {
-        if (window.google && window.google.accounts) {
-          clearInterval(checkInterval);
-          initializeGoogleSignIn();
-        }
-      }, 100);
-
-      return () => {
-        clearInterval(checkInterval);
-      };
-    }
+    initializeGoogle();
   }, [googleAuth]);
 
-  const handleClick = () => {
-    if (hiddenButtonRef.current) {
-      const googleButton = hiddenButtonRef.current.querySelector('div[role="button"]');
-      if (googleButton) {
-        googleButton.click();
-      }
+  // Use Google's One Tap prompt (no iframe, works in web views)
+  const handleGoogleSignIn = () => {
+    if (!isInitialized || !window.google?.accounts?.id) {
+      setError("Google Sign-In is not ready. Please refresh the page.");
+      return;
     }
+
+    setIsLoading(true);
+    setError(null);
+
+    // Use One Tap prompt - this works in web views and doesn't use iframes
+    window.google.accounts.id.prompt((notification) => {
+      setIsLoading(false);
+      
+      if (notification.isNotDisplayed()) {
+        // If One Tap can't be displayed, show error
+        setError("Google Sign-In is not available. Please check your browser settings.");
+      } else if (notification.isSkippedMoment()) {
+        // User skipped, try again
+        setError("Please try again or use email/password.");
+      } else if (notification.isDismissedMoment()) {
+        // User dismissed
+        setError(null);
+      }
+    });
   };
 
   return (
     <div className="w-full">
-      {/* Hidden Google button for actual authentication */}
-      <div ref={hiddenButtonRef} className="hidden" />
-      
-      {/* Custom styled button */}
-      {initError && (
-        <p className="text-xs text-warning mb-2">{initError}</p>
+      {error && (
+        <p className="text-xs text-error mb-2">{error}</p>
       )}
       <button
-        onClick={handleClick}
-        disabled={isGoogleAuthLoading || isInitializing || !!initError}
+        onClick={handleGoogleSignIn}
+        disabled={isGoogleAuthLoading || isLoading || !isInitialized}
         className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-base-100 border-2 border-base-300 rounded-lg hover:bg-base-200 hover:border-base-400 active:scale-[0.98] transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed group"
-        title={initError || undefined}
       >
-        {isGoogleAuthLoading ? (
+        {(isGoogleAuthLoading || isLoading) ? (
           <>
             <FaSpinner className="size-5 animate-spin text-base-content/60" />
             <span className="text-sm font-medium text-base-content/60">Signing in...</span>
@@ -139,4 +112,3 @@ const GoogleSignInButton = ({ text = "Continue with Google" }) => {
 };
 
 export default GoogleSignInButton;
-
