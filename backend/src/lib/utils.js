@@ -16,14 +16,15 @@ export const generateToken = (userId, res) => {
     
     if (isDevelopment) {
         // Development settings - for localhost with different ports
-        // 'lax' works for same-domain different ports (localhost:5173 -> localhost:5002)
+        // Use 'lax' for same-domain different ports (works for most browsers)
+        // Note: Safari may have issues with cross-port cookies, but 'lax' is the best option for HTTP
         cookieOptions.sameSite = 'lax';
         cookieOptions.secure = false; // HTTP is fine for localhost
     } else {
         // Production settings - for cross-origin (separate frontend/backend hosting)
         // Use 'none' for cross-origin cookies (frontend on Netlify, backend on Render)
         cookieOptions.sameSite = 'none';
-        cookieOptions.secure = true; // Required when sameSite is 'none'
+        cookieOptions.secure = true; // Required when sameSite is 'none' (HTTPS only)
         // Explicitly set domain to null to allow cross-origin cookies
         // Don't set domain property - let browser handle it automatically
     }
@@ -46,7 +47,7 @@ export const generateToken = (userId, res) => {
 }
 
 // Helper to get cookie options (for logout and other operations)
-export const getCookieOptions = () => {
+export const getCookieOptions = (req = null) => {
     const isDevelopment = process.env.NODE_ENV !== 'production';
     
     return {

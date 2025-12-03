@@ -81,6 +81,10 @@ const userSockets = new Map(); // { userId: socketId }
 // In production, consider using Redis or database
 const activeCalls = new Map(); // { callId: { callerId, receiverId, callType, status } }
 
+// Store active group call rooms (SFU-style)
+// { roomId: { groupId, participants: [{ userId, socketId, tracks: { audio, video } }], callType } }
+const groupCallRooms = new Map();
+
 export function getReceiverSocketId(userId) {
   if (!userId) return null;
   // Convert to string to ensure consistent lookup
@@ -575,6 +579,362 @@ io.on("connection", (socket) => {
     }
   });
   
+  // ========== Group Call (SFU-style) Signaling Events ==========
+  
+  // Join group call room
+  socket.on("groupcall:join", async ({ roomId, groupId, callType, userInfo }) => {
+    try {
+      if (!userId || !roomId || !groupId) return;
+      
+      // Verify user is member of group
+      const group = await Group.findById(groupId);
+      if (!group) {
+        io.to(socket.id).emit("groupcall:error", {
+          roomId,
+          error: "Group not found",
+        });
+        return;
+      }
+      
+      const userIdStr = userId.toString();
+      const isMember = group.admin.toString() === userIdStr || 
+                       group.members.some(m => m.toString() === userIdStr);
+      if (!isMember) {
+        io.to(socket.id).emit("groupcall:error", {
+          roomId,
+          error: "You are not a member of this group",
+        });
+        return;
+      }
+      
+      // Get or create room
+      let room = groupCallRooms.get(roomId);
+      const isNewRoom = !room;
+      if (!room) {
+        room = {
+          groupId,
+          callType: callType || 'video',
+          participants: [],
+          createdAt: new Date(),
+        };
+        groupCallRooms.set(roomId, room);
+        
+        // If this is a new room, notify all group members about the group call
+        const allMembers = [group.admin, ...group.members];
+        allMembers.forEach((memberId) => {
+          const memberIdStr = memberId.toString();
+          // Don't notify the person who started the call
+          if (memberIdStr !== userIdStr) {
+            const memberSocketId = getReceiverSocketId(memberIdStr);
+            if (memberSocketId) {
+              io.to(memberSocketId).emit("groupcall:invitation", {
+                roomId,
+                groupId,
+                callType: room.callType,
+                callerInfo: userInfo || {},
+                groupName: group.name || 'Group',
+              });
+              console.log(`📞 Group call invitation sent to ${memberIdStr} for room ${roomId}`);
+            } else {
+              console.log(`⚠️ Member ${memberIdStr} is offline, skipping invitation`);
+            }
+          }
+        });
+      }
+      
+      // Check if user already in room
+      const existingParticipant = room.participants.find(p => p.userId === userIdStr);
+      if (existingParticipant) {
+        // Update socket ID if reconnecting
+        existingParticipant.socketId = socket.id;
+        console.log(`User ${userIdStr} reconnected to group call ${roomId}`);
+      } else {
+        // Add new participant
+        room.participants.push({
+          userId: userIdStr,
+          socketId: socket.id,
+          userInfo: userInfo || {},
+          tracks: { audio: true, video: callType === 'video' },
+          joinedAt: new Date(),
+        });
+        console.log(`User ${userIdStr} joined group call ${roomId}`);
+      }
+      
+      // Notify existing participants about new join
+      room.participants.forEach(participant => {
+        if (participant.socketId !== socket.id) {
+          io.to(participant.socketId).emit("groupcall:participant-joined", {
+            roomId,
+            participant: {
+              userId: userIdStr,
+              userInfo: userInfo || {},
+              tracks: { audio: true, video: callType === 'video' },
+            },
+          });
+        }
+      });
+      
+      // Step C: Send room state immediately (even if empty)
+      // This ensures client can render UI immediately
+      const existingParticipants = room.participants
+        .filter(p => p.socketId !== socket.id)
+        .map(p => ({
+          userId: p.userId,
+          userInfo: p.userInfo,
+          tracks: p.tracks,
+        }));
+      
+      // Send room state immediately (Step C: room ready / initial state)
+      io.to(socket.id).emit("groupcall:joined", {
+        roomId,
+        participants: existingParticipants,
+        callType: room.callType,
+        roomState: {
+          totalParticipants: room.participants.length,
+          callType: room.callType,
+        },
+      });
+      
+      console.log(`📞 Room state sent to ${userIdStr}: ${existingParticipants.length} existing participants`);
+      
+    } catch (error) {
+      console.error("Error in groupcall:join:", error);
+      io.to(socket.id).emit("groupcall:error", {
+        roomId,
+        error: "Failed to join group call",
+      });
+    }
+  });
+  
+  // Leave group call room
+  socket.on("groupcall:leave", ({ roomId }) => {
+    try {
+      if (!userId || !roomId) return;
+      
+      const room = groupCallRooms.get(roomId);
+      if (!room) return;
+      
+      const userIdStr = userId.toString();
+      const participantIndex = room.participants.findIndex(p => p.userId === userIdStr);
+      
+      if (participantIndex !== -1) {
+        room.participants.splice(participantIndex, 1);
+        
+        // Notify other participants
+        room.participants.forEach(participant => {
+          io.to(participant.socketId).emit("groupcall:participant-left", {
+            roomId,
+            userId: userIdStr,
+          });
+        });
+        
+        // Clean up room if empty
+        if (room.participants.length === 0) {
+          groupCallRooms.delete(roomId);
+          console.log(`Group call room ${roomId} closed (empty)`);
+        }
+        
+        console.log(`User ${userIdStr} left group call ${roomId}`);
+      }
+    } catch (error) {
+      console.error("Error in groupcall:leave:", error);
+    }
+  });
+  
+  // Update participant tracks (mute/unmute, camera on/off)
+  socket.on("groupcall:update-tracks", ({ roomId, tracks }) => {
+    try {
+      if (!userId || !roomId) return;
+      
+      const room = groupCallRooms.get(roomId);
+      if (!room) return;
+      
+      const userIdStr = userId.toString();
+      const participant = room.participants.find(p => p.userId === userIdStr);
+      
+      if (participant) {
+        participant.tracks = { ...participant.tracks, ...tracks };
+        
+        // Notify other participants
+        room.participants.forEach(p => {
+          if (p.socketId !== socket.id) {
+            io.to(p.socketId).emit("groupcall:tracks-updated", {
+              roomId,
+              userId: userIdStr,
+              tracks: participant.tracks,
+            });
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Error in groupcall:update-tracks:", error);
+    }
+  });
+  
+  // Screen share start (group call)
+  socket.on("groupcall:screen-share-start", ({ roomId, trackId }) => {
+    try {
+      if (!userId || !roomId) return;
+      
+      const room = groupCallRooms.get(roomId);
+      if (!room) return;
+      
+      const userIdStr = userId.toString();
+      const participant = room.participants.find(p => p.userId === userIdStr);
+      
+      if (participant) {
+        participant.screenSharing = true;
+        participant.screenShareTrackId = trackId;
+        
+        // Notify other participants
+        room.participants.forEach(p => {
+          if (p.socketId !== socket.id) {
+            io.to(p.socketId).emit("groupcall:screen-share-started", {
+              roomId,
+              userId: userIdStr,
+              trackId,
+            });
+          }
+        });
+        
+        console.log(`📹 Screen share started by ${userIdStr} in room ${roomId}`);
+      }
+    } catch (error) {
+      console.error("Error in groupcall:screen-share-start:", error);
+    }
+  });
+  
+  // Screen share stop (group call)
+  socket.on("groupcall:screen-share-stop", ({ roomId }) => {
+    try {
+      if (!userId || !roomId) return;
+      
+      const room = groupCallRooms.get(roomId);
+      if (!room) return;
+      
+      const userIdStr = userId.toString();
+      const participant = room.participants.find(p => p.userId === userIdStr);
+      
+      if (participant) {
+        participant.screenSharing = false;
+        participant.screenShareTrackId = null;
+        
+        // Notify other participants
+        room.participants.forEach(p => {
+          if (p.socketId !== socket.id) {
+            io.to(p.socketId).emit("groupcall:screen-share-stopped", {
+              roomId,
+              userId: userIdStr,
+            });
+          }
+        });
+        
+        console.log(`📹 Screen share stopped by ${userIdStr} in room ${roomId}`);
+      }
+    } catch (error) {
+      console.error("Error in groupcall:screen-share-stop:", error);
+    }
+  });
+  
+  // WebRTC signaling for group calls (SFU-style)
+  // Each participant sends offer/answer to SFU (in this case, signaling server forwards)
+  socket.on("groupcall:webrtc-offer", ({ roomId, offer, targetUserId }) => {
+    try {
+      if (!userId || !roomId) return;
+      
+      const room = groupCallRooms.get(roomId);
+      if (!room) return;
+      
+      // If targetUserId specified, send to that participant (for SFU, this would go to SFU server)
+      // For now, we'll broadcast to all participants (simplified SFU)
+      if (targetUserId) {
+        const targetParticipant = room.participants.find(p => p.userId === targetUserId);
+        if (targetParticipant) {
+          io.to(targetParticipant.socketId).emit("groupcall:webrtc-offer", {
+            roomId,
+            offer,
+            senderId: userId,
+          });
+        }
+      } else {
+        // Broadcast to all other participants (for mesh or simplified SFU)
+        room.participants.forEach(participant => {
+          if (participant.socketId !== socket.id) {
+            io.to(participant.socketId).emit("groupcall:webrtc-offer", {
+              roomId,
+              offer,
+              senderId: userId,
+            });
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Error in groupcall:webrtc-offer:", error);
+    }
+  });
+  
+  socket.on("groupcall:webrtc-answer", ({ roomId, answer, targetUserId }) => {
+    try {
+      if (!userId || !roomId) return;
+      
+      const room = groupCallRooms.get(roomId);
+      if (!room) return;
+      
+      if (targetUserId) {
+        const targetParticipant = room.participants.find(p => p.userId === targetUserId);
+        if (targetParticipant) {
+          io.to(targetParticipant.socketId).emit("groupcall:webrtc-answer", {
+            roomId,
+            answer,
+            senderId: userId,
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error in groupcall:webrtc-answer:", error);
+    }
+  });
+  
+  socket.on("groupcall:webrtc-ice-candidate", ({ roomId, candidate, targetUserId }) => {
+    try {
+      if (!userId || !roomId || !candidate) return;
+      
+      const room = groupCallRooms.get(roomId);
+      if (!room) {
+        console.warn(`Room ${roomId} not found for ICE candidate`);
+        return;
+      }
+      
+      if (targetUserId) {
+        // Send to specific target user
+        const targetParticipant = room.participants.find(p => p.userId === targetUserId);
+        if (targetParticipant) {
+          io.to(targetParticipant.socketId).emit("groupcall:webrtc-ice-candidate", {
+            roomId,
+            candidate,
+            senderId: userId,
+          });
+          console.log(`ICE candidate forwarded: ${userId} -> ${targetUserId} (room: ${roomId})`);
+        } else {
+          console.warn(`Target participant ${targetUserId} not found in room ${roomId}`);
+        }
+      } else {
+        // Broadcast to all other participants (fallback)
+        room.participants.forEach(participant => {
+          if (participant.socketId !== socket.id) {
+            io.to(participant.socketId).emit("groupcall:webrtc-ice-candidate", {
+              roomId,
+              candidate,
+              senderId: userId,
+            });
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Error in groupcall:webrtc-ice-candidate:", error);
+    }
+  });
+  
   // Cleanup active calls on disconnect
   socket.on("disconnect", () => {
     console.log("A user disconnected:", socket.id);
@@ -590,6 +950,7 @@ io.on("connection", (socket) => {
 
     // Cleanup active calls where user was participating
     if (disconnectedUserId) {
+      // Cleanup 1-on-1 calls
       for (const [callId, callInfo] of activeCalls.entries()) {
         if (
           callInfo.callerId.toString() === disconnectedUserId.toString() ||
@@ -609,6 +970,31 @@ io.on("connection", (socket) => {
           }
           
           activeCalls.delete(callId);
+        }
+      }
+      
+      // Cleanup group calls
+      for (const [roomId, room] of groupCallRooms.entries()) {
+        const participantIndex = room.participants.findIndex(
+          p => p.userId === disconnectedUserId.toString()
+        );
+        
+        if (participantIndex !== -1) {
+          room.participants.splice(participantIndex, 1);
+          
+          // Notify other participants
+          room.participants.forEach(participant => {
+            io.to(participant.socketId).emit("groupcall:participant-left", {
+              roomId,
+              userId: disconnectedUserId.toString(),
+            });
+          });
+          
+          // Clean up room if empty
+          if (room.participants.length === 0) {
+            groupCallRooms.delete(roomId);
+            console.log(`Group call room ${roomId} closed (empty)`);
+          }
         }
       }
       

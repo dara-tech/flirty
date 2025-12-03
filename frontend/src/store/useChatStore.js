@@ -56,6 +56,18 @@ export const useChatStore = create((set, get) => ({
         axiosInstance.get("/messages/last-messages")
       ]);
 
+      // Handle 401 errors gracefully
+      if (usersRes.status === 401 || lastMessagesRes.status === 401) {
+        console.warn("Authentication failed, clearing auth state");
+        useAuthStore.getState().logout();
+        set({ users: [], lastMessages: {}, isUsersLoading: false });
+        return;
+      }
+
+      // Ensure data is an array
+      const usersData = Array.isArray(usersRes.data) ? usersRes.data : (usersRes.data?.users || []);
+      const lastMessagesData = Array.isArray(lastMessagesRes.data) ? lastMessagesRes.data : [];
+
       const lastMessagesMap = {};
       if (!authUser || !authUser._id) {
         set({ users: [], lastMessages: {} });
@@ -63,7 +75,7 @@ export const useChatStore = create((set, get) => ({
       }
       const authUserId = typeof authUser._id === 'string' ? authUser._id : authUser._id.toString();
       
-      if (lastMessagesRes.data && Array.isArray(lastMessagesRes.data)) {
+      if (lastMessagesData && Array.isArray(lastMessagesData)) {
         const normalizeId = (id) => {
           if (!id) return null;
           if (typeof id === 'string') return id;
@@ -102,7 +114,6 @@ export const useChatStore = create((set, get) => ({
       // Remove duplicate users based on _id
       const uniqueUsers = [];
       const seenIds = new Set();
-      const usersData = usersRes.data || [];
       
       // Add users from users endpoint
       usersData.forEach(user => {
@@ -114,8 +125,8 @@ export const useChatStore = create((set, get) => ({
       });
 
       // Also extract users from lastMessages if they're populated (as fallback)
-      if (lastMessagesRes.data && Array.isArray(lastMessagesRes.data)) {
-        lastMessagesRes.data.forEach(msg => {
+      if (lastMessagesData && Array.isArray(lastMessagesData)) {
+        lastMessagesData.forEach(msg => {
           const senderIdRaw = msg.senderId;
           const receiverIdRaw = msg.receiverId;
           

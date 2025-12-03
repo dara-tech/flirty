@@ -57,17 +57,31 @@ const CallControls = () => {
         {/* Video On/Off - Only for video calls */}
         {callType === 'video' && (
           <button
-            onClick={toggleVideo}
-            disabled={isScreenSharing && !isVideoEnabled}
+            onClick={async () => {
+              try {
+                // If screen sharing is active and user wants to enable video, stop screen share first
+                if (isScreenSharing && !isVideoEnabled) {
+                  // Stop screen sharing will automatically switch back to camera
+                  await toggleScreenShare();
+                  // After stopping screen share, camera should be enabled
+                  return;
+                }
+                // Toggle video (camera on/off)
+                await toggleVideo();
+              } catch (error) {
+                console.error('Error toggling video:', error);
+                toast.error(error.message || "Failed to toggle video");
+              }
+            }}
             className={`btn btn-circle ${
-              !isVideoEnabled
+              !isVideoEnabled && !isScreenSharing
                 ? 'bg-red-500 hover:bg-red-600 text-white'
                 : 'bg-base-300 hover:bg-base-300/80'
-            } border-0 ${isScreenSharing && !isVideoEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-            aria-label={isVideoEnabled ? "Turn off video" : "Turn on video"}
-            title={isScreenSharing && !isVideoEnabled ? "Stop screen sharing first" : (isVideoEnabled ? "Turn off video" : "Turn on video")}
+            } border-0`}
+            aria-label={isVideoEnabled || isScreenSharing ? "Turn off video" : "Turn on video"}
+            title={isScreenSharing ? "Stop screen sharing and turn on camera" : (isVideoEnabled ? "Turn off camera" : "Turn on camera")}
           >
-            {isVideoEnabled ? (
+            {isVideoEnabled || isScreenSharing ? (
               <FaVideo className="w-5 h-5" />
             ) : (
               <FaVideoSlash className="w-5 h-5" />

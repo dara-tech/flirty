@@ -9,15 +9,23 @@ export const useCallStore = create((set, get) => ({
   callState: 'idle', // 'idle' | 'calling' | 'ringing' | 'in-call' | 'ended'
   callType: null, // 'voice' | 'video' | null
   callId: null,
+  isGroupCall: false, // true for group calls, false for 1-on-1
+  roomId: null, // Group call room ID
+  groupId: null, // Group ID for group calls
+  groupName: null, // Group name for group calls
   
   // Call participants
   caller: null, // { userId, fullname, profilePic }
   receiver: null, // { userId, fullname, profilePic }
   
+  // Group call participants
+  // { [userId]: { userId, userInfo: { fullname, profilePic }, tracks: { audio, video }, stream, screenShareStream, peerConnection, isLocal } }
+  participants: new Map(),
+  
   // WebRTC streams
   localStream: null,
-  remoteStream: null,
-  peerConnection: null,
+  remoteStream: null, // For 1-on-1 calls
+  peerConnection: null, // For 1-on-1 calls
   
   // Call controls
   isMuted: false,
@@ -56,12 +64,28 @@ export const useCallStore = create((set, get) => ({
       peerConnection.close();
     }
     
+    // Cleanup group call participants
+    const { participants } = get();
+    participants.forEach(participant => {
+      if (participant.stream) {
+        participant.stream.getTracks().forEach(track => track.stop());
+      }
+      if (participant.peerConnection) {
+        participant.peerConnection.close();
+      }
+    });
+    
     set({
       callState: 'idle',
       callType: null,
       callId: null,
+      isGroupCall: false,
+      roomId: null,
+      groupId: null,
+      groupName: null,
       caller: null,
       receiver: null,
+      participants: new Map(),
       localStream: null,
       remoteStream: null,
       peerConnection: null,
@@ -101,13 +125,28 @@ export const useCallStore = create((set, get) => ({
   setReceiver: (receiver) => set({ receiver }),
   
   // Toggle mute
+  // Step 1: Update WebRTC track.enabled (actual media control)
+  // Step 2: Send WebSocket signal for UI synchronization (signaling only, no media)
   toggleMute: () => {
-    const { localStream, isMuted } = get();
+    const { localStream, isMuted, isGroupCall, roomId } = get();
+    const { socket } = useAuthStore.getState();
+    
+    // Step 1: Update WebRTC track state (actual media control)
     if (localStream) {
+      const newMuteState = !isMuted;
       localStream.getAudioTracks().forEach(track => {
-        track.enabled = isMuted;
+        track.enabled = newMuteState; // WebRTC: actual track control
       });
+      
+      // Step 2: Send WebSocket signal for UI synchronization (signaling only)
+      if (isGroupCall && socket && roomId) {
+        socket.emit('groupcall:update-tracks', {
+          roomId,
+          tracks: { audio: newMuteState }, // WebSocket: UI state sync
+        });
+      }
     }
+    
     set({ isMuted: !isMuted });
   },
   
@@ -122,11 +161,12 @@ export const useCallStore = create((set, get) => ({
       callId, 
       caller, 
       receiver, 
-      socket,
       isScreenSharing,
-      callState 
+      callState,
+      isGroupCall,
+      roomId,
     } = state;
-    const { authUser } = useAuthStore.getState();
+    const { authUser, socket } = useAuthStore.getState();
     
     // Validation: Only allow video toggle for video calls
     if (callType !== 'video') {
@@ -140,104 +180,187 @@ export const useCallStore = create((set, get) => ({
       return;
     }
     
-    // Validation: Peer connection must exist
-    if (!peerConnection) {
+    // Validation: Peer connection must exist (only for 1-on-1 calls)
+    if (!isGroupCall && !peerConnection) {
       toast.error("Call connection not established. Please wait...");
       return;
     }
     
-    // Validation: Socket must be connected
-    if (!socket || !socket.connected) {
+    // Validation: Socket must exist
+    if (!socket) {
       toast.error("Connection lost. Please reconnect.");
       return;
     }
     
-    // DISABLE VIDEO
+    // Socket.IO connection check - be lenient to allow reconnection attempts
+    // socket.connected is a boolean, but we'll also check if socket exists and has methods
+    // The actual emit will fail gracefully if not connected
+    const isSocketConnected = socket.connected === true || (socket.id && typeof socket.emit === 'function');
+    if (!isSocketConnected) {
+      console.warn('Socket connection check:', { 
+        connected: socket.connected, 
+        disconnected: socket.disconnected,
+        id: socket.id,
+        hasEmit: typeof socket.emit === 'function'
+      });
+      // Don't block - let the emit try anyway, it will handle errors gracefully
+      // toast.error("Connection lost. Please reconnect.");
+      // return;
+    }
+    
+    // DISABLE VIDEO - Best Practice: Use track.enabled = false (no renegotiation needed)
     if (isVideoEnabled) {
       try {
-        // Note: Screen sharing can continue even if video is disabled
-        // Screen share replaces video track, so disabling video during screen share is OK
-        
-        // Validation: Local stream must exist
-        if (!localStream) {
-          console.warn('No local stream to disable video');
-          set({ isVideoEnabled: false });
+        // Don't disable video if screen sharing is active (screen share is video)
+        if (isScreenSharing) {
+          toast.info("Please stop screen sharing first to disable camera");
           return;
         }
         
-        const videoTracks = localStream.getVideoTracks();
-        
-        // Validation: Video tracks must exist
-        if (videoTracks.length === 0) {
-          console.warn('No video tracks found in local stream');
-          set({ isVideoEnabled: false });
-          return;
-        }
-        
-        // Disable all video tracks
-        videoTracks.forEach(track => {
-          if (track.readyState === 'live') {
-            track.enabled = false;
+        // Best Practice: Just disable the track, don't remove it
+        // This avoids renegotiation and stream recreation, preventing glitches
+        if (localStream) {
+          const videoTracks = localStream.getVideoTracks();
+          let disabledCount = 0;
+          
+          videoTracks.forEach(track => {
+            if (track.readyState === 'live') {
+              track.enabled = false;
+              disabledCount++;
+              console.log('✅ Video track disabled:', track.label);
+            }
+          });
+          
+          if (disabledCount === 0) {
+            console.warn('⚠️ No live video tracks found to disable');
           }
-        });
+        }
+        
+        // Also disable in peer connection sender (if track exists) - for 1-on-1 calls
+        if (!isGroupCall && peerConnection) {
+          const senders = peerConnection.getSenders();
+          const videoSender = senders.find(sender => sender.track?.kind === 'video');
+          if (videoSender && videoSender.track && videoSender.track.readyState === 'live') {
+            videoSender.track.enabled = false;
+            console.log('✅ Video track disabled in peer connection sender');
+          }
+        }
+        
+        // For group calls, disable in all participant peer connections
+        if (isGroupCall) {
+          participants.forEach((participant, userId) => {
+            if (participant.peerConnection) {
+              const senders = participant.peerConnection.getSenders();
+              const videoSender = senders.find(sender => sender.track?.kind === 'video');
+              if (videoSender && videoSender.track && videoSender.track.readyState === 'live') {
+                videoSender.track.enabled = false;
+              }
+            }
+          });
+        }
         
         // Update state
         set({ isVideoEnabled: false });
-        console.log('✅ Video disabled');
+        console.log('✅ Video disabled (track.enabled = false) - no renegotiation needed');
+        
+        // Update group call tracks if in group call
+        if (isGroupCall && socket && roomId) {
+          socket.emit('groupcall:update-tracks', {
+            roomId,
+            tracks: { video: false },
+          });
+        }
+        
+        toast.success("Camera turned off");
         
       } catch (error) {
         console.error('Error disabling video:', error);
-        toast.error("Failed to disable video");
-        // Still update state to prevent UI inconsistency
+        // Still disable locally even if there's an error
+        if (localStream) {
+          const videoTracks = localStream.getVideoTracks();
+          videoTracks.forEach(track => {
+            if (track.readyState === 'live') {
+              track.enabled = false;
+            }
+          });
+        }
         set({ isVideoEnabled: false });
+        toast.error("Failed to disable video: " + (error.message || 'Unknown error'));
       }
       return;
     }
     
-    // ENABLE VIDEO
+    // ENABLE VIDEO - Best Practice: Use track.enabled = true (no renegotiation needed)
     if (!isVideoEnabled) {
       try {
-        // Validation: Check if screen sharing is active
-        // Screen sharing replaces video, so we need to stop it first
+        // If screen sharing is active, user needs to stop it first via the screen share button
+        // The CallControls component handles this automatically
         if (isScreenSharing) {
-          toast.error("Please stop screen sharing before enabling camera");
+          toast.info("Please stop screen sharing first to enable camera");
           return;
         }
         
-        // Validation: Peer connection state must be valid
-        const validStates = ['stable', 'have-local-offer', 'have-remote-offer', 'have-local-pranswer', 'have-remote-pranswer'];
-        if (!validStates.includes(peerConnection.signalingState)) {
-          toast.error("Call connection is not ready. Please wait...");
-          return;
-        }
+        // Best Practice: Just enable the track, don't recreate it
+        // This avoids renegotiation and stream recreation, preventing glitches
         
-        // Check if video tracks already exist in local stream
+        // Check if video tracks exist in local stream
         const existingVideoTracks = localStream?.getVideoTracks() || [];
         
         if (existingVideoTracks.length > 0) {
-          // Video tracks exist - just enable them
-          const allEnabled = existingVideoTracks.every(track => track.enabled && track.readyState === 'live');
+          // Tracks exist - check if any are live
+          const liveTrack = existingVideoTracks.find(track => track.readyState === 'live');
           
-          if (allEnabled) {
-            // Already enabled
-            set({ isVideoEnabled: true });
-            return;
-          }
-          
-          // Enable existing tracks
-          existingVideoTracks.forEach(track => {
-            if (track.readyState === 'live') {
-              track.enabled = true;
+          if (liveTrack) {
+            // Track is live - just enable it (Best Practice)
+            liveTrack.enabled = true;
+            console.log('✅ Video track enabled:', liveTrack.label);
+            
+            // Also enable in peer connection sender if it exists - for 1-on-1 calls
+            if (!isGroupCall && peerConnection) {
+              const senders = peerConnection.getSenders();
+              const videoSender = senders.find(sender => sender.track?.kind === 'video');
+              if (videoSender && videoSender.track && videoSender.track.readyState === 'live') {
+                videoSender.track.enabled = true;
+                console.log('✅ Video track enabled in peer connection sender');
+              }
             }
+            
+            // For group calls, enable in all participant peer connections
+            if (isGroupCall) {
+              participants.forEach((participant, userId) => {
+                if (participant.peerConnection) {
+                  const senders = participant.peerConnection.getSenders();
+                  const videoSender = senders.find(sender => sender.track?.kind === 'video');
+                  if (videoSender && videoSender.track && videoSender.track.readyState === 'live') {
+                    videoSender.track.enabled = true;
+                  }
+                }
+              });
+            }
+            
+            // Update state
+        set({ isVideoEnabled: true });
+        console.log('✅ Video enabled (track.enabled = true) - no renegotiation needed');
+        
+        // Update group call tracks if in group call
+        if (isGroupCall && socket && roomId) {
+          socket.emit('groupcall:update-tracks', {
+            roomId,
+            tracks: { video: true },
           });
-          
-          set({ isVideoEnabled: true });
-          console.log('✅ Video enabled (existing tracks)');
-          return;
         }
         
-        // No video tracks exist - need to get camera stream
-        const { getLocalStream, replaceVideoTrack, createOffer } = await import('../lib/webrtc');
+        toast.success("Camera turned on");
+        return;
+          } else {
+            // Tracks exist but all ended - need to get new stream
+            console.log('⚠️ Video tracks exist but all ended - need to get new stream');
+            // Fall through to get new stream
+          }
+        }
+        
+        // No live tracks exist - need to get camera stream (only when tracks are truly missing)
+        const { getLocalStream, replaceVideoTrack } = await import('../lib/webrtc');
         
         // Get camera stream
         const videoStream = await getLocalStream('video');
@@ -253,24 +376,33 @@ export const useCallStore = create((set, get) => ({
           throw new Error('Camera stream is not active');
         }
         
-        // Check if video sender exists in peer connection
+        // Get senders
         const senders = peerConnection.getSenders();
         const videoSender = senders.find(sender => sender.track?.kind === 'video');
-        const hadVideoBefore = !!videoSender;
         
-        // Add or replace video track
-        await replaceVideoTrack(peerConnection, videoTrack, videoStream);
+        // Add or replace video track in peer connection (only when track doesn't exist)
+        if (videoSender) {
+          // Replace existing sender track
+          await videoSender.replaceTrack(videoTrack);
+        } else {
+          // Add new track to peer connection
+          if (localStream) {
+            peerConnection.addTrack(videoTrack, localStream);
+          } else {
+            peerConnection.addTrack(videoTrack, videoStream);
+          }
+        }
         
         // Update local stream
         if (localStream) {
           // Remove old video tracks if any
           localStream.getVideoTracks().forEach(track => {
-            if (track.id !== videoTrack.id) {
+            if (track.id !== videoTrack.id && track.readyState === 'live') {
               track.stop();
               localStream.removeTrack(track);
             }
           });
-          // Add new video track
+          // Add new video track if not already present
           if (!localStream.getVideoTracks().some(t => t.id === videoTrack.id)) {
             localStream.addTrack(videoTrack);
           }
@@ -278,40 +410,44 @@ export const useCallStore = create((set, get) => ({
           set({ localStream: videoStream });
         }
         
-        // If this is a new video track, renegotiate
-        if (!hadVideoBefore) {
-          // Wait for negotiationneeded event
+        // Note: When adding a new track (not just enabling), renegotiation IS needed
+        // But this should only happen when tracks are truly missing (ended), not when just disabled
+        if (socket && peerConnection.signalingState !== 'closed') {
           await new Promise(resolve => setTimeout(resolve, 200));
           
-          // Validation: Check peer connection state before renegotiation
-          if (peerConnection.signalingState === 'closed') {
-            throw new Error('Peer connection is closed');
-          }
-          
-          // Get user IDs for signaling
           const authUserId = typeof authUser._id === 'object' ? authUser._id._id || authUser._id : authUser._id;
           const callerId = typeof caller?.userId === 'object' ? caller.userId._id || caller.userId : caller?.userId;
           const receiverId = typeof receiver?.userId === 'object' ? receiver.userId._id || receiver.userId : receiver?.userId;
           
-          if (!callerId || !receiverId) {
-            throw new Error('Call participant information missing');
+          if (callerId && receiverId) {
+            const isCaller = String(authUserId) === String(callerId);
+            const otherUserId = isCaller ? receiverId : callerId;
+            
+            try {
+              const { createOffer } = await import('../lib/webrtc');
+              const offer = await createOffer(peerConnection);
+              if (offer) {
+                socket.emit('webrtc:offer', { callId, offer, receiverId: otherUserId });
+                console.log('📤 Renegotiation offer sent for new video track');
+              }
+            } catch (offerError) {
+              console.error('Error creating offer for new video track:', offerError);
+            }
           }
-          
-          const isCaller = String(authUserId) === String(callerId);
-          const otherUserId = isCaller ? receiverId : callerId;
-          
-          // Create and send renegotiation offer
-          const offer = await createOffer(peerConnection);
-          if (!offer) {
-            throw new Error('Failed to create renegotiation offer');
-          }
-          
-          socket.emit('webrtc:offer', { callId, offer, receiverId: otherUserId });
-          console.log('📤 Renegotiation offer sent for video track');
         }
         
         set({ isVideoEnabled: true });
-        toast.success("Camera enabled");
+        console.log('✅ Video enabled (new track added)');
+        
+        // Update group call tracks if in group call
+        if (isGroupCall && socket && roomId) {
+          socket.emit('groupcall:update-tracks', {
+            roomId,
+            tracks: { video: true },
+          });
+        }
+        
+        toast.success("Camera turned on");
         
       } catch (error) {
         console.error('Error enabling video:', error);
@@ -531,15 +667,254 @@ export const useCallStore = create((set, get) => ({
   
   // Reject call
   rejectCall: () => {
-    const { socket } = useAuthStore.getState();
+    const { socket, isGroupCall } = get();
     const { callId } = get();
     
-    if (socket && callId) {
+    // For 1-on-1 calls, emit reject event
+    if (!isGroupCall && socket && callId) {
       socket.emit('call:reject', { callId, reason: 'rejected' });
     }
+    // For group calls, just reset state (no reject event needed)
     
     get().resetCallState();
     toast("Call rejected", { icon: 'ℹ️' });
+  },
+  
+  // Group Call Functions
+  setRoomId: (roomId) => set({ roomId }),
+  setIsGroupCall: (isGroupCall) => set({ isGroupCall }),
+  
+  // Add participant to group call
+  addParticipant: (userId, participantData) => {
+    const { participants } = get();
+    const newParticipants = new Map(participants);
+    newParticipants.set(userId, {
+      userId,
+      ...participantData,
+    });
+    set({ participants: newParticipants });
+  },
+  
+  // Remove participant from group call
+  removeParticipant: (userId) => {
+    const { participants } = get();
+    const participant = participants.get(userId);
+    if (participant) {
+      if (participant.stream) {
+        participant.stream.getTracks().forEach(track => track.stop());
+      }
+      if (participant.peerConnection) {
+        participant.peerConnection.close();
+      }
+    }
+    const newParticipants = new Map(participants);
+    newParticipants.delete(userId);
+    set({ participants: newParticipants });
+  },
+  
+  // Update participant tracks
+  updateParticipantTracks: (userId, tracks) => {
+    const { participants } = get();
+    const participant = participants.get(userId);
+    if (participant) {
+      const newParticipants = new Map(participants);
+      newParticipants.set(userId, {
+        ...participant,
+        tracks: { ...participant.tracks, ...tracks },
+      });
+      set({ participants: newParticipants });
+    }
+  },
+  
+  // Update participant stream
+  updateParticipantStream: (userId, stream) => {
+    const { participants } = get();
+    const participant = participants.get(userId);
+    if (participant) {
+      const newParticipants = new Map(participants);
+      newParticipants.set(userId, {
+        ...participant,
+        stream,
+      });
+      set({ participants: newParticipants });
+    }
+  },
+  
+  // Update participant screen share stream
+  updateParticipantScreenShare: (userId, screenShareStream) => {
+    const { participants } = get();
+    const participant = participants.get(userId);
+    if (participant) {
+      const newParticipants = new Map(participants);
+      newParticipants.set(userId, {
+        ...participant,
+        screenShareStream,
+      });
+      set({ participants: newParticipants });
+    }
+  },
+  
+  // Update participant peer connection
+  updateParticipantPeerConnection: (userId, peerConnection) => {
+    const { participants } = get();
+    const participant = participants.get(userId);
+    if (participant) {
+      const newParticipants = new Map(participants);
+      newParticipants.set(userId, {
+        ...participant,
+        peerConnection,
+      });
+      set({ participants: newParticipants });
+    }
+  },
+  
+  // Initiate group call
+  initiateGroupCall: async (groupId, callType) => {
+    const { socket } = useAuthStore.getState();
+    const { authUser } = useAuthStore.getState();
+    const { groups } = useChatStore.getState();
+    
+    if (!socket || !authUser) {
+      toast.error("Not connected. Please check your connection.");
+      return;
+    }
+    
+    // Find group info
+    const group = groups.find(g => {
+      const gId = typeof g._id === 'object' ? g._id._id || g._id : g._id;
+      return String(gId) === String(groupId);
+    });
+    
+    if (!group) {
+      toast.error("Group not found");
+      return;
+    }
+    
+    // Generate unique room ID
+    const roomId = `group_${groupId}_${Date.now()}`;
+    
+    // Step A: Add local participant immediately (don't wait for remote participants)
+    const authUserId = typeof authUser._id === 'object' ? authUser._id._id || authUser._id : authUser._id;
+    const authUserIdStr = String(authUserId);
+    
+    const localParticipant = {
+      userId: authUserIdStr,
+      userInfo: {
+        userId: authUser._id,
+        fullname: authUser.fullname,
+        profilePic: authUser.profilePic,
+      },
+      tracks: { audio: true, video: callType === 'video' },
+      stream: null,
+      peerConnection: null,
+      isLocal: true, // Mark as local participant
+    };
+    
+    const initialParticipants = new Map();
+    initialParticipants.set(authUserIdStr, localParticipant);
+    
+    // Set group call info with local participant
+    // Step A: Set call UI visible immediately (callState: 'in-call')
+    set({
+      callId: roomId,
+      roomId,
+      callType,
+      callState: 'in-call', // Show call UI immediately, don't wait for remote participants
+      isGroupCall: true,
+      isVideoEnabled: callType === 'video',
+      caller: {
+        userId: authUser._id,
+        fullname: authUser.fullname,
+        profilePic: authUser.profilePic,
+      },
+      participants: initialParticipants, // Local participant added immediately
+    });
+    
+    // Start call timer immediately
+    get().startCallTimer();
+    
+    // Emit group call initiation
+    socket.emit('groupcall:join', {
+      roomId,
+      groupId,
+      callType,
+      userInfo: {
+        userId: authUser._id,
+        fullname: authUser.fullname,
+        profilePic: authUser.profilePic,
+      },
+    });
+    
+    console.log(`✅ Group call ${roomId} initiated - Local participant added immediately`);
+  },
+  
+  // Join group call
+  joinGroupCall: async (roomId, groupId, callType) => {
+    const { socket } = useAuthStore.getState();
+    const { authUser } = useAuthStore.getState();
+    
+    if (!socket || !authUser) {
+      toast.error("Not connected. Please check your connection.");
+      return;
+    }
+    
+    const authUserId = typeof authUser._id === 'object' ? authUser._id._id || authUser._id : authUser._id;
+    const authUserIdStr = String(authUserId);
+    
+    // Step A: Add local participant immediately (don't wait for remote participants)
+    const localParticipant = {
+      userId: authUserIdStr,
+      userInfo: {
+        userId: authUser._id,
+        fullname: authUser.fullname,
+        profilePic: authUser.profilePic,
+      },
+      tracks: { audio: true, video: callType === 'video' },
+      stream: null,
+      peerConnection: null,
+      isLocal: true, // Mark as local participant
+    };
+    
+    const initialParticipants = new Map();
+    initialParticipants.set(authUserIdStr, localParticipant);
+    
+    // Set group call info and add local participant immediately
+    set({
+      callId: roomId,
+      roomId,
+      callType,
+      callState: 'in-call',
+      isGroupCall: true,
+      isVideoEnabled: callType === 'video',
+      participants: initialParticipants, // Local participant added immediately
+    });
+    
+    // Emit join group call
+    socket.emit('groupcall:join', {
+      roomId,
+      groupId,
+      callType,
+      userInfo: {
+        userId: authUser._id,
+        fullname: authUser.fullname,
+        profilePic: authUser.profilePic,
+      },
+    });
+    
+    get().startCallTimer();
+    console.log(`✅ Joined group call ${roomId} - Local participant added immediately`);
+  },
+  
+  // Leave group call
+  leaveGroupCall: () => {
+    const { socket } = useAuthStore.getState();
+    const { roomId } = get();
+    
+    if (socket && roomId) {
+      socket.emit('groupcall:leave', { roomId });
+    }
+    
+    get().endCall('left');
   },
   
   // End call
@@ -560,10 +935,19 @@ export const useCallStore = create((set, get) => ({
         get().sendCallStatusMessage(callType, 'missed');
       }
       
+      const { isGroupCall, roomId } = get();
+      
       // Emit end event if socket and callId exist
       if (socket && callId) {
-        console.log('📤 Emitting call:end event:', callId);
-        socket.emit('call:end', { callId, reason });
+        if (isGroupCall && roomId) {
+          // Group call - emit leave event
+          console.log('📤 Leaving group call:', roomId);
+          socket.emit('groupcall:leave', { roomId });
+        } else {
+          // 1-on-1 call - emit end event
+          console.log('📤 Emitting call:end event:', callId);
+          socket.emit('call:end', { callId, reason });
+        }
       } else {
         console.warn('⚠️ Cannot emit call:end - missing socket or callId', { socket: !!socket, callId });
       }

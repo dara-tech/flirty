@@ -4,6 +4,7 @@ import { useChatStore } from "../store/useChatStore";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import CallButton from "./CallButton";
+import GroupCallButton from "./GroupCallButton";
 import ProfileImage from "./ProfileImage";
 
 const ChatHeader = () => {
@@ -83,9 +84,12 @@ const ChatHeader = () => {
 
       {/* Action buttons */}
       <div className="flex items-center gap-2">
-        {/* Call buttons (only for direct chats, not groups) */}
+        {/* Call buttons */}
         {!isGroup && selectedUser && (
           <CallButton userId={selectedUser._id} variant="compact" />
+        )}
+        {isGroup && selectedGroup && (
+          <GroupCallButton groupId={selectedGroup._id} variant="compact" />
         )}
         {!isGroup && selectedUser && (
           <button

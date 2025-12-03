@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { FaPhone, FaVideo, FaTimes } from "react-icons/fa";
 import { useCallStore } from "../store/useCallStore";
 import { useAuthStore } from "../store/useAuthStore";
+import { useChatStore } from "../store/useChatStore";
 import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 
@@ -9,12 +10,17 @@ const CallModal = ({ answerCallWithMedia }) => {
   const {
     callState,
     callType,
+    callId,
     caller,
     receiver,
+    isGroupCall,
+    groupName,
     rejectCall,
     endCall,
+    joinGroupCall,
   } = useCallStore();
   const { authUser } = useAuthStore();
+  const { users } = useChatStore();
   const [isAnswering, setIsAnswering] = useState(false);
   
   const isIncoming = callState === 'ringing';
@@ -72,7 +78,7 @@ const CallModal = ({ answerCallWithMedia }) => {
       
       return () => clearTimeout(timeout);
     }
-  }, [isIncoming, rejectCall]);
+  }, [isIncoming, rejectCall, isGroupCall]);
   
   // Show modal immediately when call state is 'calling' or 'ringing'
   // For requesting (caller): show if calling state, has caller and receiver, and user is the caller
@@ -105,31 +111,84 @@ const CallModal = ({ answerCallWithMedia }) => {
   const userIsCaller = isCurrentUserCaller();
   const userIsReceiver = isCallForCurrentUser();
   
-  if (isRequesting && caller && receiver) {
+  // Try to get receiver info from users list if not set in store
+  let receiverInfo = receiver;
+  
+  // If receiver is not set but we have a callId, try to extract receiverId from callId
+  if (!receiverInfo && callId && caller) {
+    const callIdParts = callId.split('_');
+    if (callIdParts.length >= 2) {
+      const receiverIdFromCallId = callIdParts[1];
+      const foundReceiver = users.find(u => {
+        const uId = typeof u._id === 'object' ? u._id._id || u._id : u._id;
+        return String(uId) === String(receiverIdFromCallId);
+      });
+      if (foundReceiver) {
+        receiverInfo = {
+          userId: foundReceiver._id,
+          fullname: foundReceiver.fullname,
+          profilePic: foundReceiver.profilePic,
+        };
+      }
+    }
+  }
+  
+  // Handle group calls - show modal if ringing (incoming group call invitation)
+  if (isGroupCall && isIncoming && caller) {
+    shouldShowModal = true;
+    displayUser = caller; // Show caller's info
+  }
+  // Handle 1-on-1 calls
+  else if (isRequesting && caller && !isGroupCall) {
     // Show requesting modal if user is the caller
     if (userIsCaller) {
       shouldShowModal = true;
-      displayUser = receiver; // Show receiver's info to caller
+      // Use receiverInfo (either from store or extracted)
+      if (receiverInfo) {
+        displayUser = receiverInfo; // Show receiver's info to caller
+      } else {
+        // Fallback: show connecting message
+        displayUser = {
+          userId: null,
+          fullname: 'Connecting...',
+          profilePic: null,
+        };
+      }
     }
   } 
-  
   // Also check if caller is in 'ringing' state (shouldn't happen, but handle it)
-  if (isIncoming && caller) {
+  else if (isIncoming && caller && !isGroupCall) {
     if (userIsReceiver) {
       // Receiver sees incoming call
       shouldShowModal = true;
       displayUser = caller; // Show caller's info to receiver
-    } else if (userIsCaller && receiver) {
+    } else if (userIsCaller) {
       // Caller accidentally in ringing state - still show requesting modal
       shouldShowModal = true;
-      displayUser = receiver; // Show receiver's info to caller
+      if (receiverInfo) {
+        displayUser = receiverInfo; // Show receiver's info to caller
+      } else {
+        displayUser = {
+          userId: null,
+          fullname: 'Connecting...',
+          profilePic: null,
+        };
+      }
     }
   }
   
   // Don't show if conditions not met
   if (!shouldShowModal || !displayUser) {
     if (callState === 'calling' || callState === 'ringing') {
-      console.log('❌ CallModal not showing:', { shouldShowModal, displayUser: !!displayUser });
+      console.log('❌ CallModal not showing:', { 
+        shouldShowModal, 
+        displayUser: !!displayUser,
+        userIsCaller,
+        userIsReceiver,
+        hasCaller: !!caller,
+        hasReceiver: !!receiver,
+        callState,
+      });
     }
     return null;
   }
@@ -141,7 +200,18 @@ const CallModal = ({ answerCallWithMedia }) => {
     
     setIsAnswering(true);
     try {
-      await answerCallWithMedia();
+      if (isGroupCall) {
+        // Handle group call join
+        const { roomId, groupId, callType: groupCallType } = useCallStore.getState();
+        if (roomId && groupId) {
+          await joinGroupCall(roomId, groupId, groupCallType);
+        } else {
+          throw new Error('Group call information missing');
+        }
+      } else {
+        // Handle 1-on-1 call answer
+        await answerCallWithMedia();
+      }
     } catch (error) {
       console.error('Error answering call:', error);
       toast.error(error.message || "Failed to answer call");
@@ -178,12 +248,19 @@ const CallModal = ({ answerCallWithMedia }) => {
             )}
           </div>
           <h2 className="text-2xl font-bold text-base-content mb-2">
-            {displayUser?.fullname}
+            {isGroupCall ? groupName : displayUser?.fullname}
           </h2>
+          {isGroupCall && (
+            <p className="text-base-content/70 text-sm mb-2">
+              {displayUser?.fullname} started a {callType === 'video' ? 'video' : 'voice'} call
+            </p>
+          )}
           <p className="text-base-content/60">
             {isRequesting 
               ? `Requesting ${callType === 'video' ? 'video' : 'voice'} call...`
-              : `${callType === 'video' ? 'Video' : 'Voice'} call incoming...`
+              : isGroupCall
+                ? `${callType === 'video' ? 'Video' : 'Voice'} group call incoming...`
+                : `${callType === 'video' ? 'Video' : 'Voice'} call incoming...`
             }
           </p>
         </div>

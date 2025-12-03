@@ -639,15 +639,82 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
   // Monitor receivers for track changes (when replaceTrack is used)
   let lastVideoTrackId = null;
   let lastVideoTrackLabel = null;
+  let lastVideoTrackEnabled = null;
   const checkReceiverTracks = () => {
-    if (!remoteStream) return;
+    if (!remoteStream) {
+      // No remote stream yet - check if we have a video receiver
+      const receivers = peerConnection.getReceivers();
+      const videoReceiver = receivers.find(r => r.track?.kind === 'video');
+      if (videoReceiver?.track && videoReceiver.track.enabled && videoReceiver.track.readyState === 'live') {
+        // Create new stream with video track
+        const newStream = new MediaStream([videoReceiver.track]);
+        setupStreamListeners(newStream);
+        updateRemoteStream(newStream);
+        lastVideoTrackId = videoReceiver.track.id;
+        lastVideoTrackLabel = videoReceiver.track.label;
+        lastVideoTrackEnabled = videoReceiver.track.enabled;
+        console.log('✅ Created new remote stream with video track from receiver');
+      }
+      return;
+    }
     
     const receivers = peerConnection.getReceivers();
     const videoReceiver = receivers.find(r => r.track?.kind === 'video');
     const currentVideoTrack = remoteStream.getVideoTracks()[0];
     const receiverTrack = videoReceiver?.track;
     
-    if (!receiverTrack) return;
+    // Check if video receiver exists but track is null (video was disabled)
+    if (!receiverTrack) {
+      // No video receiver track - video was removed
+      if (currentVideoTrack) {
+        console.log('🔄 Video track removed - clearing from stream');
+        const updatedStream = new MediaStream([
+          ...remoteStream.getAudioTracks(),
+        ]);
+        setupStreamListeners(updatedStream);
+        updateRemoteStream(updatedStream);
+        lastVideoTrackId = null;
+        lastVideoTrackLabel = null;
+        lastVideoTrackEnabled = null;
+      }
+      return;
+    }
+    
+    // Check if track was re-enabled (was null/disabled, now enabled)
+    const receiverTrackActive = receiverTrack.enabled && 
+                                 receiverTrack.readyState === 'live' &&
+                                 !receiverTrack.muted;
+    
+    if (!currentVideoTrack && receiverTrackActive) {
+      // No video track in stream but receiver has active track - add it
+      console.log('🔄 Video track re-enabled - adding to stream');
+      const updatedStream = new MediaStream([
+        ...remoteStream.getAudioTracks(),
+        receiverTrack,
+      ]);
+      setupStreamListeners(updatedStream);
+      updateRemoteStream(updatedStream);
+      lastVideoTrackId = receiverTrack.id;
+      lastVideoTrackLabel = receiverTrack.label;
+      lastVideoTrackEnabled = receiverTrack.enabled;
+      return;
+    }
+    
+    if (!receiverTrackActive && currentVideoTrack) {
+      // Track exists in stream but receiver track is disabled - remove it
+      console.log('🔄 Video track disabled - removing from stream');
+      const updatedStream = new MediaStream([
+        ...remoteStream.getAudioTracks(),
+      ]);
+      setupStreamListeners(updatedStream);
+      updateRemoteStream(updatedStream);
+      lastVideoTrackId = null;
+      lastVideoTrackLabel = null;
+      lastVideoTrackEnabled = null;
+      return;
+    }
+    
+    if (!receiverTrackActive) return;
     
     // Check if track ID changed (completely new track)
     if (currentVideoTrack?.id !== receiverTrack.id) {
@@ -737,27 +804,54 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
       }
     }
     
-    // Check for track state changes
+    // Check for track state changes (enabled/disabled, muted/unmuted)
     if (receiverTrack && currentVideoTrack) {
       const trackStateChanged = receiverTrack.muted !== currentVideoTrack.muted ||
                                 receiverTrack.enabled !== currentVideoTrack.enabled ||
                                 receiverTrack.readyState !== currentVideoTrack.readyState;
       
-      if (trackStateChanged) {
+      // Also check if track was re-enabled (was disabled, now enabled)
+      const wasDisabledNowEnabled = lastVideoTrackEnabled === false && receiverTrack.enabled === true;
+      
+      if (trackStateChanged || wasDisabledNowEnabled) {
         console.log('🔄 Video track state changed:', {
           muted: receiverTrack.muted,
           enabled: receiverTrack.enabled,
           readyState: receiverTrack.readyState,
+          wasDisabledNowEnabled,
         });
         
-        // Update stream to reflect changes
-        const updatedStream = new MediaStream([
-          ...remoteStream.getAudioTracks(),
-          receiverTrack,
-        ]);
-        setupStreamListeners(updatedStream);
-        updateRemoteStream(updatedStream);
+        // If track is now enabled and active, update stream
+        if (receiverTrackActive) {
+          const updatedStream = new MediaStream([
+            ...remoteStream.getAudioTracks(),
+            receiverTrack,
+          ]);
+          setupStreamListeners(updatedStream);
+          updateRemoteStream(updatedStream);
+          lastVideoTrackEnabled = receiverTrack.enabled;
+        } else {
+          // Track is disabled - remove from stream
+          const updatedStream = new MediaStream([
+            ...remoteStream.getAudioTracks(),
+          ]);
+          setupStreamListeners(updatedStream);
+          updateRemoteStream(updatedStream);
+          lastVideoTrackEnabled = receiverTrack.enabled;
+        }
       }
+    } else if (receiverTrack && receiverTrackActive && !currentVideoTrack) {
+      // Track exists in receiver but not in stream - add it
+      console.log('🔄 Video track exists in receiver but not in stream - adding');
+      const updatedStream = new MediaStream([
+        ...remoteStream.getAudioTracks(),
+        receiverTrack,
+      ]);
+      setupStreamListeners(updatedStream);
+      updateRemoteStream(updatedStream);
+      lastVideoTrackId = receiverTrack.id;
+      lastVideoTrackLabel = receiverTrack.label;
+      lastVideoTrackEnabled = receiverTrack.enabled;
     }
   };
   
@@ -775,22 +869,55 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
         if (track.label) {
           lastVideoTrackLabel = track.label;
         }
+        lastVideoTrackEnabled = track.enabled;
         
         // Listen for track mute/unmute (indicates track change)
         track.onmute = () => {
           console.log('🔄 Remote video track muted');
+          lastVideoTrackEnabled = track.enabled;
           checkReceiverTracks();
         };
         track.onunmute = () => {
           console.log('🔄 Remote video track unmuted');
+          lastVideoTrackEnabled = track.enabled;
           checkReceiverTracks();
         };
         
         // Listen for track ended (track was replaced)
         track.onended = () => {
           console.log('🔄 Remote video track ended');
+          lastVideoTrackId = null;
+          lastVideoTrackLabel = null;
+          lastVideoTrackEnabled = null;
           checkReceiverTracks();
         };
+        
+        // Monitor enabled state changes (when replaceTrack is used to enable/disable)
+        // Since there's no 'enabled' event, we'll check periodically
+        const checkEnabledState = () => {
+          if (track.readyState === 'live') {
+            const currentEnabled = track.enabled;
+            if (lastVideoTrackEnabled !== null && lastVideoTrackEnabled !== currentEnabled) {
+              console.log('🔄 Video track enabled state changed:', {
+                was: lastVideoTrackEnabled,
+                now: currentEnabled,
+              });
+              lastVideoTrackEnabled = currentEnabled;
+              checkReceiverTracks();
+            } else if (lastVideoTrackEnabled === null) {
+              lastVideoTrackEnabled = currentEnabled;
+            }
+          }
+        };
+        
+        // Check enabled state periodically
+        const enabledCheckInterval = setInterval(() => {
+          if (track.readyState === 'ended') {
+            clearInterval(enabledCheckInterval);
+            return;
+          }
+          checkEnabledState();
+        }, 200);
       }
     });
   };
@@ -842,11 +969,23 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
       const videoTrackChanged = currentVideoTrack && newVideoTrack && 
                                 currentVideoTrack.id !== newVideoTrack.id;
       
-      if (isNewStream || videoTrackChanged) {
+      // Check if video track was re-enabled (no track in stream but track exists in event)
+      const videoTrackReEnabled = !currentVideoTrack && newVideoTrack && 
+                                   newVideoTrack.enabled && 
+                                   newVideoTrack.readyState === 'live' &&
+                                   !newVideoTrack.muted;
+      
+      if (isNewStream || videoTrackChanged || videoTrackReEnabled) {
         if (videoTrackChanged) {
           console.log('🔄 Video track replaced:', {
             old: currentVideoTrack.label,
             new: newVideoTrack.label,
+          });
+        } else if (videoTrackReEnabled) {
+          console.log('🔄 Video track re-enabled via ontrack event:', {
+            track: newVideoTrack.label,
+            enabled: newVideoTrack.enabled,
+            readyState: newVideoTrack.readyState,
           });
         }
         
@@ -856,12 +995,24 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
         // Store track ID for change detection
         if (newVideoTrack) {
           lastVideoTrackId = newVideoTrack.id;
+          lastVideoTrackLabel = newVideoTrack.label;
+          lastVideoTrackEnabled = newVideoTrack.enabled;
         }
       } else if (newVideoTrack && currentVideoTrack?.id === newVideoTrack.id) {
-        // Same track ID but might have new content - update anyway
-        console.log('🔄 Same track ID, but updating stream to ensure latest content');
-        setupStreamListeners(stream);
-        updateRemoteStream(stream);
+        // Same track ID but might have new content or state - check if enabled state changed
+        const enabledStateChanged = currentVideoTrack.enabled !== newVideoTrack.enabled;
+        if (enabledStateChanged && newVideoTrack.enabled && newVideoTrack.readyState === 'live') {
+          // Track was re-enabled - update stream
+          console.log('🔄 Same track ID but re-enabled - updating stream');
+          setupStreamListeners(stream);
+          updateRemoteStream(stream);
+          lastVideoTrackEnabled = newVideoTrack.enabled;
+        } else {
+          // Update anyway to ensure latest content
+          console.log('🔄 Same track ID, but updating stream to ensure latest content');
+          setupStreamListeners(stream);
+          updateRemoteStream(stream);
+        }
       }
     } else if (track) {
       // Track without stream - create new stream

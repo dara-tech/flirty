@@ -77,13 +77,10 @@ export const login = asyncHandler(async (req, res) => {
 
 // Logout controller
 export const logout = asyncHandler(async (req, res) => {
-  const isDevelopment = process.env.NODE_ENV !== 'production';
+  const { getCookieOptions } = await import('../lib/utils.js');
   const cookieOptions = {
+    ...getCookieOptions(req),
     maxAge: 0, // Expire immediately
-    httpOnly: true,
-    path: '/',
-    sameSite: isDevelopment ? 'lax' : 'none',
-    secure: !isDevelopment,
   };
   
   res.cookie("jwt", "", cookieOptions);
