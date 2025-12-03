@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit } from "react-icons/fa";
+import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit, FaMicrophone } from "react-icons/fa";
 import CreateGroupModal from "../component/CreateGroupModal";
 import DeleteConversationModal from "../component/DeleteConversationModal";
 import DeleteGroupModal from "../component/DeleteGroupModal";
@@ -433,14 +433,42 @@ const ConversationsListPage = () => {
                               <span className="text-primary/70">typing...</span>
                             ) : lastMessage ? (
                               <>
+                                <div className="flex items-center gap-2">
                                 {(() => {
                                   const msgSenderId = typeof lastMessage.senderId === 'object' ? lastMessage.senderId._id : lastMessage.senderId;
                                   const isFromUser = msgSenderId === user._id || msgSenderId === userId;
-                                  const content = lastMessage.image ? 'Sent an image' :
-                                                 lastMessage.file ? 'Sent a file' :
-                                                 lastMessage.text;
-                                  return isFromUser ? content : `You: ${content}`;
+                                    
+                                    // Show icon for media types
+                                    if (lastMessage.audio) {
+                                      return (
+                                        <>
+                                          <FaMicrophone className="size-3 text-primary/70 flex-shrink-0" />
+                                          <span>{isFromUser ? 'Voice message' : 'You: Voice message'}</span>
+                                        </>
+                                      );
+                                    }
+                                    if (lastMessage.image) {
+                                      return (
+                                        <>
+                                          <FaImage className="size-3 text-primary/70 flex-shrink-0" />
+                                          <span>{isFromUser ? 'Sent an image' : 'You: Sent an image'}</span>
+                                        </>
+                                      );
+                                    }
+                                    if (lastMessage.file) {
+                                      return (
+                                        <>
+                                          <FaFileAlt className="size-3 text-primary/70 flex-shrink-0" />
+                                          <span>{isFromUser ? 'Sent a file' : 'You: Sent a file'}</span>
+                                        </>
+                                      );
+                                    }
+                                    
+                                    // Text message
+                                    const content = lastMessage.text;
+                                    return <span>{isFromUser ? content : `You: ${content}`}</span>;
                                 })()}
+                                </div>
                                 {' • '}
                                 {formatDistanceToNow(new Date(lastMessage.createdAt), { addSuffix: true })}
                               </>
@@ -578,11 +606,27 @@ const ConversationsListPage = () => {
                               if (lastMsg) {
                                 return (
                                   <>
-                                    {lastMsg.senderId?.fullname || "Someone"}: {
-                                      lastMsg.image 
-                                  ? 'Sent an image' 
-                                        : lastMsg.text
-                              }
+                                    <div className="flex items-center gap-2">
+                                      {lastMsg.senderId?.fullname || "Someone"}:{' '}
+                                      {lastMsg.audio ? (
+                                        <>
+                                          <FaMicrophone className="size-3 text-primary/70 flex-shrink-0" />
+                                          <span>Voice message</span>
+                                        </>
+                                      ) : lastMsg.image ? (
+                                        <>
+                                          <FaImage className="size-3 text-primary/70 flex-shrink-0" />
+                                          <span>Sent an image</span>
+                                        </>
+                                      ) : lastMsg.file ? (
+                                        <>
+                                          <FaFileAlt className="size-3 text-primary/70 flex-shrink-0" />
+                                          <span>{lastMsg.fileName || "File"}</span>
+                                        </>
+                                      ) : (
+                                        <span>{lastMsg.text || "Message"}</span>
+                                      )}
+                                    </div>
                               {' • '}
                                     {formatDistanceToNow(new Date(lastMsg.createdAt), { addSuffix: true })}
                             </>

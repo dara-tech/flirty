@@ -1541,6 +1541,16 @@ const ChatContainer = () => {
                     const hasMyReaction = reactions.some(r => 
                       normalizeId(r.userId?._id || r.userId) === normalizeId(authUser?._id)
                     );
+                    const reactionUsers = reactions.map(r => {
+                      if (typeof r.userId === 'object' && r.userId.fullname) {
+                        return r.userId.fullname;
+                      }
+                      return 'Someone';
+                    });
+                    const tooltipText = reactionUsers.length > 0 
+                      ? `${reactionUsers.join(', ')}${reactionUsers.length > 1 ? ` and ${reactions.length - reactionUsers.length} more` : ''}`
+                      : 'Reacted';
+                    
                     return (
                       <button
                         key={emoji}
@@ -1552,16 +1562,14 @@ const ChatContainer = () => {
                             await addReaction(message._id, emoji);
                           }
                         }}
-                        className={`px-2 py-1 rounded-full text-xs flex items-center gap-1 transition-all ${
+                        className={`px-2 py-1 rounded-full text-xs flex items-center gap-1 transition-all duration-200 reaction-button-enter ${
                           hasMyReaction
-                            ? 'bg-primary text-primary-content shadow-md'
-                            : 'bg-base-200 hover:bg-base-300 text-base-content'
+                            ? 'bg-primary text-primary-content shadow-md hover:shadow-lg hover:scale-110 active:scale-95'
+                            : 'bg-base-200 hover:bg-base-300 text-base-content hover:scale-110 active:scale-95'
                         }`}
-                        title={reactions.map(r => 
-                          typeof r.userId === 'object' ? r.userId.fullname : 'Someone'
-                        ).join(', ')}
+                        title={tooltipText}
                       >
-                        <span>{emoji}</span>
+                        <span className="text-sm">{emoji}</span>
                         <span className="font-medium">{reactions.length}</span>
                       </button>
                     );
@@ -1572,10 +1580,10 @@ const ChatContainer = () => {
               {/* Reaction Picker */}
               {reactionPickerMessageId === message._id && (
                 <div 
-                  className={`relative ${isMyMessage ? 'ml-auto' : 'mr-auto'} mt-2`}
+                  className={`relative ${isMyMessage ? 'ml-auto' : 'mr-auto'} mt-2 reaction-picker-enter`}
                   ref={(el) => { if (el) reactionPickerRefs.current[message._id] = el; }}
                 >
-                  <div className="bg-base-100 rounded-2xl shadow-2xl border border-base-300/50 p-3 flex gap-2">
+                  <div className="bg-base-100 rounded-2xl shadow-2xl border border-base-300/50 p-3 flex gap-2 backdrop-blur-sm">
                     {['👍', '❤️', '😂', '😮', '😢', '🙏'].map((emoji) => {
                       const hasMyReaction = message.reactions?.some(r => 
                         r.emoji === emoji && normalizeId(r.userId?._id || r.userId) === normalizeId(authUser?._id)
@@ -1592,9 +1600,10 @@ const ChatContainer = () => {
                             }
                             setReactionPickerMessageId(null);
                           }}
-                          className={`text-2xl p-2 rounded-lg transition-all hover:bg-base-200 hover:scale-110 ${
-                            hasMyReaction ? 'bg-primary/20' : ''
+                          className={`text-2xl p-2 rounded-lg transition-all duration-200 hover:bg-base-200 hover:scale-125 active:scale-95 ${
+                            hasMyReaction ? 'bg-primary/20 ring-2 ring-primary/50' : ''
                           }`}
+                          title={hasMyReaction ? 'Remove reaction' : 'Add reaction'}
                         >
                           {emoji}
                         </button>

@@ -518,42 +518,126 @@ export const useChatStore = create((set, get) => ({
   },
 
   addReaction: async (messageId, emoji) => {
-    try {
-      const res = await axiosInstance.put(`/messages/reaction/${messageId}`, { emoji });
-      const updatedMessage = res.data;
-      
-      // Update message in local state
+    const socket = useAuthStore.getState().socket;
+    const authUser = useAuthStore.getState().authUser;
+    
+    if (!socket || !authUser) {
+      toast.error("Connection error. Please reconnect.");
+      return;
+    }
+
+    // Optimistic UI update - update immediately before server confirms
       set((state) => {
-        const updatedMessages = state.messages.map((msg) =>
-          msg._id === messageId ? { ...msg, reactions: updatedMessage.reactions } : msg
-        );
-        return { messages: updatedMessages };
-      });
+      const normalizeId = (id) => {
+        if (!id) return null;
+        if (typeof id === 'string') return id;
+        if (typeof id === 'object' && id._id) return id._id.toString();
+        return id.toString();
+      };
+
+      const authUserId = normalizeId(authUser._id);
       
-      return updatedMessage;
+      return {
+        messages: state.messages.map((msg) => {
+          if (msg._id !== messageId) return msg;
+          
+          // Clone reactions array
+          const currentReactions = msg.reactions || [];
+          
+          // Check if user already reacted with this emoji
+          const existingReactionIndex = currentReactions.findIndex(
+            r => normalizeId(r.userId?._id || r.userId) === authUserId && r.emoji === emoji
+          );
+          
+          if (existingReactionIndex !== -1) {
+            // Remove reaction (toggle off)
+            return {
+              ...msg,
+              reactions: currentReactions.filter((_, idx) => idx !== existingReactionIndex)
+            };
+          } else {
+            // Remove any other reaction from this user, then add new one
+            const filteredReactions = currentReactions.filter(
+              r => normalizeId(r.userId?._id || r.userId) !== authUserId
+            );
+            
+            return {
+              ...msg,
+              reactions: [
+                ...filteredReactions,
+                {
+                  userId: authUser._id,
+                  emoji: emoji,
+                  createdAt: new Date(),
+                }
+              ]
+            };
+          }
+        }),
+      };
+    });
+
+    // Send reaction via WebSocket for real-time updates
+    try {
+      socket.emit("reaction", { messageId, emoji });
     } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to add reaction");
-      throw error;
+      console.error("Error sending reaction:", error);
+      toast.error("Failed to add reaction. Please try again.");
     }
   },
 
   removeReaction: async (messageId) => {
+    const socket = useAuthStore.getState().socket;
+    const authUser = useAuthStore.getState().authUser;
+    
+    if (!socket || !authUser) {
+      toast.error("Connection error. Please reconnect.");
+      return;
+    }
+
+    // Find the emoji the user reacted with
+    const state = useChatStore.getState();
+    const message = state.messages.find(msg => msg._id === messageId);
+    
+    if (!message || !message.reactions || message.reactions.length === 0) {
+      return;
+    }
+
+    const normalizeId = (id) => {
+      if (!id) return null;
+      if (typeof id === 'string') return id;
+      if (typeof id === 'object' && id._id) return id._id.toString();
+      return id.toString();
+    };
+
+    const authUserId = normalizeId(authUser._id);
+    const userReaction = message.reactions.find(
+      r => normalizeId(r.userId?._id || r.userId) === authUserId
+    );
+
+    if (!userReaction) {
+      return; // User has no reaction to remove
+    }
+
+    // Optimistic UI update
+    set((state) => ({
+      messages: state.messages.map((msg) => {
+        if (msg._id !== messageId) return msg;
+        return {
+          ...msg,
+          reactions: (msg.reactions || []).filter(
+            r => normalizeId(r.userId?._id || r.userId) !== authUserId
+          )
+        };
+      }),
+    }));
+
+    // Send reaction removal via WebSocket (same as adding, server handles toggle)
     try {
-      const res = await axiosInstance.delete(`/messages/reaction/${messageId}`);
-      const updatedMessage = res.data;
-      
-      // Update message in local state
-      set((state) => {
-        const updatedMessages = state.messages.map((msg) =>
-          msg._id === messageId ? { ...msg, reactions: updatedMessage.reactions } : msg
-        );
-        return { messages: updatedMessages };
-      });
-      
-      return updatedMessage;
+      socket.emit("reaction", { messageId, emoji: userReaction.emoji });
     } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to remove reaction");
-      throw error;
+      console.error("Error removing reaction:", error);
+      toast.error("Failed to remove reaction. Please try again.");
     }
   },
 
@@ -652,6 +736,7 @@ export const useChatStore = create((set, get) => ({
     socket.off("conversationDeleted");
     socket.off("messageReactionAdded");
     socket.off("messageReactionRemoved");
+    socket.off("reaction-update");
 
     socket.on("newMessage", (newMessage) => {
       set(state => {
@@ -1308,6 +1393,63 @@ export const useChatStore = create((set, get) => ({
         return { messages: updatedMessages };
       });
     });
+
+    // New unified reaction-update handler (WebSocket-based)
+    socket.on("reaction-update", ({ messageId, reactions, message: messageWithReaction }) => {
+      set((state) => {
+        const authUser = useAuthStore.getState().authUser;
+        if (!authUser || !authUser._id) {
+          return state;
+        }
+        
+        const normalizeId = (id) => {
+          if (!id) return null;
+          if (typeof id === 'string') return id;
+          if (typeof id === 'object' && id._id) return id._id.toString();
+          return id.toString();
+        };
+        
+        const authUserId = normalizeId(authUser._id);
+        
+        // Use message object if provided, otherwise use messageId
+        const targetMessage = messageWithReaction || { _id: messageId };
+        const targetMessageId = normalizeId(messageId || targetMessage._id);
+        
+        // Find the message in current state to check conversation context
+        const existingMessage = state.messages.find(msg => normalizeId(msg._id) === targetMessageId);
+        
+        if (!existingMessage) {
+          return state;
+        }
+        
+        // Check if user is viewing this conversation/group
+        const isGroupMessage = !!existingMessage.groupId;
+        
+        if (isGroupMessage) {
+          const groupIdStr = normalizeId(existingMessage.groupId);
+          const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
+          // Only update if viewing this group
+          if (!isViewingThisGroup) return state;
+        } else {
+          // For direct messages, check if user is viewing this conversation
+          const senderId = normalizeId(existingMessage.senderId);
+          const receiverId = normalizeId(existingMessage.receiverId);
+          const isMyMessage = senderId === authUserId;
+          const otherUserId = isMyMessage ? receiverId : senderId;
+          const isViewingThisChat = state.selectedUser && normalizeId(state.selectedUser._id) === otherUserId;
+          
+          // Only update if viewing this conversation
+          if (!isViewingThisChat) return state;
+        }
+        
+        const updatedMessages = state.messages.map((msg) =>
+          normalizeId(msg._id) === targetMessageId 
+            ? { ...msg, reactions: reactions || [] } 
+            : msg
+        );
+        return { messages: updatedMessages };
+      });
+    });
   },
 
   unsubscribeFromMessages: () => {
@@ -1323,6 +1465,7 @@ export const useChatStore = create((set, get) => ({
     socket.off("conversationDeleted");
     socket.off("messageReactionAdded");
     socket.off("messageReactionRemoved");
+    socket.off("reaction-update");
   },
 
   subscribeToTyping: () => {

@@ -254,35 +254,55 @@ const MessageInput = () => {
     }
     
     try {
-      // Request microphone permission
+      // Request microphone permission with optimized settings for voice messages
+      // Note: MediaRecorder uses browser's default codec (usually Opus in WebM)
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
+          sampleRate: 48000, // High quality for voice messages
+          channelCount: 1, // Mono is sufficient for voice
+          // Chrome-specific optimizations
+          googEchoCancellation: true,
+          googNoiseSuppression: true,
+          googAutoGainControl: true,
+          googHighpassFilter: true,
+          googTypingNoiseDetection: true,
         }
       });
       
       // Reset chunks
       audioChunksRef.current = [];
       
-      // Determine best supported mime type
-      let mimeType = 'audio/webm';
-      if (MediaRecorder.isTypeSupported('audio/webm')) {
-        mimeType = 'audio/webm';
-      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-        mimeType = 'audio/mp4';
-      } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
-        mimeType = 'audio/ogg';
-      } else if (MediaRecorder.isTypeSupported('audio/wav')) {
-        mimeType = 'audio/wav';
-      } else {
-        // Use default format
-        mimeType = '';
+      // Determine best supported mime type (prefer Opus in WebM for best compression/quality)
+      // Opus codec is typically used in WebM containers
+      let mimeType = '';
+      const supportedTypes = [
+        'audio/webm;codecs=opus', // Best: Opus in WebM (low latency, good compression)
+        'audio/webm',              // Fallback: WebM (usually Opus)
+        'audio/ogg;codecs=opus',   // Opus in OGG
+        'audio/ogg',               // OGG container
+        'audio/mp4',               // MP4 (AAC codec)
+        'audio/wav',               // WAV (uncompressed, large files)
+      ];
+      
+      for (const type of supportedTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          break;
+        }
       }
       
-      // Create MediaRecorder
-      const options = mimeType ? { mimeType } : {};
+      // Create MediaRecorder with optimized settings
+      // Opus codec provides ~20ms frame latency and good compression
+      const options = mimeType ? { 
+        mimeType,
+        audioBitsPerSecond: 32000, // 32kbps is sufficient for voice (Opus can go lower)
+      } : {
+        audioBitsPerSecond: 32000, // Set bitrate even if mimeType not specified
+      };
+      
       const mediaRecorder = new MediaRecorder(stream, options);
       
       mediaRecorderRef.current = mediaRecorder;
@@ -476,17 +496,27 @@ const MessageInput = () => {
     const messageFile = fileData;
     const messageFileInfo = filePreview;
     
+    // Store audio preview URL before clearing (for loading state)
+    const audioPreviewUrl = audioPreview;
+    
     setText("");
     setImagePreview(null);
+    // Keep audio preview visible while sending to show loading state
+    // Only clear if it's not an audio message
+    if (!messageAudio) {
     setAudioPreview(null);
+    }
     setFilePreview(null);
     setFileData(null);
+    // Don't clear audioBase64Ref yet - we'll clear it after successful send
+    if (!messageAudio) {
     audioChunksRef.current = [];
     audioBase64Ref.current = null;
+    }
     if (fileInputRef.current) fileInputRef.current.value = "";
     
-    // Revoke blob URL immediately
-    if (audioBlobUrlRef.current) {
+    // Don't revoke blob URL yet - keep it for loading state if sending audio
+    if (!messageAudio && audioBlobUrlRef.current) {
       URL.revokeObjectURL(audioBlobUrlRef.current);
       audioBlobUrlRef.current = null;
     }
@@ -498,9 +528,9 @@ const MessageInput = () => {
     
     setIsSending(true);
     
-    // Emit uploading status if sending an image or file
+    // Emit uploading status if sending an image, file, or audio
     // Note: Status may already be sent when file was selected, but we ensure it's active during upload
-    const hasMedia = messageImage || messageFile;
+    const hasMedia = messageImage || messageFile || messageAudio;
     if (hasMedia) {
       if (isGroupChat && selectedGroup?._id) {
         sendGroupUploadingPhotoStatus(selectedGroup._id, true);
@@ -542,6 +572,10 @@ const MessageInput = () => {
         if (hasMedia) {
           sendGroupUploadingPhotoStatus(selectedGroup._id, false);
         }
+        // Restore audio preview on error
+        if (messageAudio) {
+          setAudioPreview(audioPreviewUrl);
+        }
       }).finally(() => {
         setIsSending(false);
         if (isGroupChat && selectedGroup?._id) {
@@ -549,6 +583,16 @@ const MessageInput = () => {
           // Always stop upload status after sending
           if (hasMedia) {
             sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+          }
+        }
+        // Clear audio preview and refs after successful send
+        if (messageAudio) {
+          setAudioPreview(null);
+          audioChunksRef.current = [];
+          audioBase64Ref.current = null;
+          if (audioBlobUrlRef.current) {
+            URL.revokeObjectURL(audioBlobUrlRef.current);
+            audioBlobUrlRef.current = null;
           }
         }
       });
@@ -569,6 +613,10 @@ const MessageInput = () => {
         if (hasMedia) {
           sendUploadingPhotoStatus(selectedUser._id, false);
         }
+        // Restore audio preview on error
+        if (messageAudio) {
+          setAudioPreview(audioPreviewUrl);
+        }
       }).finally(() => {
         setIsSending(false);
         if (selectedUser?._id) {
@@ -576,6 +624,16 @@ const MessageInput = () => {
           // Always stop upload status after sending
           if (hasMedia) {
             sendUploadingPhotoStatus(selectedUser._id, false);
+          }
+        }
+        // Clear audio preview and refs after successful send
+        if (messageAudio) {
+          setAudioPreview(null);
+          audioChunksRef.current = [];
+          audioBase64Ref.current = null;
+          if (audioBlobUrlRef.current) {
+            URL.revokeObjectURL(audioBlobUrlRef.current);
+            audioBlobUrlRef.current = null;
           }
         }
       });
@@ -625,8 +683,20 @@ const MessageInput = () => {
 
       {/* Audio Preview */}
       {audioPreview && !isRecording && (
-        <div className="mb-3 relative px-4 py-3 bg-base-200 rounded-xl group shadow-sm">
+        <div className={`mb-3 relative px-4 py-3 rounded-xl group shadow-sm ${
+          isSending ? 'bg-primary/10 border border-primary/30' : 'bg-base-200'
+        }`}>
           <div className="flex items-center gap-3">
+            {isSending ? (
+              <>
+                <div className="loading loading-spinner loading-sm text-primary"></div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-primary">Sending voice message...</p>
+                  <p className="text-xs text-base-content/60">Please wait</p>
+                </div>
+              </>
+            ) : (
+              <>
             <FaMicrophone className="size-5 text-primary flex-shrink-0" />
             <audio
               src={audioPreview}
@@ -639,9 +709,12 @@ const MessageInput = () => {
               className="size-7 rounded-full hover:bg-base-300 flex items-center justify-center transition-all flex-shrink-0"
               onClick={removeAudio}
               title="Remove audio"
+                  disabled={isSending}
             >
               <FaTimes className="size-3.5 text-base-content" />
             </button>
+              </>
+            )}
           </div>
         </div>
       )}

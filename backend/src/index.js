@@ -89,7 +89,8 @@ app.use(
     },
     credentials: true, // Required for cookies
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Auth-Token'], // Allow custom auth header
+    exposedHeaders: ['X-Auth-Token'], // Expose token header for Safari compatibility
   })
 );
 

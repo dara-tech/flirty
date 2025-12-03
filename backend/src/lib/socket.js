@@ -85,6 +85,13 @@ const activeCalls = new Map(); // { callId: { callerId, receiverId, callType, st
 // { roomId: { groupId, participants: [{ userId, socketId, tracks: { audio, video } }], callType } }
 const groupCallRooms = new Map();
 
+// Store user locations for real-time map
+// { userId: { lat, lng, speed, heading, accuracy, timestamp, socketId } }
+const userLocations = new Map();
+
+// Location sharing rooms (for nearby users)
+const locationRooms = new Map(); // { roomId: Set<userId> }
+
 export function getReceiverSocketId(userId) {
   if (!userId) return null;
   // Convert to string to ensure consistent lookup
@@ -306,6 +313,134 @@ io.on("connection", (socket) => {
         groupId,
         senderId: userId
       });
+    }
+  });
+
+  // Reaction handlers - WebSocket-based real-time reactions
+  socket.on("reaction", async ({ messageId, emoji }) => {
+    try {
+      if (!messageId || !emoji || !userId) {
+        console.error("Invalid reaction data:", { messageId, emoji, userId });
+        return;
+      }
+
+      const message = await Message.findById(messageId);
+      if (!message) {
+        console.error("Message not found for reaction:", messageId);
+        return;
+      }
+
+      // Check if user is part of the conversation/group
+      let isParticipant = false;
+
+      if (message.groupId) {
+        const group = await Group.findById(message.groupId);
+        if (group) {
+          const userIdStr = userId.toString();
+          isParticipant = group.admin.toString() === userIdStr || 
+                         group.members.some(m => m.toString() === userIdStr);
+        }
+      } else {
+        // Direct message
+        const userIdStr = userId.toString();
+        isParticipant = message.senderId.toString() === userIdStr ||
+                       (message.receiverId && message.receiverId.toString() === userIdStr);
+      }
+
+      if (!isParticipant) {
+        console.error("User is not a participant in this conversation");
+        return;
+      }
+
+      // Remove existing reaction from this user if exists (toggle behavior)
+      const existingReactionIndex = message.reactions.findIndex(
+        r => r.userId.toString() === userId.toString() && r.emoji === emoji
+      );
+
+      const wasRemoved = existingReactionIndex !== -1;
+      
+      if (existingReactionIndex !== -1) {
+        // Remove reaction (toggle off)
+        message.reactions.splice(existingReactionIndex, 1);
+      } else {
+        // Remove any other reaction from this user for this message (one reaction per user per message)
+        message.reactions = message.reactions.filter(
+          r => r.userId.toString() !== userId.toString()
+        );
+        // Add new reaction
+        message.reactions.push({
+          userId: userId,
+          emoji: emoji,
+          createdAt: new Date(),
+        });
+      }
+
+      await message.save();
+      await message.populate("reactions.userId", "fullname profilePic");
+      await message.populate("senderId", "fullname profilePic");
+      await message.populate("receiverId", "fullname profilePic");
+
+      const messageObj = message.toObject ? message.toObject() : message;
+
+      // Broadcast reaction update to all participants
+      if (message.groupId) {
+        const group = await Group.findById(message.groupId);
+        if (group) {
+          const allMembers = [group.admin, ...group.members];
+          allMembers.forEach((memberId) => {
+            const memberSocketId = getReceiverSocketId(memberId.toString());
+            if (memberSocketId) {
+              io.to(memberSocketId).emit("reaction-update", {
+                messageId: messageId.toString(),
+                reactions: messageObj.reactions || [],
+                message: messageObj
+              });
+            }
+          });
+        }
+      } else {
+        // Direct message - notify both sender and receiver
+        // Handle both ObjectId and populated object formats
+        const receiverIdRaw = message.receiverId;
+        const senderIdRaw = message.senderId;
+        
+        const receiverIdStr = receiverIdRaw 
+          ? (receiverIdRaw._id ? receiverIdRaw._id.toString() : receiverIdRaw.toString())
+          : null;
+        const senderIdStr = senderIdRaw 
+          ? (senderIdRaw._id ? senderIdRaw._id.toString() : senderIdRaw.toString())
+          : null;
+        
+        const receiverSocketId = receiverIdStr ? getReceiverSocketId(receiverIdStr) : null;
+        const senderSocketId = senderIdStr ? getReceiverSocketId(senderIdStr) : null;
+        
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("reaction-update", {
+            messageId: messageId.toString(),
+            reactions: messageObj.reactions || [],
+            message: messageObj
+          });
+        }
+        
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("reaction-update", {
+            messageId: messageId.toString(),
+            reactions: messageObj.reactions || [],
+            message: messageObj
+          });
+        }
+        
+        // Always notify the current socket (user who added the reaction) to ensure they see the update
+        if (socket && socket.id) {
+          io.to(socket.id).emit("reaction-update", {
+            messageId: messageId.toString(),
+            reactions: messageObj.reactions || [],
+            message: messageObj
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error handling reaction:", error);
     }
   });
 
@@ -935,6 +1070,92 @@ io.on("connection", (socket) => {
     }
   });
   
+  // Real-time location sharing handlers
+  socket.on("location:update", async ({ lat, lng, speed, heading, accuracy }) => {
+    if (!userId || !lat || !lng) return;
+    
+    try {
+      const userIdStr = userId.toString();
+      const locationData = {
+        lat: parseFloat(lat),
+        lng: parseFloat(lng),
+        speed: speed ? parseFloat(speed) : null,
+        heading: heading ? parseFloat(heading) : null,
+        accuracy: accuracy ? parseFloat(accuracy) : null,
+        timestamp: Date.now(),
+        socketId: socket.id,
+      };
+      
+      // Store user location
+      userLocations.set(userIdStr, locationData);
+      
+      // Get user info for broadcasting
+      const user = await User.findById(userId).select("fullname profilePic");
+      
+      // Broadcast to nearby users (friends/contacts)
+      // For now, broadcast to all online users (can be filtered by privacy settings)
+      const locationUpdate = {
+        userId: userIdStr,
+        ...locationData,
+        user: {
+          fullname: user?.fullname || "Unknown",
+          profilePic: user?.profilePic || null,
+        },
+      };
+      
+      // Emit to all connected sockets (they can filter by privacy on client side)
+      socket.broadcast.emit("location:peer", locationUpdate);
+      
+      // Also emit to sender for confirmation
+      socket.emit("location:confirmed", locationUpdate);
+    } catch (error) {
+      console.error("Error handling location update:", error);
+    }
+  });
+  
+  socket.on("location:join", ({ roomId }) => {
+    if (!roomId) return;
+    socket.join(`location:${roomId}`);
+    
+    if (!locationRooms.has(roomId)) {
+      locationRooms.set(roomId, new Set());
+    }
+    locationRooms.get(roomId).add(userId?.toString());
+  });
+  
+  socket.on("location:leave", ({ roomId }) => {
+    if (!roomId) return;
+    socket.leave(`location:${roomId}`);
+    
+    if (locationRooms.has(roomId)) {
+      locationRooms.get(roomId).delete(userId?.toString());
+      if (locationRooms.get(roomId).size === 0) {
+        locationRooms.delete(roomId);
+      }
+    }
+  });
+  
+  socket.on("location:request", async ({ targetUserId }) => {
+    if (!userId || !targetUserId) return;
+    
+    try {
+      const targetLocation = userLocations.get(targetUserId.toString());
+      if (targetLocation) {
+        const user = await User.findById(targetUserId).select("fullname profilePic");
+        socket.emit("location:response", {
+          userId: targetUserId.toString(),
+          ...targetLocation,
+          user: {
+            fullname: user?.fullname || "Unknown",
+            profilePic: user?.profilePic || null,
+          },
+        });
+      }
+    } catch (error) {
+      console.error("Error handling location request:", error);
+    }
+  });
+  
   // Cleanup active calls on disconnect
   socket.on("disconnect", () => {
     console.log("A user disconnected:", socket.id);
@@ -997,6 +1218,21 @@ io.on("connection", (socket) => {
           }
         }
       }
+      
+      // Clean up location data
+      userLocations.delete(disconnectedUserId);
+      // Remove from all location rooms
+      locationRooms.forEach((userSet, roomId) => {
+        userSet.delete(disconnectedUserId);
+        if (userSet.size === 0) {
+          locationRooms.delete(roomId);
+        }
+      });
+      
+      // Notify others that user went offline
+      socket.broadcast.emit("location:offline", {
+        userId: disconnectedUserId,
+      });
       
       console.log(`User ${disconnectedUserId} removed from online list`);
       io.emit("getOnlineUsers", Array.from(userSockets.keys()));

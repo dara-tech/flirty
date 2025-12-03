@@ -160,12 +160,81 @@ export const getUsersForSidebar = async (req, res) => {
 
       let audioUrl;
       if (audio) {
-        // Upload audio file to Cloudinary with resource_type 'video' (supports audio)
-        // Cloudinary will auto-detect and convert audio formats
-        const uploadResponse = await cloudinary.uploader.upload(audio, {
+        try {
+          // Cloudinary doesn't accept data URIs directly for video/audio
+          // Need to convert base64 data URI to buffer
+          let audioBuffer;
+          let audioFormat = 'webm'; // Default format
+          
+          if (audio.startsWith('data:')) {
+            // Extract base64 data from data URI
+            // Format can be: 
+            // - data:audio/webm;codecs=opus;base64,<base64data>
+            // - data:audio/webm;base64,<base64data>
+            // - data:audio/webm,<base64data>
+            
+            // Try to match format with codecs parameter first
+            let matches = audio.match(/^data:audio\/([^;]+)(?:;[^;]+)*;base64,(.+)$/);
+            if (matches) {
+              audioFormat = matches[1]; // Extract format (webm, mp3, etc.)
+              const base64Data = matches[2];
+              audioBuffer = Buffer.from(base64Data, 'base64');
+            } else {
+              // Try format without codecs: data:audio/webm;base64,<data>
+              matches = audio.match(/^data:audio\/([^;]+);base64,(.+)$/);
+              if (matches) {
+                audioFormat = matches[1];
+                audioBuffer = Buffer.from(matches[2], 'base64');
+              } else {
+                // Try generic format: data:audio/webm,<data> or data:audio/webm;base64,<data>
+                matches = audio.match(/^data:audio\/([^,;]+)[,;](.+)$/);
+                if (matches) {
+                  audioFormat = matches[1];
+                  // Remove 'base64,' prefix if present
+                  const dataPart = matches[2].replace(/^base64,/, '');
+                  audioBuffer = Buffer.from(dataPart, 'base64');
+                } else {
+                  throw new Error('Invalid audio data URI format');
+                }
+              }
+            }
+          } else {
+            // If it's already base64 (without data URI prefix), convert directly
+            audioBuffer = Buffer.from(audio, 'base64');
+          }
+          
+          // Upload audio buffer to Cloudinary
+          // Use upload_stream for better handling of binary data
+          const uploadResponse = await new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+              {
           resource_type: 'video', // Cloudinary uses 'video' for audio/video files
+                folder: 'voice-messages', // Organize voice messages in a folder
+                format: audioFormat, // Preserve original format
+              },
+              (error, result) => {
+                if (error) reject(error);
+                else resolve(result);
+              }
+            );
+            uploadStream.end(audioBuffer);
         });
+          
         audioUrl = uploadResponse.secure_url;
+        } catch (uploadError) {
+          console.error("Error uploading audio to Cloudinary:", uploadError);
+          console.error("Upload error details:", {
+            message: uploadError.message,
+            http_code: uploadError.http_code,
+            name: uploadError.name,
+            error: uploadError.error
+          });
+          // Return more detailed error in development
+          const errorMessage = process.env.NODE_ENV === 'development' 
+            ? `Failed to upload voice message: ${uploadError.message || 'Unknown error'}`
+            : "Failed to upload voice message. Please try again.";
+          return res.status(500).json({ error: errorMessage });
+        }
       }
 
       let fileUrl;
@@ -229,8 +298,13 @@ export const getUsersForSidebar = async (req, res) => {
   
       res.status(201).json(newMessage);
     } catch (error) {
-      console.log("Error in sendMessage controller: ", error.message);
-      res.status(500).json({ error: "Internal server error" });
+      console.error("Error in sendMessage controller:", error);
+      console.error("Error stack:", error.stack);
+      // Return more detailed error in development
+      const errorMessage = process.env.NODE_ENV === 'development' 
+        ? `Internal server error: ${error.message || 'Unknown error'}`
+        : "Internal server error";
+      res.status(500).json({ error: errorMessage });
     }
   };
 

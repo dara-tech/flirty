@@ -25,13 +25,17 @@ export const signup = asyncHandler(async (req, res) => {
   // Create new user
   const newUser = await AuthService.createUser({ fullname, email, password });
   
-  // Generate token
-  generateToken(newUser._id, res);
+  // Generate token (returns token string)
+  const token = generateToken(newUser._id, res);
 
-  // Return user data
+  // Safari compatibility: Also send token in response header and body
+  res.setHeader('X-Auth-Token', token);
+
+  // Return user data with token (for Safari fallback)
   res.status(201).json({
     success: true,
-    data: AuthService.formatUserResponse(newUser)
+    data: AuthService.formatUserResponse(newUser),
+    token: token // Include token in response for Safari compatibility
   });
 });
 
@@ -65,13 +69,18 @@ export const login = asyncHandler(async (req, res) => {
     });
   }
 
-  // Generate token
-  generateToken(user._id, res);
+  // Generate token (returns token string)
+  const token = generateToken(user._id, res);
 
-  // Return user data
+  // Safari compatibility: Also send token in response header and body
+  // Safari may block cookies with SameSite=None, so provide token as fallback
+  res.setHeader('X-Auth-Token', token);
+
+  // Return user data with token (for Safari fallback)
   res.status(200).json({
     success: true,
-    data: AuthService.formatUserResponse(user)
+    data: AuthService.formatUserResponse(user),
+    token: token // Include token in response for Safari compatibility
   });
 });
 
@@ -174,12 +183,16 @@ export const googleAuth = asyncHandler(async (req, res) => {
   // Handle Google OAuth
   const user = await AuthService.handleGoogleAuth(token);
 
-  // Generate token
-  generateToken(user._id, res);
+  // Generate token (returns token string)
+  const authToken = generateToken(user._id, res);
 
-  // Return user data
+  // Safari compatibility: Also send token in response header and body
+  res.setHeader('X-Auth-Token', authToken);
+
+  // Return user data with token (for Safari fallback)
   res.status(200).json({
     success: true,
-    data: AuthService.formatUserResponse(user)
+    data: AuthService.formatUserResponse(user),
+    token: authToken // Include token in response for Safari compatibility
   });
 });

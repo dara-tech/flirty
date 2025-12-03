@@ -1,5 +1,6 @@
 import axios from "axios";
 import { useAuthStore } from "../store/useAuthStore";
+import { getAuthToken, setAuthToken, clearAuthToken, isSafari, detectSafariCookieIssue } from "./safariUtils";
 
 // Get backend URL from environment variable or use relative path
 const getBackendURL = () => {
@@ -45,7 +46,15 @@ export const axiosInstance = axios.create({
 
 // Response interceptor to handle errors and authentication
 axiosInstance.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // Safari compatibility: Extract token from response headers or body if available
+    // Some backends send token in response for Safari compatibility
+    const token = response.headers['x-auth-token'] || response.data?.token;
+    if (token) {
+      setAuthToken(token);
+    }
+    return response;
+  },
   (error) => {
     const isMeEndpoint = error.config?.url?.includes('/auth/me');
     const is401 = error.response?.status === 401;
@@ -96,19 +105,41 @@ axiosInstance.interceptors.response.use(
   }
 );
 
-// Request interceptor to log requests and verify cookies in production
+// Request interceptor to add Bearer token for Safari compatibility
 axiosInstance.interceptors.request.use(
   (config) => {
+    // Safari compatibility: Add Bearer token if cookies might not work
+    // Check if we're on Safari and cookies might be blocked
+    if (isSafari() || detectSafariCookieIssue()) {
+      const token = getAuthToken();
+      if (token && !config.headers.Authorization) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+    } else {
+      // For other browsers, try to get token from storage as fallback
+      const token = getAuthToken();
+      if (token && !config.headers.Authorization) {
+        // Only add if cookie is not present (fallback)
+        const hasCookie = document.cookie.includes('jwt=');
+        if (!hasCookie) {
+          config.headers.Authorization = `Bearer ${token}`;
+        }
+      }
+    }
+    
     // Log in production for debugging
     if (import.meta.env.MODE === 'production') {
       // Check if cookies are available (for debugging)
       const hasCookies = document.cookie.includes('jwt');
+      const hasBearerToken = !!config.headers.Authorization;
       console.log('📤 Request:', {
         url: config.url,
         method: config.method,
         hasCredentials: config.withCredentials,
         baseURL: config.baseURL,
         cookiesAvailable: hasCookies,
+        bearerTokenUsed: hasBearerToken,
+        isSafari: isSafari(),
       });
     }
     return config;

@@ -9,7 +9,8 @@ import {
   FaMicrophone,
   FaPaperPlane,
   FaTimes,
-  FaSpinner
+  FaSpinner,
+  FaMapMarkerAlt
 } from "react-icons/fa";
 import { useChatStore } from "../store/useChatStore";
 import toast from "react-hot-toast";
@@ -276,6 +277,18 @@ const DesktopBottomToolbar = () => {
                   </span>
                 )}
               </div>
+            </Link>
+
+            <Link
+              to="/?view=analytics"
+              className="flex items-center justify-center flex-1 h-full min-w-0 transition-all duration-200 hover:scale-110 active:scale-95"
+              title="Live Map"
+            >
+              <FaMapMarkerAlt className={`size-7 transition-all ${
+                location.search.includes('view=analytics')
+                  ? 'text-primary fill-primary'
+                  : 'text-base-content/50'
+              }`} />
             </Link>
 
             <Link

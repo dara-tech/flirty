@@ -2,7 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import { useAuthStore } from "../store/useAuthStore";
 import { useNotificationStore } from "../store/useNotificationStore";
 import { useChatStore } from "../store/useChatStore";
-import { FaComment, FaCog, FaUser, FaBell, FaTimes, FaComments } from "react-icons/fa";
+import { FaComment, FaCog, FaUser, FaBell, FaTimes, FaComments, FaMapMarkerAlt } from "react-icons/fa";
 import { useEffect, useRef, useState } from "react";
 import DesktopBottomToolbar from "./DesktopBottomToolbar";
 
@@ -281,6 +281,18 @@ const Navbar = () => {
                 </span>
               )}
             </div>
+          </Link>
+
+          {/* Map */}
+          <Link
+            to="/?view=analytics"
+            className="flex items-center justify-center flex-1 h-full min-w-0 transition-all active:scale-95"
+          >
+            <FaMapMarkerAlt className={`size-7 transition-all ${
+              location.search.includes('view=analytics')
+                ? 'text-primary fill-primary'
+                : 'text-base-content/50'
+            }`} />
           </Link>
 
           {/* Settings */}

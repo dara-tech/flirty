@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { axiosInstance } from "../lib/axois";
 import toast from "react-hot-toast";
 import { io } from "socket.io-client";
+import { setAuthToken, clearAuthToken, isSafari, detectSafariCookieIssue, safeSessionStorage } from "../lib/safariUtils";
 
 // Get Socket.IO server URL from environment variable
 // For separate hosting: use VITE_API_URL (without /api suffix)
@@ -85,11 +86,31 @@ export const useAuthStore = create((set, get) => ({
     set({ isSigningUp: true });
     try {
       const res = await axiosInstance.post("/auth/signup", data);
+      
+      // Safari compatibility: Store token from response
+      const token = res.headers['x-auth-token'] || res.data?.token;
+      if (token) {
+        setAuthToken(token);
+      }
+      
       // Handle new response format: { success: true, data: {...} }
       const userData = res.data?.data || res.data;
       if (userData && userData._id) {
         set({ authUser: userData });
         toast.success("Account created successfully");
+        
+        // Safari-specific: Store token if cookies might be blocked
+        if (isSafari() || detectSafariCookieIssue()) {
+          const cookies = document.cookie.split(';');
+          const jwtCookie = cookies.find(c => c.trim().startsWith('jwt='));
+          if (jwtCookie) {
+            const cookieToken = jwtCookie.split('=')[1];
+            setAuthToken(cookieToken);
+          } else if (token) {
+            setAuthToken(token);
+          }
+        }
+        
         get().connectSocket(); // ✅ Connect socket after signup
       } else {
         throw new Error("Invalid user data received");
@@ -115,6 +136,13 @@ export const useAuthStore = create((set, get) => ({
     try {
       const res = await axiosInstance.post("/auth/login", data);
       
+      // Safari compatibility: Check for token in response body or headers
+      // Some backends send token explicitly for Safari cookie issues
+      const token = res.headers['x-auth-token'] || res.data?.token;
+      if (token) {
+        setAuthToken(token);
+      }
+      
       // Check if cookie was set (in production, verify cookie is available)
       if (import.meta.env.MODE === 'production') {
         console.log('✅ Login successful, checking cookie...');
@@ -122,11 +150,30 @@ export const useAuthStore = create((set, get) => ({
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       
+      // Safari-specific: If cookies might be blocked, ensure token is stored
+      if (isSafari() || detectSafariCookieIssue()) {
+        // Try to extract token from cookie if available
+        const cookies = document.cookie.split(';');
+        const jwtCookie = cookies.find(c => c.trim().startsWith('jwt='));
+        if (jwtCookie) {
+          const cookieToken = jwtCookie.split('=')[1];
+          setAuthToken(cookieToken);
+        } else if (token) {
+          // Use token from response if cookie not available
+          setAuthToken(token);
+        }
+      }
+      
       // Handle new response format: { success: true, data: {...} }
       const userData = res.data?.data || res.data;
       if (userData && userData._id) {
         set({ authUser: userData });
         toast.success("Logged in successfully");
+        
+        // Safari-specific warning if cookie issues detected
+        if (isSafari() && detectSafariCookieIssue()) {
+          console.warn('⚠️ Safari cookie issue detected. Using token-based auth as fallback.');
+        }
         
         // Verify auth immediately after login
         try {
@@ -144,6 +191,15 @@ export const useAuthStore = create((set, get) => ({
     } catch (error) {
       console.error('Login error:', error);
       const errorData = error.response?.data;
+      
+      // Safari-specific error handling
+      if (isSafari() && error.response?.status === 401) {
+        const safariErrorMsg = "Login failed. Please check Safari settings:\n" +
+          "1. Allow cookies in Safari Settings\n" +
+          "2. Disable 'Prevent Cross-Site Tracking'\n" +
+          "3. Try disabling Private Mode";
+        toast.error(safariErrorMsg, { duration: 6000 });
+      } else {
       // Handle validation errors
       if (errorData?.errors && Array.isArray(errorData.errors)) {
         const errorMessages = errorData.errors.map(e => e.message).join(', ');
@@ -151,6 +207,7 @@ export const useAuthStore = create((set, get) => ({
       } else {
         const errorMessage = errorData?.message || error.message || "Login failed";
         toast.error(errorMessage);
+        }
       }
       throw error; // Re-throw to allow component to handle
     } finally {
@@ -163,11 +220,30 @@ export const useAuthStore = create((set, get) => ({
     set({ isGoogleAuthLoading: true });
     try {
       const res = await axiosInstance.post("/auth/google", { token });
+      
+      // Safari compatibility: Store token from response
+      const authToken = res.headers['x-auth-token'] || res.data?.token;
+      if (authToken) {
+        setAuthToken(authToken);
+      }
+      
       // Handle new response format: { success: true, data: {...} }
       const userData = res.data?.data || res.data;
       if (userData && userData._id) {
         set({ authUser: userData });
         toast.success("Signed in with Google successfully");
+        
+        // Safari-specific: Store token if cookies might be blocked
+        if (isSafari() || detectSafariCookieIssue()) {
+          const cookies = document.cookie.split(';');
+          const jwtCookie = cookies.find(c => c.trim().startsWith('jwt='));
+          if (jwtCookie) {
+            const cookieToken = jwtCookie.split('=')[1];
+            setAuthToken(cookieToken);
+          } else if (authToken) {
+            setAuthToken(authToken);
+          }
+        }
         
         // Refresh user data to ensure we have the latest profile picture
         // Wait a moment for the cookie to be set, then check auth again
@@ -186,12 +262,20 @@ export const useAuthStore = create((set, get) => ({
     } catch (error) {
       console.error("Error:", error.response?.data || error.message);
       const errorData = error.response?.data;
+      
+      // Safari-specific error handling
+      if (isSafari() && error.response?.status === 401) {
+        toast.error("Google sign-in failed. Please check Safari settings:\n" +
+          "1. Allow cookies in Safari Settings\n" +
+          "2. Disable 'Prevent Cross-Site Tracking'", { duration: 6000 });
+      } else {
       // Handle validation errors
       if (errorData?.errors && Array.isArray(errorData.errors)) {
         const errorMessages = errorData.errors.map(e => e.message).join(', ');
         toast.error(errorMessages || errorData.message || "Failed to sign in with Google");
       } else {
         toast.error(errorData?.message || "Failed to sign in with Google");
+        }
       }
     } finally {
       set({ isGoogleAuthLoading: false });
@@ -203,10 +287,13 @@ export const useAuthStore = create((set, get) => ({
     try {
       await axiosInstance.post("/auth/logout");
       set({ authUser: null, onlineUsers: [] });
+      clearAuthToken(); // Clear token from storage
       toast.success("Logged out successfully");
       get().disconnectSocket(); // ✅ Disconnect socket on logout
     } catch (error) {
       const errorData = error.response?.data;
+      // Clear token even if logout request fails
+      clearAuthToken();
       toast.error(errorData?.message || "Logout failed");
     }
   },

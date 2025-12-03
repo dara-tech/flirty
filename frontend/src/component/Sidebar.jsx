@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaUsers, FaTimes, FaBars, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaComment } from "react-icons/fa";
+import { FaUsers, FaTimes, FaBars, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaComment, FaMicrophone } from "react-icons/fa";
 import SidebarSkeleton from "./skeletons/SideBarSkeleton";
 import CreateGroupModal from "./CreateGroupModal";
 import ProfileImage from "./ProfileImage";
@@ -281,7 +281,9 @@ const Sidebar = () => {
                     return lastMessage ? (
                       <div className="flex items-center gap-2 mt-1">
                         {/* Message type icon */}
-                        {lastMessage.image ? (
+                        {lastMessage.audio ? (
+                          <FaMicrophone className="size-3 text-primary/70 flex-shrink-0" />
+                        ) : lastMessage.image ? (
                           <FaImage className="size-3 text-base-content/60 flex-shrink-0" />
                         ) : lastMessage.file ? (
                           <FaFileAlt className="size-3 text-base-content/60 flex-shrink-0" />
@@ -294,13 +296,15 @@ const Sidebar = () => {
                             const isFromUser = msgSenderId === user._id || msgSenderId === userId;
                             return isFromUser ? (
                               <span className="text-base-content/60">
-                                {lastMessage.image ? 'Sent an image' :
+                                {lastMessage.audio ? 'Voice message' :
+                                 lastMessage.image ? 'Sent an image' :
                                  lastMessage.file ? 'Sent a file' :
                                  lastMessage.text}
                               </span>
                             ) : (
                               <span className="text-primary">
-                                You: {lastMessage.image ? 'Sent an image' :
+                                You: {lastMessage.audio ? 'Voice message' :
+                                      lastMessage.image ? 'Sent an image' :
                                       lastMessage.file ? 'Sent a file' :
                                       lastMessage.text}
                               </span>

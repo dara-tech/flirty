@@ -8,6 +8,7 @@ import SettingPage from "./SettingPage";
 import ThemePage from "./ThemePage";
 import GroupInfoContent from "../component/GroupInfoContent";
 import UserInfoContent from "../component/UserInfoContent";
+import RealTimeMap from "../component/RealTimeMap";
 import { useSearchParams, useLocation } from "react-router-dom";
 import { FaComment } from "react-icons/fa";
 
@@ -236,6 +237,8 @@ const ChatPage = () => {
       return <SettingPage />;
     } else if (view === 'chats') {
       return <ConversationsListPage />;
+    } else if (view === 'analytics') {
+      return <RealTimeMap />;
     } else {
       return <ContactsPage />;
     }
