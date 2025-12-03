@@ -100,29 +100,113 @@ export const createPeerConnection = () => {
  * @returns {Promise<MediaStream>}
  */
 export const getLocalStream = async (callType) => {
+  // Check if getUserMedia is available
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error('Camera/microphone access is not supported in this browser. Please use a modern browser like Chrome, Firefox, Safari, or Edge.');
+  }
+
+  // Check if page is served over HTTPS (required for getUserMedia)
+  if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    throw new Error('Camera/microphone access requires HTTPS. Please access this page over HTTPS.');
+  }
+
   try {
-    const constraints = {
-      audio: true,
+    // Start with flexible constraints
+    let constraints = {
+      audio: callType === 'voice' ? {
+        // High-quality audio settings for voice calls
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        sampleRate: 48000, // High sample rate for better quality
+        channelCount: { ideal: 2, min: 1 }, // Stereo if available
+        latency: 0.01, // Low latency
+        googEchoCancellation: true,
+        googNoiseSuppression: true,
+        googAutoGainControl: true,
+        googHighpassFilter: true,
+        googTypingNoiseDetection: true,
+        googNoiseReduction: true,
+      } : true, // Standard audio for video calls
       video: callType === 'video' ? {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        facingMode: 'user',
+        width: { ideal: 1280, min: 640 },
+        height: { ideal: 720, min: 480 },
+        facingMode: { ideal: 'user' }, // Make it ideal instead of required
       } : false,
     };
     
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    return stream;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      
+      // Verify stream has the expected tracks
+      if (callType === 'video') {
+        const videoTracks = stream.getVideoTracks();
+        if (videoTracks.length === 0) {
+          console.warn('Stream obtained but no video tracks found');
+          // Try to get video again with minimal constraints
+          stream.getTracks().forEach(track => track.stop());
+          const minimalStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: true,
+          });
+          return minimalStream;
+        }
+        console.log('Camera stream obtained:', {
+          videoTracks: videoTracks.length,
+          audioTracks: stream.getAudioTracks().length,
+          videoTrackSettings: videoTracks[0]?.getSettings(),
+        });
+      }
+      
+      return stream;
+    } catch (firstError) {
+      // If first attempt fails, try with more relaxed constraints
+      if (callType === 'video') {
+        console.warn('Failed with ideal constraints, trying relaxed constraints:', firstError);
+        
+        // Try without facingMode constraint
+        constraints = {
+          audio: true,
+          video: {
+            width: { min: 320, ideal: 640 },
+            height: { min: 240, ideal: 480 },
+          },
+        };
+        
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          return stream;
+        } catch (secondError) {
+          // Try with minimal constraints
+          console.warn('Failed with relaxed constraints, trying minimal constraints:', secondError);
+          constraints = {
+            audio: true,
+            video: true, // Just request any video
+          };
+          
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          return stream;
+        }
+      } else {
+        throw firstError;
+      }
+    }
   } catch (error) {
     console.error('Error getting user media:', error);
     
+    // Provide specific error messages
     if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-      throw new Error('Camera/microphone permission denied. Please allow access and try again.');
+      throw new Error('Camera/microphone permission denied. Please allow access in your browser settings and try again.');
     } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
       throw new Error('No camera/microphone found. Please connect a device and try again.');
     } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-      throw new Error('Camera/microphone is being used by another application.');
+      throw new Error('Camera/microphone is being used by another application. Please close other apps using the camera and try again.');
+    } else if (error.name === 'OverconstrainedError') {
+      throw new Error('Camera does not support the requested settings. Trying with basic settings...');
+    } else if (error.name === 'TypeError') {
+      throw new Error('Camera/microphone access is not available. Please check your browser and device settings.');
     } else {
-      throw new Error('Failed to access camera/microphone. Please check your device settings.');
+      throw new Error(`Failed to access camera/microphone: ${error.message || error.name}. Please check your device settings.`);
     }
   }
 };
@@ -194,6 +278,40 @@ export const addLocalStreamTracks = (peerConnection, stream) => {
   if (!stream || !peerConnection) return;
   
   stream.getTracks().forEach((track) => {
+    // For audio tracks, configure for high quality
+    if (track.kind === 'audio') {
+      // Set audio track constraints for better quality
+      const settings = track.getSettings();
+      if (settings) {
+        // Apply audio quality settings
+        track.applyConstraints({
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }).catch(err => {
+          console.warn('Could not apply audio constraints:', err);
+        });
+      }
+    }
+    
+    // For video tracks, ensure they're enabled
+    if (track.kind === 'video') {
+      // Ensure video track is enabled
+      if (!track.enabled && track.readyState === 'live') {
+        track.enabled = true;
+        console.log('✅ Enabled video track:', track.label);
+      }
+      
+      // Log video track details
+      console.log('📹 Adding video track to peer connection:', {
+        id: track.id,
+        label: track.label,
+        enabled: track.enabled,
+        readyState: track.readyState,
+        settings: track.getSettings(),
+      });
+    }
+    
     peerConnection.addTrack(track, stream);
   });
 };
@@ -209,6 +327,11 @@ export const createOffer = async (peerConnection) => {
     return peerConnection.localDescription;
   }
   
+  // Check if this is a renegotiation (connection already established)
+  const isRenegotiation = peerConnection.signalingState === 'stable' && 
+                          peerConnection.localDescription && 
+                          peerConnection.remoteDescription;
+  
   // Validate peer connection state
   if (peerConnection.signalingState === 'have-local-offer') {
     if (peerConnection.localDescription?.type === 'offer') {
@@ -218,21 +341,24 @@ export const createOffer = async (peerConnection) => {
   }
   
   try {
-    // Must be in stable state to create offer
+    // Must be in stable state to create offer (or renegotiation)
     if (peerConnection.signalingState !== 'stable') {
       throw new Error(`Cannot create offer: Invalid connection state "${peerConnection.signalingState}". Expected "stable".`);
     }
     
-    // Verify no descriptions are set
-    if (peerConnection.localDescription) {
-      throw new Error('Cannot create offer: Local description already exists.');
+    // For renegotiation, allow creating offer even if descriptions exist
+    if (!isRenegotiation) {
+      // Initial offer - verify no descriptions are set
+      if (peerConnection.localDescription) {
+        throw new Error('Cannot create offer: Local description already exists.');
+      }
+      
+      if (peerConnection.remoteDescription) {
+        throw new Error('Cannot create offer: Remote description already set.');
+      }
     }
     
-    if (peerConnection.remoteDescription) {
-      throw new Error('Cannot create offer: Remote description already set.');
-    }
-    
-    // Create the offer
+    // Create the offer with audio/video preferences
     const offer = await peerConnection.createOffer({
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
@@ -341,11 +467,17 @@ export const createAnswer = async (peerConnection, offer) => {
       }
     }
     
-    // Create answer
-    const answer = await peerConnection.createAnswer({
+    // Create answer with audio/video preferences
+    const answerOptions = {
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
-    });
+    };
+    
+    // For voice calls, prioritize audio quality
+    // Note: We can't easily detect call type here, so we'll accept video if offered
+    // but the UI will handle hiding video controls
+    
+    const answer = await peerConnection.createAnswer(answerOptions);
     
     // Set local description (the answer)
     await peerConnection.setLocalDescription(answer);

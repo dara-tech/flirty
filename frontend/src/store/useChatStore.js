@@ -23,6 +23,10 @@ export const useChatStore = create((set, get) => ({
   editingUsers: [],
   deletingUsers: [],
   uploadingPhotoUsers: [],
+  isCurrentUserUploading: false, // Track if current user is uploading
+  uploadProgress: 0, // Real upload progress percentage (0-100)
+  uploadType: null, // Type of upload: 'image', 'file', or null
+  uploadingImagePreview: null, // Preview of image being uploaded
   groupTypingUsers: {}, // { groupId: [{ userId, senderName }] }
   groupEditingUsers: {}, // { groupId: [userId] }
   groupDeletingUsers: {}, // { groupId: [userId] }
@@ -272,16 +276,73 @@ export const useChatStore = create((set, get) => ({
 
   sendMessage: async (messageData) => {
     const { selectedUser } = get();
-    try {
-      await axiosInstance.post(`/messages/send/${selectedUser._id}`, messageData);
-      // Don't add message here - let socket handler add it to prevent duplicates
-      // The socket event will handle adding the message in real-time
-    } catch (error) {
+    const authUser = useAuthStore.getState().authUser;
+    if (!authUser) {
+      toast.error("Not authenticated");
+      return;
+    }
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const baseURL = axiosInstance.defaults.baseURL || import.meta.env.VITE_BACKEND_URL || '';
+      const url = `${baseURL}/messages/send/${selectedUser._id}`;
+      
+      // Reset progress and determine upload type
+      const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
+      set({ 
+        uploadProgress: 0, 
+        uploadType, 
+        isCurrentUserUploading: true,
+        uploadingImagePreview: messageData.image || null
+      });
+      
+      // Track upload progress
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percentComplete = Math.round((e.loaded / e.total) * 100);
+          set({ uploadProgress: percentComplete });
+        }
+      });
+      
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          set({ uploadProgress: 100 });
+          // Reset progress after a short delay
+          setTimeout(() => {
+            set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
+          }, 300);
+          resolve(JSON.parse(xhr.responseText));
+        } else {
+          set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
+          const error = new Error(`HTTP ${xhr.status}`);
+          error.response = { status: xhr.status, data: JSON.parse(xhr.responseText || '{}') };
+          reject(error);
+        }
+      });
+      
+      xhr.addEventListener('error', () => {
+        set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
+        reject(new Error('Network error'));
+      });
+      
+      xhr.addEventListener('abort', () => {
+        set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
+        reject(new Error('Upload aborted'));
+      });
+      
+      xhr.open('POST', url);
+      xhr.withCredentials = true; // Use cookies for authentication (same as axios)
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      
+      xhr.send(JSON.stringify(messageData));
+    }).catch((error) => {
       // Only log non-401 errors (401 is expected when not authenticated)
       if (error.response?.status !== 401) {
-        toast.error(error.response?.data?.message || "Failed to send message");
+        toast.error(error.response?.data?.message || error.message || "Failed to send message");
       }
-    }
+      set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
+      throw error;
+    });
   },
 
   editMessage: async (messageId, text) => {
@@ -403,6 +464,88 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
+  pinMessage: async (messageId) => {
+    try {
+      const res = await axiosInstance.put(`/messages/pin/${messageId}`);
+      const pinnedMessage = res.data;
+      
+      // Update message in local state
+      set((state) => {
+        const updatedMessages = state.messages.map((msg) =>
+          msg._id === messageId ? { ...msg, ...pinnedMessage } : msg
+        );
+        return { messages: updatedMessages };
+      });
+      
+      toast.success("Message pinned");
+      return pinnedMessage;
+    } catch (error) {
+      toast.error(error.response?.data?.error || "Failed to pin message");
+      throw error;
+    }
+  },
+
+  unpinMessage: async (messageId) => {
+    try {
+      const res = await axiosInstance.put(`/messages/unpin/${messageId}`);
+      const unpinnedMessage = res.data;
+      
+      // Update message in local state
+      set((state) => {
+        const updatedMessages = state.messages.map((msg) =>
+          msg._id === messageId ? { ...msg, ...unpinnedMessage } : msg
+        );
+        return { messages: updatedMessages };
+      });
+      
+      toast.success("Message unpinned");
+      return unpinnedMessage;
+    } catch (error) {
+      toast.error(error.response?.data?.error || "Failed to unpin message");
+      throw error;
+    }
+  },
+
+  addReaction: async (messageId, emoji) => {
+    try {
+      const res = await axiosInstance.put(`/messages/reaction/${messageId}`, { emoji });
+      const updatedMessage = res.data;
+      
+      // Update message in local state
+      set((state) => {
+        const updatedMessages = state.messages.map((msg) =>
+          msg._id === messageId ? { ...msg, reactions: updatedMessage.reactions } : msg
+        );
+        return { messages: updatedMessages };
+      });
+      
+      return updatedMessage;
+    } catch (error) {
+      toast.error(error.response?.data?.error || "Failed to add reaction");
+      throw error;
+    }
+  },
+
+  removeReaction: async (messageId) => {
+    try {
+      const res = await axiosInstance.delete(`/messages/reaction/${messageId}`);
+      const updatedMessage = res.data;
+      
+      // Update message in local state
+      set((state) => {
+        const updatedMessages = state.messages.map((msg) =>
+          msg._id === messageId ? { ...msg, reactions: updatedMessage.reactions } : msg
+        );
+        return { messages: updatedMessages };
+      });
+      
+      return updatedMessage;
+    } catch (error) {
+      toast.error(error.response?.data?.error || "Failed to remove reaction");
+      throw error;
+    }
+  },
+
   updateMessageImage: async (messageId, image) => {
     try {
       const res = await axiosInstance.put(`/messages/update-image/${messageId}`, { image });
@@ -496,6 +639,8 @@ export const useChatStore = create((set, get) => ({
     socket.off("messageEdited");
     socket.off("messageDeleted");
     socket.off("conversationDeleted");
+    socket.off("messageReactionAdded");
+    socket.off("messageReactionRemoved");
 
     socket.on("newMessage", (newMessage) => {
       set(state => {
@@ -619,11 +764,20 @@ export const useChatStore = create((set, get) => ({
           updatedUnreadMessages[targetIdStr] = (updatedUnreadMessages[targetIdStr] || 0) + 1;
         }
 
+        // Clear upload status if this is a message from current user (upload completed)
+        const shouldClearUpload = senderId === authUserId && get().isCurrentUserUploading;
+        
         return {
           messages: updatedMessages,
           users: updatedUsers,
           lastMessages: updatedLastMessages,
-          unreadMessages: updatedUnreadMessages
+          unreadMessages: updatedUnreadMessages,
+          ...(shouldClearUpload ? {
+            isCurrentUserUploading: false,
+            uploadProgress: 0,
+            uploadType: null,
+            uploadingImagePreview: null
+          } : {})
         };
       });
     });
@@ -1014,6 +1168,135 @@ export const useChatStore = create((set, get) => ({
         };
       });
     });
+
+    socket.on("messagePinned", (pinnedMessage) => {
+      set((state) => {
+        const updatedMessages = state.messages.map((msg) =>
+          msg._id === pinnedMessage._id ? { ...msg, ...pinnedMessage } : msg
+        );
+        return { messages: updatedMessages };
+      });
+    });
+
+    socket.on("messageUnpinned", (unpinnedMessage) => {
+      set((state) => {
+        const updatedMessages = state.messages.map((msg) =>
+          msg._id === unpinnedMessage._id ? { ...msg, ...unpinnedMessage } : msg
+        );
+        return { messages: updatedMessages };
+      });
+    });
+
+    // Reaction socket listeners - handle both direct and group messages
+    socket.on("messageReactionAdded", (data) => {
+      console.log("🔔 messageReactionAdded received:", data);
+      
+      // Handle both formats: direct message (just message object) or group message (wrapped object)
+      const messageWithReaction = data.message || data;
+      const memberId = data.memberId;
+      const groupId = data.groupId;
+      
+      set((state) => {
+        const authUser = useAuthStore.getState().authUser;
+        if (!authUser || !authUser._id) {
+          console.log("⚠️ No authUser in messageReactionAdded");
+          return state;
+        }
+        
+        const normalizeId = (id) => {
+          if (!id) return null;
+          if (typeof id === 'string') return id;
+          if (typeof id === 'object' && id._id) return id._id.toString();
+          return id.toString();
+        };
+        
+        const authUserId = normalizeId(authUser._id);
+        
+        // For group messages, check if user is viewing this group
+        if (groupId) {
+          const groupIdStr = normalizeId(groupId);
+          const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
+          console.log(`📦 Group reaction: viewing=${isViewingThisGroup}, groupId=${groupIdStr}`);
+          // Only update if viewing this group
+          if (!isViewingThisGroup) return state;
+        } else {
+          // For direct messages, check if user is viewing this conversation
+          const senderId = normalizeId(messageWithReaction.senderId);
+          const receiverId = normalizeId(messageWithReaction.receiverId);
+          const isMyMessage = senderId === authUserId;
+          const otherUserId = isMyMessage ? receiverId : senderId;
+          const isViewingThisChat = state.selectedUser && normalizeId(state.selectedUser._id) === otherUserId;
+          
+          console.log(`💬 Direct reaction: viewing=${isViewingThisChat}, senderId=${senderId}, receiverId=${receiverId}, otherUserId=${otherUserId}`);
+          
+          // Only update if viewing this conversation
+          if (!isViewingThisChat) return state;
+        }
+        
+        console.log("✅ Updating message reactions:", messageWithReaction._id);
+        const updatedMessages = state.messages.map((msg) =>
+          normalizeId(msg._id) === normalizeId(messageWithReaction._id) 
+            ? { ...msg, reactions: messageWithReaction.reactions || [] } 
+            : msg
+        );
+        return { messages: updatedMessages };
+      });
+    });
+
+    socket.on("messageReactionRemoved", (data) => {
+      console.log("🔔 messageReactionRemoved received:", data);
+      
+      // Handle both formats: direct message (just message object) or group message (wrapped object)
+      const messageWithReaction = data.message || data;
+      const memberId = data.memberId;
+      const groupId = data.groupId;
+      
+      set((state) => {
+        const authUser = useAuthStore.getState().authUser;
+        if (!authUser || !authUser._id) {
+          console.log("⚠️ No authUser in messageReactionRemoved");
+          return state;
+        }
+        
+        const normalizeId = (id) => {
+          if (!id) return null;
+          if (typeof id === 'string') return id;
+          if (typeof id === 'object' && id._id) return id._id.toString();
+          return id.toString();
+        };
+        
+        const authUserId = normalizeId(authUser._id);
+        
+        // For group messages, check if user is viewing this group
+        if (groupId) {
+          const groupIdStr = normalizeId(groupId);
+          const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
+          console.log(`📦 Group reaction removed: viewing=${isViewingThisGroup}, groupId=${groupIdStr}`);
+          // Only update if viewing this group
+          if (!isViewingThisGroup) return state;
+        } else {
+          // For direct messages, check if user is viewing this conversation
+          const senderId = normalizeId(messageWithReaction.senderId);
+          const receiverId = normalizeId(messageWithReaction.receiverId);
+          const isMyMessage = senderId === authUserId;
+          const otherUserId = isMyMessage ? receiverId : senderId;
+          const isViewingThisChat = state.selectedUser && normalizeId(state.selectedUser._id) === otherUserId;
+          
+          console.log(`💬 Direct reaction removed: viewing=${isViewingThisChat}, senderId=${senderId}, receiverId=${receiverId}, otherUserId=${otherUserId}`);
+          
+          // Only update if viewing this conversation
+          if (!isViewingThisChat) return state;
+        }
+        
+        console.log("✅ Updating message reactions (removed):", messageWithReaction._id);
+        const updatedMessages = state.messages.map((msg) =>
+          normalizeId(msg._id) === normalizeId(messageWithReaction._id) 
+            ? { ...msg, reactions: messageWithReaction.reactions || [] } 
+            : msg
+        );
+        return { messages: updatedMessages };
+      });
+    });
   },
 
   unsubscribeFromMessages: () => {
@@ -1024,14 +1307,18 @@ export const useChatStore = create((set, get) => ({
     socket.off("messageSeenUpdate");
     socket.off("messageEdited");
     socket.off("messageDeleted");
+    socket.off("messagePinned");
+    socket.off("messageUnpinned");
     socket.off("conversationDeleted");
+    socket.off("messageReactionAdded");
+    socket.off("messageReactionRemoved");
   },
 
   subscribeToTyping: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
     
-    set({ typingUsers: [], editingUsers: [], deletingUsers: [], uploadingPhotoUsers: [] });
+    set({ typingUsers: [], editingUsers: [], deletingUsers: [], uploadingPhotoUsers: [], isCurrentUserUploading: false, uploadProgress: 0, uploadType: null, uploadingImagePreview: null });
 
     socket.on("typing", ({ senderId }) => {
       set((state) => ({
@@ -1140,6 +1427,9 @@ export const useChatStore = create((set, get) => ({
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
     
+    // Track current user's upload state
+    set({ isCurrentUserUploading: isUploading });
+    
     if (isUploading) {
       socket.emit("uploadingPhoto", { receiverId });
     } else {
@@ -1184,6 +1474,9 @@ export const useChatStore = create((set, get) => ({
   sendGroupUploadingPhotoStatus: (groupId, isUploading) => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
+    
+    // Track current user's upload state
+    set({ isCurrentUserUploading: isUploading });
     
     if (isUploading) {
       socket.emit("groupUploadingPhoto", { groupId });
@@ -1950,13 +2243,70 @@ export const useChatStore = create((set, get) => ({
 
   sendGroupMessage: async (groupId, messageData) => {
     const { selectedGroup } = get();
-    try {
-      await axiosInstance.post(`/groups/${groupId}/send`, messageData);
-      // Don't add message here - let socket handler add it to prevent duplicates
-      // The socket event will handle adding the message in real-time
-    } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to send message");
+    const authUser = useAuthStore.getState().authUser;
+    if (!authUser) {
+      toast.error("Not authenticated");
+      return;
     }
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const baseURL = axiosInstance.defaults.baseURL || import.meta.env.VITE_BACKEND_URL || '';
+      const url = `${baseURL}/groups/${groupId}/send`;
+      
+      // Reset progress and determine upload type
+      const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
+      set({ 
+        uploadProgress: 0, 
+        uploadType, 
+        isCurrentUserUploading: true,
+        uploadingImagePreview: messageData.image || null
+      });
+      
+      // Track upload progress
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percentComplete = Math.round((e.loaded / e.total) * 100);
+          set({ uploadProgress: percentComplete });
+        }
+      });
+      
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          set({ uploadProgress: 100 });
+          // Reset progress after a short delay
+          setTimeout(() => {
+            set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
+          }, 300);
+          resolve(JSON.parse(xhr.responseText));
+        } else {
+          set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
+          const error = new Error(`HTTP ${xhr.status}`);
+          error.response = { status: xhr.status, data: JSON.parse(xhr.responseText || '{}') };
+          reject(error);
+        }
+      });
+      
+      xhr.addEventListener('error', () => {
+        set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
+        reject(new Error('Network error'));
+      });
+      
+      xhr.addEventListener('abort', () => {
+        set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
+        reject(new Error('Upload aborted'));
+      });
+      
+      xhr.open('POST', url);
+      xhr.withCredentials = true; // Use cookies for authentication (same as axios)
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      
+      xhr.send(JSON.stringify(messageData));
+    }).catch((error) => {
+      toast.error(error.response?.data?.error || error.message || "Failed to send message");
+      set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
+      throw error;
+    });
   },
 
   deleteGroup: async (groupId) => {

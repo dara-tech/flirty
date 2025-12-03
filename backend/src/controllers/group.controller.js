@@ -250,6 +250,68 @@ export const removeMemberFromGroup = async (req, res) => {
   }
 };
 
+// Get group messages by type (media, files, links, voice)
+export const getGroupMessagesByType = async (req, res) => {
+  try {
+    const { id: groupId } = req.params;
+    const { type } = req.query; // 'media', 'files', 'links', 'voice'
+    const userId = req.user._id;
+
+    if (!type || !['media', 'files', 'links', 'voice'].includes(type)) {
+      return res.status(400).json({ error: "Invalid type. Must be 'media', 'files', 'links', or 'voice'" });
+    }
+
+    // Check if user is a member of the group
+    const group = await Group.findById(groupId);
+    if (!group) {
+      return res.status(404).json({ error: "Group not found" });
+    }
+
+    const isMember =
+      group.admin.toString() === userId.toString() ||
+      group.members.some((m) => m.toString() === userId.toString());
+
+    if (!isMember) {
+      return res.status(403).json({ error: "You are not a member of this group" });
+    }
+
+    // Build base query for group
+    const baseQuery = { groupId };
+
+    // Add type-specific filter
+    let typeQuery = {};
+    switch (type) {
+      case 'media':
+        typeQuery = { image: { $exists: true, $ne: null } };
+        break;
+      case 'files':
+        typeQuery = { file: { $exists: true, $ne: null } };
+        break;
+      case 'links':
+        typeQuery = { link: { $exists: true, $ne: null } };
+        break;
+      case 'voice':
+        typeQuery = { audio: { $exists: true, $ne: null } };
+        break;
+    }
+
+    // Combine queries
+    const query = { ...baseQuery, ...typeQuery };
+
+    // Get messages sorted by newest first
+    const messages = await Message.find(query)
+      .populate("senderId", "fullname profilePic")
+      .populate("seenBy.userId", "fullname profilePic")
+      .sort({ createdAt: -1 })
+      .limit(100); // Limit to 100 most recent
+
+    res.status(200).json(messages);
+  } catch (error) {
+    console.error("Error in getGroupMessagesByType: ", error.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
 // Get group messages
 export const getGroupMessages = async (req, res) => {
   try {
@@ -293,6 +355,7 @@ export const getGroupMessages = async (req, res) => {
     const messages = await Message.find(query)
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
+      .populate("reactions.userId", "fullname profilePic")
       .sort({ createdAt: -1 }) // Newest first (Telegram-style)
       .limit(limit);
 
@@ -313,16 +376,31 @@ export const getGroupMessages = async (req, res) => {
   }
 };
 
+// Helper function to detect URLs in text
+const extractUrl = (text) => {
+  if (!text) return null;
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const matches = text.match(urlRegex);
+  return matches && matches.length > 0 ? matches[0] : null;
+};
+
 // Send message to group
 export const sendGroupMessage = async (req, res) => {
   try {
-    const { text, image, audio } = req.body;
+    const { text, image, audio, file, fileName, fileSize, fileType } = req.body;
     const { id: groupId } = req.params;
     const senderId = req.user._id;
 
-    // Validate that at least one of text, image, or audio is provided
-    if (!text && !image && !audio) {
-      return res.status(400).json({ error: "Message must contain either text, image, or audio" });
+    // Validate that at least one of text, image, audio, or file is provided
+    // Note: Links are extracted from text, so text can contain links
+    // Check if text has content (not just empty string)
+    const hasText = text && typeof text === 'string' && text.trim().length > 0;
+    const hasImage = image && typeof image === 'string' && image.length > 0;
+    const hasAudio = audio && typeof audio === 'string' && audio.length > 0;
+    const hasFile = file && typeof file === 'string' && file.length > 0;
+    
+    if (!hasText && !hasImage && !hasAudio && !hasFile) {
+      return res.status(400).json({ error: "Message must contain either text, image, audio, or file" });
     }
 
     // Check if user is a member of the group
@@ -341,18 +419,61 @@ export const sendGroupMessage = async (req, res) => {
 
     let imageUrl;
     if (image) {
-      const uploadResponse = await cloudinary.uploader.upload(image);
-      imageUrl = uploadResponse.secure_url;
+      try {
+        const uploadResponse = await cloudinary.uploader.upload(image, {
+          quality: 'auto:best', // Use best quality with automatic format optimization
+          fetch_format: 'auto', // Automatically choose best format (WebP, AVIF, etc.)
+          flags: 'immutable_cache', // Cache optimization
+        });
+        imageUrl = uploadResponse.secure_url;
+      } catch (uploadError) {
+        console.error("Error uploading image to Cloudinary:", uploadError);
+        return res.status(500).json({ error: "Failed to upload image. Please try again." });
+      }
     }
 
     let audioUrl;
     if (audio) {
-      // Upload audio file to Cloudinary with resource_type 'video' (supports audio)
-      // Cloudinary will auto-detect and convert audio formats
-      const uploadResponse = await cloudinary.uploader.upload(audio, {
-        resource_type: 'video', // Cloudinary uses 'video' for audio/video files
-      });
-      audioUrl = uploadResponse.secure_url;
+      try {
+        // Upload audio file to Cloudinary with resource_type 'video' (supports audio)
+        // Cloudinary will auto-detect and convert audio formats
+        const uploadResponse = await cloudinary.uploader.upload(audio, {
+          resource_type: 'video', // Cloudinary uses 'video' for audio/video files
+        });
+        audioUrl = uploadResponse.secure_url;
+      } catch (uploadError) {
+        console.error("Error uploading audio to Cloudinary:", uploadError);
+        return res.status(500).json({ error: "Failed to upload audio. Please try again." });
+      }
+    }
+
+    let fileUrl;
+    if (file) {
+      try {
+        // Upload file to Cloudinary as raw file
+        const uploadResponse = await cloudinary.uploader.upload(file, {
+          resource_type: 'raw', // For general files (PDFs, docs, etc.)
+        });
+        fileUrl = uploadResponse.secure_url;
+      } catch (uploadError) {
+        console.error("Error uploading file to Cloudinary:", uploadError);
+        return res.status(500).json({ error: "Failed to upload file. Please try again." });
+      }
+    }
+
+    // Extract link from text if present
+    let linkUrl = null;
+    let linkPreview = null;
+    if (text) {
+      linkUrl = extractUrl(text);
+      if (linkUrl) {
+        linkPreview = {
+          url: linkUrl,
+          title: null,
+          description: null,
+          image: null,
+        };
+      }
     }
 
     const newMessage = new Message({
@@ -361,6 +482,12 @@ export const sendGroupMessage = async (req, res) => {
       text: text || "",
       image: imageUrl,
       audio: audioUrl,
+      file: fileUrl,
+      fileName: fileName || null,
+      fileSize: fileSize || null,
+      fileType: fileType || null,
+      link: linkUrl,
+      linkPreview: linkPreview,
     });
 
     await newMessage.save();

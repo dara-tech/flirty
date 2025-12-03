@@ -25,9 +25,9 @@ const messageSchema = new mongoose.Schema({
   },
   text: {
     type: String,
-    // Only require text if there's no image or audio
+    // Only require text if there's no image, audio, file, or link
     required: function() {
-      return !this.image && !this.audio;
+      return !this.image && !this.audio && !this.file && !this.link;
     }
   },
   image: {
@@ -35,6 +35,29 @@ const messageSchema = new mongoose.Schema({
   },
   audio: {
     type: String,
+  },
+  file: {
+    type: String, // URL to the file
+  },
+  fileName: {
+    type: String, // Original filename
+  },
+  fileSize: {
+    type: Number, // File size in bytes
+  },
+  fileType: {
+    type: String, // MIME type
+  },
+  link: {
+    type: String, // URL
+  },
+  linkPreview: {
+    type: {
+      url: String,
+      title: String,
+      description: String,
+      image: String,
+    },
   },
   seen: {
     type: Boolean,
@@ -62,6 +85,34 @@ const messageSchema = new mongoose.Schema({
   editedAt: {
     type: Date,
   },
+  pinned: {
+    type: Boolean,
+    default: false,
+  },
+  pinnedAt: {
+    type: Date,
+  },
+  pinnedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+  },
+  reactions: [
+    {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: true,
+      },
+      emoji: {
+        type: String,
+        required: true,
+      },
+      createdAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
 }, { timestamps: true });
 
 const Message = mongoose.model("Message", messageSchema);

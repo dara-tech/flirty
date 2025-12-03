@@ -54,16 +54,18 @@ const CallControls = () => {
           )}
         </button>
         
-        {/* Video On/Off (only for video calls) */}
+        {/* Video On/Off - Only for video calls */}
         {callType === 'video' && (
           <button
             onClick={toggleVideo}
+            disabled={isScreenSharing && !isVideoEnabled}
             className={`btn btn-circle ${
               !isVideoEnabled
                 ? 'bg-red-500 hover:bg-red-600 text-white'
                 : 'bg-base-300 hover:bg-base-300/80'
-            } border-0`}
+            } border-0 ${isScreenSharing && !isVideoEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
             aria-label={isVideoEnabled ? "Turn off video" : "Turn on video"}
+            title={isScreenSharing && !isVideoEnabled ? "Stop screen sharing first" : (isVideoEnabled ? "Turn off video" : "Turn on video")}
           >
             {isVideoEnabled ? (
               <FaVideo className="w-5 h-5" />
@@ -73,7 +75,7 @@ const CallControls = () => {
           </button>
         )}
         
-        {/* Screen Share (only for video calls) */}
+        {/* Screen Share - Only for video calls */}
         {callType === 'video' && (
           <button
             onClick={toggleScreenShare}
@@ -83,6 +85,7 @@ const CallControls = () => {
                 : 'bg-base-300 hover:bg-base-300/80'
             } border-0`}
             aria-label={isScreenSharing ? "Stop sharing screen" : "Share screen"}
+            title={isScreenSharing ? "Stop sharing screen" : "Share screen"}
           >
             <FaDesktop className="w-5 h-5" />
           </button>

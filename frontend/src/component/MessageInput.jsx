@@ -8,6 +8,8 @@ const MessageInput = () => {
   const [text, setText] = useState("");
   const [imagePreview, setImagePreview] = useState(null);
   const [audioPreview, setAudioPreview] = useState(null);
+  const [filePreview, setFilePreview] = useState(null);
+  const [fileData, setFileData] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -56,6 +58,7 @@ const MessageInput = () => {
     checkRecordingSupport();
   }, []);
 
+  // Clear inputs when switching chats (only when chat ID changes)
   useEffect(() => {
     // Cleanup audio blob URL when switching chats
     if (audioBlobUrlRef.current) {
@@ -63,9 +66,32 @@ const MessageInput = () => {
       audioBlobUrlRef.current = null;
     }
     
+    // Stop upload status when switching chats - use functional updates to get latest state
+    setImagePreview((prevImage) => {
+      if (prevImage) {
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+        } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+        }
+      }
+      return null;
+    });
+    
+    setFilePreview((prevFile) => {
+      if (prevFile) {
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+        } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+        }
+      }
+      return null;
+    });
+    
     setText("");
-    setImagePreview(null);
     setAudioPreview(null);
+    setFileData(null);
     audioChunksRef.current = [];
     audioBase64Ref.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -81,7 +107,8 @@ const MessageInput = () => {
         recordingTimerRef.current = null;
       }
     }
-  }, [selectedUser?._id, selectedGroup?._id, isRecording]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedUser?._id, selectedGroup?._id]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -100,35 +127,113 @@ const MessageInput = () => {
     };
   }, []);
 
-  const handleImageChange = useCallback((e) => {
+  const handleFileChange = useCallback((e) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith("image/")) {
-      toast.error("Please select a valid image file");
+    if (!file) {
+      // Reset input value to allow selecting the same file again
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
       return;
     }
 
     setIsUploading(true);
+    
+    // Send upload status immediately when file is selected
+    if (isGroupChat && selectedGroup?._id) {
+      sendGroupUploadingPhotoStatus(selectedGroup._id, true);
+    } else if (selectedUser?._id) {
+      sendUploadingPhotoStatus(selectedUser._id, true);
+    }
+    
     const reader = new FileReader();
 
     reader.onloadend = () => {
-      setImagePreview(reader.result);
+      const fileDataUrl = reader.result;
+      
+      // Check if it's an image
+      if (file.type.startsWith("image/")) {
+        setImagePreview(fileDataUrl);
+        setFilePreview(null);
+        setFileData(null);
+      } else {
+        // It's a regular file
+        setFilePreview({
+          name: file.name,
+          size: file.size,
+          type: file.type,
+        });
+        setFileData(fileDataUrl);
+        setImagePreview(null);
+      }
+      
+      // File reading is complete, no longer uploading (upload happens when sending)
       setIsUploading(false);
+      
+      // Reset input value to allow selecting the same file again
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     };
 
     reader.onerror = () => {
-      toast.error("Failed to read image file");
+      toast.error("Failed to read file");
       setIsUploading(false);
+      // Stop upload status on error
+      if (isGroupChat && selectedGroup?._id) {
+        sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+      } else if (selectedUser?._id) {
+        sendUploadingPhotoStatus(selectedUser._id, false);
+      }
+      // Stop upload status on error
+      if (isGroupChat && selectedGroup?._id) {
+        sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+      } else if (selectedUser?._id) {
+        sendUploadingPhotoStatus(selectedUser._id, false);
+      }
+      // Reset input value on error
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     };
 
     reader.readAsDataURL(file);
-  }, []);
+  }, [isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
+
+  // Keep upload status active while image preview exists (before sending)
+  useEffect(() => {
+    if (imagePreview) {
+      // Ensure upload status is active when image preview exists
+      if (isGroupChat && selectedGroup?._id) {
+        sendGroupUploadingPhotoStatus(selectedGroup._id, true);
+      } else if (selectedUser?._id) {
+        sendUploadingPhotoStatus(selectedUser._id, true);
+      }
+    }
+  }, [imagePreview, isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
 
   const removeImage = useCallback(() => {
     setImagePreview(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
-  }, []);
+    // Stop upload status when removing image
+    if (isGroupChat && selectedGroup?._id) {
+      sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+    } else if (selectedUser?._id) {
+      sendUploadingPhotoStatus(selectedUser._id, false);
+    }
+  }, [isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
+
+  const removeFile = useCallback(() => {
+    setFilePreview(null);
+    setFileData(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    // Stop upload status when removing file
+    if (isGroupChat && selectedGroup?._id) {
+      sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+    } else if (selectedUser?._id) {
+      sendUploadingPhotoStatus(selectedUser._id, false);
+    }
+  }, [isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
 
   const removeAudio = useCallback(() => {
     // Revoke blob URL to free memory
@@ -354,7 +459,7 @@ const MessageInput = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!text.trim() && !imagePreview && !audioPreview) return;
+    if (!text.trim() && !imagePreview && !audioPreview && !fileData) return;
     if (isSending) return; // Prevent double submission
     
     // Stop recording if still recording
@@ -368,10 +473,14 @@ const MessageInput = () => {
     const messageText = text.trim();
     const messageImage = imagePreview;
     const messageAudio = audioBase64Ref.current;
+    const messageFile = fileData;
+    const messageFileInfo = filePreview;
     
     setText("");
     setImagePreview(null);
     setAudioPreview(null);
+    setFilePreview(null);
+    setFileData(null);
     audioChunksRef.current = [];
     audioBase64Ref.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -389,8 +498,10 @@ const MessageInput = () => {
     
     setIsSending(true);
     
-    // Emit uploading photo status if sending an image
-    if (messageImage) {
+    // Emit uploading status if sending an image or file
+    // Note: Status may already be sent when file was selected, but we ensure it's active during upload
+    const hasMedia = messageImage || messageFile;
+    if (hasMedia) {
       if (isGroupChat && selectedGroup?._id) {
         sendGroupUploadingPhotoStatus(selectedGroup._id, true);
       } else if (selectedUser?._id) {
@@ -398,32 +509,45 @@ const MessageInput = () => {
       }
     }
     
+    // Prepare message payload
+    const messagePayload = {
+      text: messageText || "", // Ensure text is always a string, even if empty
+      image: messageImage || undefined,
+      audio: messageAudio || undefined,
+    };
+
+    // Add file info if sending a file
+    if (messageFile && messageFileInfo) {
+      messagePayload.file = messageFile;
+      messagePayload.fileName = messageFileInfo.name;
+      messagePayload.fileSize = messageFileInfo.size;
+      messagePayload.fileType = messageFileInfo.type;
+    }
+    
     // Send message in background (no loading spinner)
     if (isGroupChat) {
       if (!selectedGroup?._id) {
         toast.error("No group selected");
         setIsSending(false);
+        // Stop upload status on error
+        if (hasMedia) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+        }
         return;
       }
-      sendGroupMessage(selectedGroup._id, {
-        text: messageText,
-        image: messageImage,
-        audio: messageAudio,
-      }).catch((error) => {
+      sendGroupMessage(selectedGroup._id, messagePayload).catch((error) => {
         console.error("Failed to send message:", error);
         toast.error("Failed to send message");
-        if (messageImage) {
-          if (isGroupChat && selectedGroup?._id) {
-            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-          } else if (selectedUser?._id) {
-            sendUploadingPhotoStatus(selectedUser._id, false);
-          }
+        // Stop upload status on error
+        if (hasMedia) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
         }
       }).finally(() => {
         setIsSending(false);
         if (isGroupChat && selectedGroup?._id) {
           sendGroupTypingStatus(selectedGroup._id, false);
-          if (messageImage) {
+          // Always stop upload status after sending
+          if (hasMedia) {
             sendGroupUploadingPhotoStatus(selectedGroup._id, false);
           }
         }
@@ -432,25 +556,25 @@ const MessageInput = () => {
       if (!selectedUser?._id) {
         toast.error("No chat selected");
         setIsSending(false);
+        // Stop upload status on error
+        if (hasMedia) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+        }
         return;
       }
-      sendMessage({
-        text: messageText,
-        image: messageImage,
-        audio: messageAudio,
-      }).catch((error) => {
+      sendMessage(messagePayload).catch((error) => {
         console.error("Failed to send message:", error);
         toast.error("Failed to send message");
-        if (messageImage) {
-          if (selectedUser?._id) {
-            sendUploadingPhotoStatus(selectedUser._id, false);
-          }
+        // Stop upload status on error
+        if (hasMedia) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
         }
       }).finally(() => {
         setIsSending(false);
         if (selectedUser?._id) {
           sendTypingStatus(selectedUser._id, false);
-          if (messageImage) {
+          // Always stop upload status after sending
+          if (hasMedia) {
             sendUploadingPhotoStatus(selectedUser._id, false);
           }
         }
@@ -488,16 +612,14 @@ const MessageInput = () => {
             alt="Selected"
             className="w-32 h-32 object-cover rounded-xl"
           />
-          {!isSending && (
-            <button
-              type="button"
-              className="absolute top-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md"
-              onClick={removeImage}
-              title="Remove image"
-            >
-              <FaTimes className="size-3.5 text-base-content" />
-            </button>
-          )}
+          <button
+            type="button"
+            className="absolute top-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md"
+            onClick={removeImage}
+            title="Remove image"
+          >
+            <FaTimes className="size-3.5 text-base-content" />
+          </button>
         </div>
       )}
 
@@ -524,12 +646,41 @@ const MessageInput = () => {
         </div>
       )}
 
+      {/* File Preview */}
+      {filePreview && (
+        <div className="mb-3 relative px-4 py-3 bg-base-200 rounded-xl group shadow-sm">
+          <div className="flex items-center gap-3">
+            <FaPaperclip className="size-5 text-primary flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-base-content truncate">{filePreview.name}</p>
+              <p className="text-xs text-base-content/60">
+                {(filePreview.size / 1024).toFixed(2)} KB
+              </p>
+            </div>
+            <button
+              type="button"
+              className="size-7 rounded-full hover:bg-base-300 flex items-center justify-center transition-all flex-shrink-0"
+              onClick={removeFile}
+              title="Remove file"
+            >
+              <FaTimes className="size-3.5 text-base-content" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 bg-base-200/90 rounded-2xl px-4 py-3 border border-base-300/30 shadow-inner">
         <button
           type="button"
           className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary disabled:opacity-50 disabled:cursor-not-allowed"
           title="Attach file"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (fileInputRef.current) {
+              fileInputRef.current.click();
+            }
+          }}
           disabled={isUploading || isSending}
         >
           {isUploading ? (
@@ -551,8 +702,9 @@ const MessageInput = () => {
           type="file"
           className="hidden"
           ref={fileInputRef}
-          onChange={handleImageChange}
-          accept="image/*"
+          onChange={handleFileChange}
+          accept="*/*"
+          multiple={false}
         />
 
         <button
@@ -592,12 +744,12 @@ const MessageInput = () => {
         <button
           type="submit"
           className={`flex items-center justify-center size-7 rounded-lg transition-all duration-200 ${
-            (!text.trim() && !imagePreview && !audioPreview)
+            (!text.trim() && !imagePreview && !audioPreview && !fileData)
               ? 'opacity-40 cursor-not-allowed'
               : 'text-primary hover:bg-base-300/50 active:scale-95'
           }`}
           title="Send message"
-          disabled={(!text.trim() && !imagePreview && !audioPreview)}
+          disabled={(!text.trim() && !imagePreview && !audioPreview && !fileData)}
         >
           <FaPaperPlane className="size-4" />
         </button>

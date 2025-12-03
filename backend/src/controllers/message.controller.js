@@ -96,6 +96,7 @@ export const getUsersForSidebar = async (req, res) => {
   
       // Sort descending (newest first) and limit
       const messages = await Message.find(query)
+        .populate("reactions.userId", "fullname profilePic")
         .sort({ createdAt: -1 }) // Newest first (Telegram-style)
         .limit(limit);
   
@@ -116,21 +117,45 @@ export const getUsersForSidebar = async (req, res) => {
     }
   };
 
+  // Helper function to detect URLs in text
+  const extractUrl = (text) => {
+    if (!text) return null;
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const matches = text.match(urlRegex);
+    return matches && matches.length > 0 ? matches[0] : null;
+  };
+
   export const sendMessage = async (req, res) => {
     try {
-      const { text, image, audio } = req.body;
+      const { text, image, audio, file, fileName, fileSize, fileType } = req.body;
       const { id: receiverId } = req.params;
       const senderId = req.user._id;
   
-      // Validate that at least one of text, image, or audio is provided
-      if (!text && !image && !audio) {
-        return res.status(400).json({ error: "Message must contain either text, image, or audio" });
+      // Validate that at least one of text, image, audio, or file is provided
+      // Note: Links are extracted from text, so text can contain links
+      // Check if text has content (not just empty string)
+      const hasText = text && typeof text === 'string' && text.trim().length > 0;
+      const hasImage = image && typeof image === 'string' && image.length > 0;
+      const hasAudio = audio && typeof audio === 'string' && audio.length > 0;
+      const hasFile = file && typeof file === 'string' && file.length > 0;
+      
+      if (!hasText && !hasImage && !hasAudio && !hasFile) {
+        return res.status(400).json({ error: "Message must contain either text, image, audio, or file" });
       }
   
       let imageUrl;
       if (image) {
-        const uploadResponse = await cloudinary.uploader.upload(image);
-        imageUrl = uploadResponse.secure_url;
+        try {
+          const uploadResponse = await cloudinary.uploader.upload(image, {
+            quality: 'auto:best', // Use best quality with automatic format optimization
+            fetch_format: 'auto', // Automatically choose best format (WebP, AVIF, etc.)
+            flags: 'immutable_cache', // Cache optimization
+          });
+          imageUrl = uploadResponse.secure_url;
+        } catch (uploadError) {
+          console.error("Error uploading image to Cloudinary:", uploadError);
+          return res.status(500).json({ error: "Failed to upload image. Please try again." });
+        }
       }
 
       let audioUrl;
@@ -142,6 +167,35 @@ export const getUsersForSidebar = async (req, res) => {
         });
         audioUrl = uploadResponse.secure_url;
       }
+
+      let fileUrl;
+      if (file) {
+        try {
+          // Upload file to Cloudinary as raw file
+          const uploadResponse = await cloudinary.uploader.upload(file, {
+            resource_type: 'raw', // For general files (PDFs, docs, etc.)
+          });
+          fileUrl = uploadResponse.secure_url;
+        } catch (uploadError) {
+          console.error("Error uploading file to Cloudinary:", uploadError);
+          return res.status(500).json({ error: "Failed to upload file. Please try again." });
+        }
+      }
+
+      // Extract link from text if present
+      let linkUrl = null;
+      let linkPreview = null;
+      if (text) {
+        linkUrl = extractUrl(text);
+        if (linkUrl) {
+          linkPreview = {
+            url: linkUrl,
+            title: null,
+            description: null,
+            image: null,
+          };
+        }
+      }
   
       const newMessage = new Message({
         senderId,
@@ -149,6 +203,12 @@ export const getUsersForSidebar = async (req, res) => {
         text: text || "", // Provide empty string if no text
         image: imageUrl,
         audio: audioUrl,
+        file: fileUrl,
+        fileName: fileName || null,
+        fileSize: fileSize || null,
+        fileType: fileType || null,
+        link: linkUrl,
+        linkPreview: linkPreview,
       });
   
       await newMessage.save();
@@ -434,8 +494,12 @@ export const getUsersForSidebar = async (req, res) => {
         return res.status(400).json({ error: "This message does not have an image" });
       }
 
-      // Upload new image
-      const uploadResponse = await cloudinary.uploader.upload(image);
+      // Upload new image with high quality settings
+      const uploadResponse = await cloudinary.uploader.upload(image, {
+        quality: 'auto:best', // Use best quality with automatic format optimization
+        fetch_format: 'auto', // Automatically choose best format (WebP, AVIF, etc.)
+        flags: 'immutable_cache', // Cache optimization
+      });
       const newImageUrl = uploadResponse.secure_url;
 
       // Update message
@@ -584,6 +648,399 @@ export const getUsersForSidebar = async (req, res) => {
       });
     } catch (error) {
       console.log("Error in deleteConversation controller: ", error.message);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  };
+
+  // Get messages by type (media, files, links, voice) for a conversation
+  export const getMessagesByType = async (req, res) => {
+    try {
+      const { id: userToChatId } = req.params;
+      const { type } = req.query; // 'media', 'files', 'links', 'voice'
+      const myId = req.user._id;
+
+      if (!type || !['media', 'files', 'links', 'voice'].includes(type)) {
+        return res.status(400).json({ error: "Invalid type. Must be 'media', 'files', 'links', or 'voice'" });
+      }
+
+      const myObjectId = new mongoose.Types.ObjectId(myId);
+      const otherUserObjectId = new mongoose.Types.ObjectId(userToChatId);
+
+      // Build base query for conversation
+      const baseQuery = {
+        $or: [
+          { senderId: myObjectId, receiverId: otherUserObjectId },
+          { senderId: otherUserObjectId, receiverId: myObjectId },
+        ],
+      };
+
+      // Add type-specific filter
+      let typeQuery = {};
+      switch (type) {
+        case 'media':
+          typeQuery = { image: { $exists: true, $ne: null } };
+          break;
+        case 'files':
+          typeQuery = { file: { $exists: true, $ne: null } };
+          break;
+        case 'links':
+          typeQuery = { link: { $exists: true, $ne: null } };
+          break;
+        case 'voice':
+          typeQuery = { audio: { $exists: true, $ne: null } };
+          break;
+      }
+
+      // Combine queries
+      const query = { ...baseQuery, ...typeQuery };
+
+      // Get messages sorted by newest first
+      const messages = await Message.find(query)
+        .populate("senderId", "fullname profilePic")
+        .populate("receiverId", "fullname profilePic")
+        .sort({ createdAt: -1 })
+        .limit(100); // Limit to 100 most recent
+
+      res.status(200).json(messages);
+    } catch (error) {
+      console.log("Error in getMessagesByType controller: ", error.message);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  };
+
+  export const pinMessage = async (req, res) => {
+    try {
+      const { id: messageId } = req.params;
+      const userId = req.user._id;
+
+      const message = await Message.findById(messageId);
+      if (!message) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      // Check if user has permission (must be sender or receiver for direct messages, or member for group)
+      const isSender = message.senderId.toString() === userId.toString();
+      const isReceiver = message.receiverId && message.receiverId.toString() === userId.toString();
+      
+      if (message.groupId) {
+        const Group = (await import("../model/group.model.js")).default;
+        const group = await Group.findById(message.groupId);
+        if (!group) {
+          return res.status(404).json({ error: "Group not found" });
+        }
+        const isMember = group.admin.toString() === userId.toString() || 
+                        group.members.some(m => m.toString() === userId.toString());
+        if (!isMember) {
+          return res.status(403).json({ error: "You are not a member of this group" });
+        }
+      } else {
+        if (!isSender && !isReceiver) {
+          return res.status(403).json({ error: "You don't have permission to pin this message" });
+        }
+      }
+
+      // Unpin any previously pinned message in this conversation
+      if (message.groupId) {
+        await Message.updateMany(
+          { groupId: message.groupId, pinned: true, _id: { $ne: messageId } },
+          { pinned: false, pinnedAt: null, pinnedBy: null }
+        );
+      } else {
+        const conversationQuery = {
+          $or: [
+            { senderId: message.senderId, receiverId: message.receiverId },
+            { senderId: message.receiverId, receiverId: message.senderId }
+          ],
+          pinned: true,
+          _id: { $ne: messageId }
+        };
+        await Message.updateMany(conversationQuery, { pinned: false, pinnedAt: null, pinnedBy: null });
+      }
+
+      // Pin the message
+      message.pinned = true;
+      message.pinnedAt = new Date();
+      message.pinnedBy = userId;
+      await message.save();
+
+      await message.populate("senderId", "fullname profilePic");
+      await message.populate("receiverId", "fullname profilePic");
+      await message.populate("pinnedBy", "fullname profilePic");
+
+      // Create a system message for pin status
+      const pinnedByUser = await User.findById(userId);
+      const pinnedByUserName = pinnedByUser?.fullname || "Someone";
+      
+      // Determine message type
+      let messageType = "a message";
+      if (message.image) {
+        messageType = "a photo";
+      } else if (message.audio) {
+        messageType = "a voice message";
+      } else if (message.file) {
+        messageType = "a file";
+      } else if (message.link) {
+        messageType = "a link";
+      }
+      
+      const pinStatusText = `📌 ${pinnedByUserName} pinned ${messageType}`;
+      
+      // Create system message
+      const pinStatusMessage = new Message({
+        senderId: userId,
+        receiverId: message.groupId ? null : message.receiverId,
+        groupId: message.groupId || null,
+        text: pinStatusText,
+      });
+      
+      await pinStatusMessage.save();
+      await pinStatusMessage.populate("senderId", "fullname profilePic");
+      if (pinStatusMessage.receiverId) {
+        await pinStatusMessage.populate("receiverId", "fullname profilePic");
+      }
+
+      // Emit socket event for pinned message
+      if (message.groupId) {
+        const Group = (await import("../model/group.model.js")).default;
+        const group = await Group.findById(message.groupId);
+        if (group) {
+          const allMembers = [group.admin, ...group.members];
+          allMembers.forEach((memberId) => {
+            io.emit("messagePinned", {
+              message: message.toObject(),
+              groupId: message.groupId,
+              memberId: memberId.toString(),
+            });
+            // Emit pin status message
+            io.emit("newMessage", pinStatusMessage.toObject());
+          });
+        }
+      } else {
+        const receiverSocketId = getReceiverSocketId(message.receiverId.toString());
+        const senderSocketId = getReceiverSocketId(message.senderId.toString());
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("messagePinned", message.toObject());
+          io.to(receiverSocketId).emit("newMessage", pinStatusMessage.toObject());
+        }
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("messagePinned", message.toObject());
+          io.to(senderSocketId).emit("newMessage", pinStatusMessage.toObject());
+        }
+      }
+
+      res.status(200).json(message);
+    } catch (error) {
+      console.log("Error in pinMessage controller: ", error.message);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  };
+
+  export const unpinMessage = async (req, res) => {
+    try {
+      const { id: messageId } = req.params;
+      const userId = req.user._id;
+
+      const message = await Message.findById(messageId);
+      if (!message) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      if (!message.pinned) {
+        return res.status(400).json({ error: "Message is not pinned" });
+      }
+
+      // Check permission (same as pin)
+      const isSender = message.senderId.toString() === userId.toString();
+      const isReceiver = message.receiverId && message.receiverId.toString() === userId.toString();
+      
+      if (message.groupId) {
+        const Group = (await import("../model/group.model.js")).default;
+        const group = await Group.findById(message.groupId);
+        if (!group) {
+          return res.status(404).json({ error: "Group not found" });
+        }
+        const isMember = group.admin.toString() === userId.toString() || 
+                        group.members.some(m => m.toString() === userId.toString());
+        if (!isMember) {
+          return res.status(403).json({ error: "You are not a member of this group" });
+        }
+      } else {
+        if (!isSender && !isReceiver) {
+          return res.status(403).json({ error: "You don't have permission to unpin this message" });
+        }
+      }
+
+      // Unpin the message
+      message.pinned = false;
+      message.pinnedAt = null;
+      message.pinnedBy = null;
+      await message.save();
+
+      await message.populate("senderId", "fullname profilePic");
+      await message.populate("receiverId", "fullname profilePic");
+
+      // Emit socket event
+      if (message.groupId) {
+        const Group = (await import("../model/group.model.js")).default;
+        const group = await Group.findById(message.groupId);
+        if (group) {
+          const allMembers = [group.admin, ...group.members];
+          allMembers.forEach((memberId) => {
+            io.emit("messageUnpinned", {
+              message: message.toObject(),
+              groupId: message.groupId,
+              memberId: memberId.toString(),
+            });
+          });
+        }
+      } else {
+        const receiverSocketId = getReceiverSocketId(message.receiverId.toString());
+        const senderSocketId = getReceiverSocketId(message.senderId.toString());
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("messageUnpinned", message.toObject());
+        }
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("messageUnpinned", message.toObject());
+        }
+      }
+
+      res.status(200).json(message);
+    } catch (error) {
+      console.log("Error in unpinMessage controller: ", error.message);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  };
+
+  export const addReaction = async (req, res) => {
+    try {
+      const { id: messageId } = req.params;
+      const { emoji } = req.body;
+      const userId = req.user._id;
+
+      if (!emoji) {
+        return res.status(400).json({ error: "Emoji is required" });
+      }
+
+      const message = await Message.findById(messageId);
+      if (!message) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      // Check if user is part of the conversation/group
+      const Group = (await import("../model/group.model.js")).default;
+      const isParticipant = message.senderId.toString() === userId.toString() ||
+                           (message.receiverId && message.receiverId.toString() === userId.toString()) ||
+                           (message.groupId && (await Group.exists({ _id: message.groupId, $or: [{ admin: userId }, { members: userId }] })));
+
+      if (!isParticipant) {
+        return res.status(403).json({ error: "You can only react to messages in conversations you are part of" });
+      }
+
+      // Remove existing reaction from this user if exists
+      message.reactions = message.reactions.filter(
+        r => r.userId.toString() !== userId.toString()
+      );
+
+      // Add new reaction
+      message.reactions.push({
+        userId: userId,
+        emoji: emoji,
+        createdAt: new Date(),
+      });
+
+      await message.save();
+      await message.populate("reactions.userId", "fullname profilePic");
+      await message.populate("senderId", "fullname profilePic");
+      await message.populate("receiverId", "fullname profilePic");
+
+      const messageObj = message.toObject ? message.toObject() : message;
+
+      // Emit socket event for real-time update
+      if (message.groupId) {
+        const group = await Group.findById(message.groupId);
+        if (group) {
+          const allMembers = [group.admin, ...group.members];
+          allMembers.forEach((memberId) => {
+            io.emit("messageReactionAdded", {
+              message: messageObj,
+              groupId: message.groupId,
+              memberId: memberId.toString(),
+            });
+          });
+        }
+      } else {
+        const receiverSocketId = getReceiverSocketId(message.receiverId.toString());
+        const senderSocketId = getReceiverSocketId(message.senderId.toString());
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("messageReactionAdded", messageObj);
+        }
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("messageReactionAdded", messageObj);
+        }
+      }
+
+      res.status(200).json(message);
+    } catch (error) {
+      console.log("Error in addReaction controller: ", error.message);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  };
+
+  export const removeReaction = async (req, res) => {
+    try {
+      const { id: messageId } = req.params;
+      const userId = req.user._id;
+
+      const message = await Message.findById(messageId);
+      if (!message) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      // Remove user's reaction
+      const initialLength = message.reactions.length;
+      message.reactions = message.reactions.filter(
+        r => r.userId.toString() !== userId.toString()
+      );
+
+      if (message.reactions.length === initialLength) {
+        return res.status(400).json({ error: "Reaction not found" });
+      }
+
+      await message.save();
+      await message.populate("reactions.userId", "fullname profilePic");
+      await message.populate("senderId", "fullname profilePic");
+      await message.populate("receiverId", "fullname profilePic");
+
+      const messageObj = message.toObject ? message.toObject() : message;
+
+      // Emit socket event for real-time update
+      if (message.groupId) {
+        const Group = (await import("../model/group.model.js")).default;
+        const group = await Group.findById(message.groupId);
+        if (group) {
+          const allMembers = [group.admin, ...group.members];
+          allMembers.forEach((memberId) => {
+            io.emit("messageReactionRemoved", {
+              message: messageObj,
+              groupId: message.groupId,
+              memberId: memberId.toString(),
+            });
+          });
+        }
+      } else {
+        const receiverSocketId = getReceiverSocketId(message.receiverId.toString());
+        const senderSocketId = getReceiverSocketId(message.senderId.toString());
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("messageReactionRemoved", messageObj);
+        }
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("messageReactionRemoved", messageObj);
+        }
+      }
+
+      res.status(200).json(message);
+    } catch (error) {
+      console.log("Error in removeReaction controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };

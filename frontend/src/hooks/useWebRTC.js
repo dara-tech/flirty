@@ -81,6 +81,7 @@ const useWebRTC = () => {
         callId,
         callType,
         callState: 'ringing',
+        isVideoEnabled: callType === 'video', // Only enable video for video calls
         caller: callerInfo,
         receiver: {
           userId: authUser._id,
@@ -92,11 +93,12 @@ const useWebRTC = () => {
       console.log('📞 Incoming call received:', callId, callerInfo.fullname);
     };
     
-    // Call ringing (for caller)
+    // Call ringing (for caller) - don't change state, caller should stay in 'calling' state
+    // This event is just a confirmation that the receiver's phone is ringing
     const handleCallRinging = () => {
-      if (callState === 'calling') {
-        setCallState('ringing');
-      }
+      // Don't change caller's state - they should stay in 'calling' state
+      // Only receiver should be in 'ringing' state
+      console.log('📞 Call is ringing on receiver side');
     };
     
     // Call answered
@@ -212,10 +214,19 @@ const useWebRTC = () => {
         return;
       }
       
-      // If answer already created, ignore
-      if (answerCreatedRef.current) {
+      // Get peer connection to check if this is a renegotiation
+      const pc = peerConnection || useCallStore.getState().peerConnection;
+      const isRenegotiation = pc && pc.signalingState === 'stable' && pc.localDescription;
+      
+      // If answer already created and this is NOT a renegotiation, ignore
+      if (answerCreatedRef.current && !isRenegotiation) {
         console.log('Answer already created, ignoring duplicate offer');
         return;
+      }
+      
+      // If this is a renegotiation, allow it
+      if (isRenegotiation) {
+        console.log('🔄 Processing renegotiation offer (camera/screen share enabled)');
       }
       
       processingOfferRef.current = true;
@@ -287,7 +298,62 @@ const useWebRTC = () => {
           }
         }
         
-        // Check if answer already created for this peer connection
+        // Check if this is a renegotiation (connection already established)
+        const isRenegotiation = pc.signalingState === 'stable' && pc.localDescription;
+        
+        if (isRenegotiation) {
+          // This is a renegotiation - set remote description first, then create answer
+          console.log('🔄 Handling renegotiation offer (camera/screen share)');
+          try {
+            // Ensure remote stream handler is set up to detect new tracks
+            if (!pc.ontrack) {
+              setupRemoteStreamHandler(pc, (remoteStream) => {
+                console.log('📹 Remote stream updated with new video track');
+                useCallStore.getState().setRemoteStream(remoteStream);
+              });
+            }
+            
+            await setRemoteDescription(pc, offer);
+            const answer = await createAnswer(pc, offer);
+            if (socket && answer) {
+              socket.emit('webrtc:answer', {
+                callId,
+                answer,
+                callerId: offerCallerId,
+              });
+              console.log('✅ Renegotiation answer sent');
+            }
+            
+            // Force check for new tracks after a short delay
+            setTimeout(() => {
+              const receivers = pc.getReceivers();
+              const videoReceiver = receivers.find(r => r.track?.kind === 'video');
+              if (videoReceiver && videoReceiver.track) {
+                console.log('📹 Video track detected in receiver:', videoReceiver.track.label);
+                const currentRemoteStream = useCallStore.getState().remoteStream;
+                if (currentRemoteStream) {
+                  const hasVideoTrack = currentRemoteStream.getVideoTracks().some(t => t.id === videoReceiver.track.id);
+                  if (!hasVideoTrack) {
+                    // Add new video track to remote stream
+                    const updatedStream = new MediaStream([
+                      ...currentRemoteStream.getAudioTracks(),
+                      videoReceiver.track,
+                    ]);
+                    useCallStore.getState().setRemoteStream(updatedStream);
+                    console.log('✅ Remote stream updated with new video track');
+                  }
+                }
+              }
+            }, 500);
+          } catch (renegError) {
+            console.error('Error during renegotiation:', renegError);
+            // Don't end call on renegotiation error, just log it
+          }
+          processingOfferRef.current = false;
+          return;
+        }
+        
+        // Initial offer - check if answer already exists
         if (pc.localDescription && pc.localDescription.type === 'answer') {
           console.log('Answer already exists, skipping');
           answerCreatedRef.current = true;
@@ -295,7 +361,7 @@ const useWebRTC = () => {
           return;
         }
         
-        // Answer the call
+        // Answer the initial call
         const answer = await createAnswer(pc, offer);
         answerCreatedRef.current = true;
         
@@ -357,13 +423,6 @@ const useWebRTC = () => {
     const handleWebRTCAnswer = async ({ callId: answerCallId, answer }) => {
       if (answerCallId !== callId) return;
       
-      // Check if we're the caller (should have local description set)
-      if (!isCallerRef.current) {
-        // We're the receiver, shouldn't receive an answer
-        console.warn('Received answer but we are not the caller');
-        return;
-      }
-      
       const pc = peerConnection || useCallStore.getState().peerConnection;
       if (!pc) {
         // Buffer the answer until peer connection is ready
@@ -371,23 +430,33 @@ const useWebRTC = () => {
         return;
       }
       
-      // Check if local description is set (should be if we're the caller)
-      if (!pc.localDescription) {
+      // Check if this is a renegotiation (connection already stable)
+      const isRenegotiation = pc.signalingState === 'stable' && pc.localDescription?.type === 'offer';
+      
+      // Check if we're the caller (should have local description set)
+      if (!isCallerRef.current && !isRenegotiation) {
+        // We're the receiver, shouldn't receive an answer (unless renegotiation)
+        console.warn('Received answer but we are not the caller');
+        return;
+      }
+      
+      // Check if local description is set (should be if we're the caller or renegotiating)
+      if (!pc.localDescription && !isRenegotiation) {
         // Buffer the answer until local description is set
         pendingAnswerRef.current = answer;
         return;
       }
       
       // Check connection state - should be "have-local-offer" to set remote answer
-      // If already stable, connection is established
-      if (pc.signalingState === 'stable') {
+      // If already stable, might be renegotiation
+      if (pc.signalingState === 'stable' && !isRenegotiation) {
         console.log('Connection already stable, answer already processed');
         pendingAnswerRef.current = null;
         return;
       }
       
-      // Should be in "have-local-offer" state when setting remote answer
-      if (pc.signalingState !== 'have-local-offer') {
+      // For renegotiation, allow setting answer even if state is stable
+      if (!isRenegotiation && pc.signalingState !== 'have-local-offer') {
         console.warn(`Unexpected signaling state: ${pc.signalingState}, expected have-local-offer`);
         // Buffer and retry later
         pendingAnswerRef.current = answer;
@@ -397,6 +466,48 @@ const useWebRTC = () => {
       try {
         await setRemoteDescription(pc, answer);
         pendingAnswerRef.current = null; // Clear buffered answer
+        
+        // If this is a renegotiation, check for new video tracks
+        if (isRenegotiation) {
+          console.log('🔄 Processing renegotiation answer - checking for new video tracks');
+          
+          // Ensure remote stream handler is set up
+          if (!pc.ontrack) {
+            setupRemoteStreamHandler(pc, (remoteStream) => {
+              console.log('📹 Remote stream updated with new video track');
+              useCallStore.getState().setRemoteStream(remoteStream);
+            });
+          }
+          
+          // Check for new video tracks after a delay
+          setTimeout(() => {
+            const receivers = pc.getReceivers();
+            const videoReceiver = receivers.find(r => r.track?.kind === 'video');
+            if (videoReceiver && videoReceiver.track) {
+              console.log('📹 Video track detected in receiver after renegotiation:', videoReceiver.track.label);
+              const currentRemoteStream = useCallStore.getState().remoteStream;
+              if (currentRemoteStream) {
+                const hasVideoTrack = currentRemoteStream.getVideoTracks().some(t => t.id === videoReceiver.track.id);
+                if (!hasVideoTrack) {
+                  // Add new video track to remote stream
+                  const updatedStream = new MediaStream([
+                    ...currentRemoteStream.getAudioTracks(),
+                    videoReceiver.track,
+                  ]);
+                  useCallStore.getState().setRemoteStream(updatedStream);
+                  console.log('✅ Remote stream updated with new video track after renegotiation');
+                }
+              } else {
+                // Create new stream with video track
+                const newStream = new MediaStream([videoReceiver.track]);
+                useCallStore.getState().setRemoteStream(newStream);
+                console.log('✅ New remote stream created with video track');
+              }
+            } else {
+              console.log('⚠️ No video track found in receivers after renegotiation');
+            }
+          }, 500);
+        }
       } catch (error) {
         console.error('Error handling answer:', error);
         
@@ -409,7 +520,7 @@ const useWebRTC = () => {
         // Retry after a short delay
         setTimeout(async () => {
           const currentPc = useCallStore.getState().peerConnection;
-          if (currentPc && currentPc.signalingState === 'have-local-offer') {
+          if (currentPc && (currentPc.signalingState === 'have-local-offer' || isRenegotiation)) {
             try {
               await setRemoteDescription(currentPc, answer);
               pendingAnswerRef.current = null;
@@ -499,6 +610,44 @@ const useWebRTC = () => {
       
       // Get media stream
       const stream = await getLocalStream(callType);
+      
+      // For video calls, ensure video tracks are enabled
+      if (callType === 'video') {
+        const videoTracks = stream.getVideoTracks();
+        videoTracks.forEach(track => {
+          if (track.readyState === 'live' && !track.enabled) {
+            track.enabled = true;
+            console.log('✅ Enabled video track during call initialization:', track.label);
+          }
+        });
+        
+        // Validation: Ensure at least one video track is active
+        const activeVideoTracks = videoTracks.filter(track => 
+          track.enabled && track.readyState === 'live'
+        );
+        
+        if (activeVideoTracks.length === 0 && videoTracks.length > 0) {
+          console.warn('⚠️ Video tracks exist but none are active - enabling all tracks');
+          // Try to enable all tracks
+          videoTracks.forEach(track => {
+            if (track.readyState === 'live') {
+              track.enabled = true;
+            }
+          });
+        }
+        
+        console.log('📹 Video call initialized:', {
+          totalTracks: videoTracks.length,
+          activeTracks: activeVideoTracks.length,
+          trackDetails: videoTracks.map(t => ({
+            id: t.id,
+            label: t.label,
+            enabled: t.enabled,
+            readyState: t.readyState,
+          })),
+        });
+      }
+      
       setLocalStream(stream);
     } catch (error) {
       console.error('Error initializing call:', error);
@@ -564,8 +713,11 @@ const useWebRTC = () => {
       
       // Send the answer signal to notify caller we've answered
       // This should happen even if peer connection creation failed
-      const { answerCall } = useCallStore.getState();
+      const { answerCall, callType } = useCallStore.getState();
       await answerCall();
+      
+      // Send call started message (answerCall already sends it, but ensure it's sent)
+      // The answerCall function in useCallStore will handle sending the status message
     } catch (error) {
       console.error('Error answering call:', error);
       
@@ -597,73 +749,303 @@ const useWebRTC = () => {
     };
   }, [callState]);
   
-  // Stop screen sharing and switch back to camera
+  // Stop screen sharing and switch back to camera (with validation)
   const stopScreenShare = async () => {
     try {
       const currentState = useCallStore.getState();
-      const pc = currentState.peerConnection;
-      const screenShareStream = currentState.screenShareStream;
+      const { peerConnection, screenShareStream, callType, callState, isVideoEnabled, localStream } = currentState;
       
-      if (!pc) return;
+      // Validation: Must be in active call
+      if (callState !== 'in-call') {
+        toast.error("No active call");
+        return;
+      }
+      
+      // Validation: Peer connection must exist
+      if (!peerConnection) {
+        toast.error("Call connection not established");
+        return;
+      }
+      
+      // Validation: Must be screen sharing
+      if (!currentState.isScreenSharing || !screenShareStream) {
+        console.warn('Not currently screen sharing');
+        setScreenSharing(false, null);
+        return;
+      }
+      
+      // Validation: Peer connection must be in valid state
+      const validStates = ['stable', 'have-local-offer', 'have-remote-offer', 'have-local-pranswer', 'have-remote-pranswer'];
+      if (!validStates.includes(peerConnection.signalingState)) {
+        toast.error("Call connection is not ready");
+        return;
+      }
       
       // Stop screen share tracks
-      screenShareStream?.getTracks().forEach(track => track.stop());
+      const screenShareTracks = screenShareStream.getTracks();
+      screenShareTracks.forEach(track => {
+        if (track.readyState === 'live') {
+          track.stop();
+        }
+      });
       
-      // Get camera stream and replace video track
-      const cameraStream = await getLocalStream(currentState.callType);
-      const videoTrack = cameraStream.getVideoTracks()[0];
-      
-      if (videoTrack) {
-        await replaceVideoTrack(pc, videoTrack, cameraStream);
-        setLocalStream(cameraStream);
+      // For video calls, switch back to camera if video was enabled before screen share
+      if (callType === 'video' && isVideoEnabled && localStream) {
+        const cameraVideoTracks = localStream.getVideoTracks();
+        
+        // Find camera track (not screen share track)
+        const cameraVideoTrack = cameraVideoTracks.find(track => 
+          track.readyState === 'live' && 
+          !track.label.toLowerCase().includes('screen') &&
+          track.label.toLowerCase().includes('camera')
+        ) || cameraVideoTracks.find(track => 
+          track.readyState === 'live' && 
+          !track.label.toLowerCase().includes('screen')
+        );
+        
+        if (cameraVideoTrack) {
+          // Camera track exists - replace screen share with camera
+          try {
+            await replaceVideoTrack(peerConnection, cameraVideoTrack, localStream);
+            console.log('✅ Switched back to camera from screen share');
+          } catch (error) {
+            console.error('Error switching to camera:', error);
+            toast.error("Stopped screen sharing but failed to switch to camera");
+          }
+        } else {
+          // No camera tracks - need to get camera stream
+          try {
+            const cameraStream = await getLocalStream('video');
+            const cameraVideoTrack = cameraStream.getVideoTracks()[0];
+            
+            if (cameraVideoTrack) {
+              await replaceVideoTrack(peerConnection, cameraVideoTrack, cameraStream);
+              
+              // Update local stream
+              if (localStream) {
+                // Remove old video tracks
+                localStream.getVideoTracks().forEach(track => {
+                  if (track.id !== cameraVideoTrack.id) {
+                    track.stop();
+                    localStream.removeTrack(track);
+                  }
+                });
+                // Add camera track
+                if (!localStream.getVideoTracks().some(t => t.id === cameraVideoTrack.id)) {
+                  localStream.addTrack(cameraVideoTrack);
+                }
+              } else {
+                setLocalStream(cameraStream);
+              }
+              
+              console.log('✅ Switched back to camera from screen share');
+            }
+          } catch (error) {
+            console.error('Error getting camera stream:', error);
+            // Remove video track from peer connection
+            const senders = peerConnection.getSenders();
+            const videoSender = senders.find(sender => sender.track?.kind === 'video');
+            if (videoSender) {
+              try {
+                await videoSender.replaceTrack(null);
+                // Disable video since camera is not available
+                useCallStore.setState({ isVideoEnabled: false });
+              } catch (e) {
+                console.error('Error removing video track:', e);
+              }
+            }
+            toast.error("Stopped screen sharing. Camera not available.");
+          }
+        }
+      } else {
+        // For voice calls or if video is disabled, just remove video track
+        const senders = peerConnection.getSenders();
+        const videoSender = senders.find(sender => sender.track?.kind === 'video');
+        if (videoSender) {
+          try {
+            await videoSender.replaceTrack(null);
+          } catch (error) {
+            console.error('Error removing video track:', error);
+          }
+        }
       }
       
       setScreenSharing(false, null);
       toast.success("Screen sharing stopped");
+      
     } catch (error) {
       console.error('Error stopping screen share:', error);
       toast.error(error.message || "Failed to stop screen sharing");
+      // Still update state to prevent UI inconsistency
+      setScreenSharing(false, null);
     }
   };
   
-  // Toggle screen sharing
+  // Toggle screen sharing with comprehensive validation
   const toggleScreenShare = async () => {
     try {
       const currentState = useCallStore.getState();
-      const pc = currentState.peerConnection;
+      const { 
+        peerConnection, 
+        socket, 
+        callId, 
+        caller, 
+        receiver, 
+        callType,
+        callState,
+        isScreenSharing,
+        screenShareStream
+      } = currentState;
+      const { authUser } = useAuthStore.getState();
       
-      if (!pc) {
-        toast.error("No active call connection");
+      // Validation: Only allow screen share for video calls
+      if (callType !== 'video') {
+        toast.error("Screen sharing is only available for video calls");
         return;
       }
       
-      if (currentState.isScreenSharing) {
+      // Validation: Must be in active call
+      if (callState !== 'in-call') {
+        toast.error("No active call");
+        return;
+      }
+      
+      // Validation: Peer connection must exist
+      if (!peerConnection) {
+        toast.error("Call connection not established. Please wait...");
+        return;
+      }
+      
+      // Validation: Socket must be connected
+      if (!socket || !socket.connected) {
+        toast.error("Connection lost. Please reconnect.");
+        return;
+      }
+      
+      // Validation: Peer connection must be in valid state
+      const validStates = ['stable', 'have-local-offer', 'have-remote-offer', 'have-local-pranswer', 'have-remote-pranswer'];
+      if (!validStates.includes(peerConnection.signalingState)) {
+        toast.error("Call connection is not ready. Please wait...");
+        return;
+      }
+      
+      // STOP SCREEN SHARING
+      if (isScreenSharing) {
         await stopScreenShare();
         return;
       }
       
-      // Start screen sharing
-      const displayStream = await getDisplayMedia();
-      const videoTrack = displayStream.getVideoTracks()[0];
-      
-      if (!videoTrack) {
-        toast.error("Failed to get screen share video track");
-        return;
+      // START SCREEN SHARING
+      let displayStream = null;
+      try {
+        // Validation: Check if screen sharing is supported
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          toast.error("Screen sharing is not supported in your browser");
+          return;
+        }
+        
+        // Get screen share stream
+        displayStream = await getDisplayMedia();
+        
+        // Validation: Display stream must be obtained
+        if (!displayStream) {
+          throw new Error('Failed to get screen share stream');
+        }
+        
+        const videoTrack = displayStream.getVideoTracks()[0];
+        
+        // Validation: Video track must exist
+        if (!videoTrack) {
+          displayStream.getTracks().forEach(track => track.stop());
+          throw new Error('Failed to get screen share video track');
+        }
+        
+        // Validation: Video track must be live
+        if (videoTrack.readyState !== 'live') {
+          displayStream.getTracks().forEach(track => track.stop());
+          throw new Error('Screen share stream is not active');
+        }
+        
+        // Handle browser UI stop event (user clicks stop in browser UI)
+        videoTrack.onended = () => {
+          console.log('📹 Screen share ended by user (browser UI)');
+          stopScreenShare();
+        };
+        
+        // Check if video sender exists before adding
+        const senders = peerConnection.getSenders();
+        const videoSender = senders.find(sender => sender.track?.kind === 'video');
+        const hadVideoBefore = !!videoSender;
+        
+        // Replace or add video track with screen share
+        await replaceVideoTrack(peerConnection, videoTrack, displayStream);
+        
+        // Update state: screen sharing replaces video, so mark video as "replaced" but keep isVideoEnabled true
+        // This allows UI to show that video is active (screen share is video)
+        setScreenSharing(true, displayStream);
+        
+        // Note: We keep isVideoEnabled true because screen share is a form of video
+        // The UI will show screen share instead of camera when isScreenSharing is true
+        
+        // If this is a new video track, renegotiate
+        if (!hadVideoBefore) {
+          // Wait for negotiationneeded event
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          // Validation: Check peer connection state before renegotiation
+          if (peerConnection.signalingState === 'closed') {
+            throw new Error('Peer connection is closed');
+          }
+          
+          // Get user IDs for signaling
+          const authUserId = typeof authUser._id === 'object' ? authUser._id._id || authUser._id : authUser._id;
+          const callerId = typeof caller?.userId === 'object' ? caller.userId._id || caller.userId : caller?.userId;
+          const receiverId = typeof receiver?.userId === 'object' ? receiver.userId._id || receiver.userId : receiver?.userId;
+          
+          // Validation: User IDs must exist
+          if (!authUserId || !callerId || !receiverId) {
+            throw new Error('Call participant information missing');
+          }
+          
+          const otherUserId = String(authUserId) === String(callerId) ? receiverId : callerId;
+          
+          // Create and send renegotiation offer
+          const offer = await createOffer(peerConnection);
+          if (!offer) {
+            throw new Error('Failed to create renegotiation offer');
+          }
+          
+          socket.emit('webrtc:offer', { callId, offer, receiverId: otherUserId });
+          console.log('📤 Renegotiation offer sent for screen share');
+        }
+        
+        toast.success("Screen sharing started");
+        
+      } catch (error) {
+        console.error('Error starting screen share:', error);
+        
+        // Clean up on error
+        if (displayStream) {
+          displayStream.getTracks().forEach(track => track.stop());
+        }
+        setScreenSharing(false, null);
+        
+        // Provide specific error messages
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+          toast.error("Screen sharing permission denied. Please allow access.");
+        } else if (error.name === 'NotFoundError' || error.name === 'AbortError') {
+          // User cancelled - don't show error
+          return;
+        } else if (error.message?.includes('cancelled')) {
+          // User cancelled - don't show error
+          return;
+        } else {
+          toast.error(error.message || "Failed to start screen sharing");
+        }
       }
-      
-      // Handle browser UI stop event
-      videoTrack.onended = stopScreenShare;
-      
-      // Replace video track with screen share
-      await replaceVideoTrack(pc, videoTrack, displayStream);
-      setScreenSharing(true, displayStream);
-      toast.success("Screen sharing started");
     } catch (error) {
       console.error('Error toggling screen share:', error);
-      // Don't show error if user cancelled
-      if (!error.message?.includes('cancelled')) {
-        toast.error(error.message || "Failed to toggle screen sharing");
-      }
+      toast.error(error.message || "Failed to toggle screen sharing");
     }
   };
   

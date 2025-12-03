@@ -7,6 +7,7 @@ import {
   addMembersToGroup,
   removeMemberFromGroup,
   getGroupMessages,
+  getGroupMessagesByType,
   sendGroupMessage,
   getGroupLastMessages,
   deleteGroup,
@@ -20,6 +21,7 @@ router.post("/create", protectRoute, createGroup);
 router.get("/my-groups", protectRoute, getMyGroups);
 router.get("/last-messages", protectRoute, getGroupLastMessages);
 router.get("/:id", protectRoute, getGroup);
+router.get("/:id/messages/by-type", protectRoute, getGroupMessagesByType);
 router.get("/:id/messages", protectRoute, getGroupMessages);
 router.post("/:id/members", protectRoute, addMembersToGroup);
 router.delete("/:id/members/:memberId", protectRoute, removeMemberFromGroup);

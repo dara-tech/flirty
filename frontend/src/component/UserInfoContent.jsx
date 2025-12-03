@@ -2,10 +2,11 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaTimes, FaAngleLeft, FaSearch, FaEllipsisV, FaBell, FaBellSlash, FaImage, FaSpinner, FaPhone, FaVideo, FaEnvelope } from "react-icons/fa";
+import { FaTimes, FaAngleLeft, FaSearch, FaEllipsisV, FaBell, FaBellSlash, FaImage, FaSpinner, FaPhone, FaVideo, FaEnvelope, FaFile, FaLink, FaMicrophone, FaDownload } from "react-icons/fa";
 import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 import { formatDistanceToNow } from "date-fns";
+import { axiosInstance } from "../lib/axois";
 
 // Shared content component - can be used as page or embedded
 const UserInfoContent = ({ userId, onClose, embedded = false }) => {
@@ -17,6 +18,8 @@ const UserInfoContent = ({ userId, onClose, embedded = false }) => {
   const [userPic, setUserPic] = useState(null);
   const [userPicPreview, setUserPicPreview] = useState(null);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [filteredMessages, setFilteredMessages] = useState([]);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
 
   const user = users.find((u) => u._id === userId);
   const isCurrentUser = user?._id === authUser?._id;
@@ -33,6 +36,30 @@ const UserInfoContent = ({ userId, onClose, embedded = false }) => {
       setUserPic(null);
     }
   }, [user]);
+
+  // Fetch messages by type when tab changes
+  useEffect(() => {
+    if (!userId || activeTab === "info") {
+      setFilteredMessages([]);
+      return;
+    }
+
+    const fetchMessagesByType = async () => {
+      setIsLoadingMessages(true);
+      try {
+        const res = await axiosInstance.get(`/messages/by-type/${userId}?type=${activeTab}`);
+        setFilteredMessages(res.data || []);
+      } catch (error) {
+        console.error(`Error fetching ${activeTab} messages:`, error);
+        toast.error(`Failed to load ${activeTab}`);
+        setFilteredMessages([]);
+      } finally {
+        setIsLoadingMessages(false);
+      }
+    };
+
+    fetchMessagesByType();
+  }, [userId, activeTab]);
 
   const normalizeId = (id) => {
     if (!id) return null;
@@ -222,27 +249,96 @@ const UserInfoContent = ({ userId, onClose, embedded = false }) => {
 
       {/* Tab Content - Scrollable */}
       <div className="flex-1 overflow-y-auto hide-scrollbar min-h-0">
-        {activeTab === "media" && (
+        {isLoadingMessages ? (
           <div className="p-4 text-center py-12">
-            <p className="text-sm text-base-content/50">Media content coming soon</p>
+            <FaSpinner className="animate-spin size-8 mx-auto mb-2 text-base-content/50" />
+            <p className="text-sm text-base-content/50">Loading...</p>
           </div>
-        )}
-
-        {activeTab === "files" && (
+        ) : filteredMessages.length === 0 ? (
           <div className="p-4 text-center py-12">
-            <p className="text-sm text-base-content/50">Files content coming soon</p>
+            <p className="text-sm text-base-content/50">No {activeTab} found</p>
           </div>
-        )}
-
-        {activeTab === "links" && (
-          <div className="p-4 text-center py-12">
-            <p className="text-sm text-base-content/50">Links content coming soon</p>
-          </div>
-        )}
-
-        {activeTab === "voice" && (
-          <div className="p-4 text-center py-12">
-            <p className="text-sm text-base-content/50">Voice messages coming soon</p>
+        ) : (
+          <div className="p-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {filteredMessages.map((message) => (
+              <div key={message._id} className="relative group">
+                {activeTab === "media" && message.image && (
+                  <div className="aspect-square rounded-lg overflow-hidden bg-base-200">
+                    <img
+                      src={message.image}
+                      alt="Media"
+                      className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                      onClick={() => window.open(message.image, '_blank')}
+                    />
+                    <div className="absolute bottom-2 left-2 right-2 text-xs text-white bg-black/50 rounded px-2 py-1 truncate">
+                      {formatDistanceToNow(new Date(message.createdAt), { addSuffix: true })}
+                    </div>
+                  </div>
+                )}
+                {activeTab === "files" && message.file && (
+                  <a
+                    href={message.file}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block p-4 bg-base-200 rounded-lg hover:bg-base-300 transition-colors"
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <FaFile className="size-6 text-primary flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{message.fileName || "File"}</p>
+                        {message.fileSize && (
+                          <p className="text-xs text-base-content/60">
+                            {(message.fileSize / 1024).toFixed(2)} KB
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-xs text-base-content/50">
+                      {formatDistanceToNow(new Date(message.createdAt), { addSuffix: true })}
+                    </div>
+                  </a>
+                )}
+                {activeTab === "links" && message.link && (
+                  <a
+                    href={message.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block p-4 bg-base-200 rounded-lg hover:bg-base-300 transition-colors"
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <FaLink className="size-5 text-primary flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{message.link}</p>
+                        {message.text && (
+                          <p className="text-xs text-base-content/60 truncate mt-1">{message.text}</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-xs text-base-content/50">
+                      {formatDistanceToNow(new Date(message.createdAt), { addSuffix: true })}
+                    </div>
+                  </a>
+                )}
+                {activeTab === "voice" && message.audio && (
+                  <div className="p-4 bg-base-200 rounded-lg">
+                    <div className="flex items-center gap-3 mb-2">
+                      <FaMicrophone className="size-5 text-primary flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <audio
+                          src={message.audio}
+                          controls
+                          className="w-full h-8"
+                          controlsList="nodownload"
+                        />
+                      </div>
+                    </div>
+                    <div className="text-xs text-base-content/50 mt-2">
+                      {formatDistanceToNow(new Date(message.createdAt), { addSuffix: true })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -22,65 +22,215 @@ const VideoCallWindow = () => {
   
   useEffect(() => {
     // Attach local stream or screen share to video element
-    if (localVideoRef.current) {
-      if (isScreenSharing && screenShareStream) {
-        localVideoRef.current.srcObject = screenShareStream;
-      } else if (localStream) {
-        localVideoRef.current.srcObject = localStream;
-      }
-    }
-  }, [localStream, isScreenSharing, screenShareStream]);
-  
-  useEffect(() => {
-    const videoElement = remoteVideoRef.current;
-    if (!videoElement || !remoteStream) return;
+    const videoElement = localVideoRef.current;
+    if (!videoElement) return;
     
     let isMounted = true;
     let playPromise = null;
     
-    // Update video source if stream changed
-    if (videoElement.srcObject !== remoteStream) {
-      // Cancel any pending play operations
-      if (playPromise) {
-        playPromise.catch(() => {}); // Ignore abort errors
-      }
-      videoElement.srcObject = remoteStream;
-    }
-    
-    // Ensure video plays with proper error handling
-    const playVideo = async () => {
-      if (!isMounted || !videoElement || !remoteStream) return;
+    const attachAndPlay = async () => {
+      if (!isMounted || !videoElement) return;
       
       try {
-        // Cancel previous play promise if exists
-        if (playPromise) {
-          playPromise.catch(() => {}); // Ignore abort errors
+        // Determine which stream to use
+        let streamToUse = null;
+        if (isScreenSharing && screenShareStream) {
+          streamToUse = screenShareStream;
+        } else if (localStream && isVideoEnabled) {
+          streamToUse = localStream;
         }
         
-        playPromise = videoElement.play();
-        await playPromise;
-        playPromise = null;
-      } catch (err) {
-        // Ignore AbortError (happens when video is removed/changed during play)
-        if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-          // Only log non-abort errors
-          if (isMounted) {
-            console.warn('Error playing remote video:', err.name);
+        if (!streamToUse) {
+          // Clear video if no stream
+          if (videoElement.srcObject) {
+            videoElement.srcObject = null;
           }
+          return;
         }
-        playPromise = null;
+        
+        // Check if stream has video tracks
+        const videoTracks = streamToUse.getVideoTracks();
+        if (videoTracks.length === 0) {
+          console.warn('Stream has no video tracks');
+          if (videoElement.srcObject) {
+            videoElement.srcObject = null;
+          }
+          return;
+        }
+        
+        // Validation: Check if video tracks are enabled and live
+        const activeVideoTracks = videoTracks.filter(track => 
+          track.enabled && 
+          track.readyState === 'live' &&
+          !track.muted
+        );
+        
+        if (activeVideoTracks.length === 0) {
+          console.warn('No active video tracks in stream');
+          if (videoElement.srcObject) {
+            videoElement.srcObject = null;
+          }
+          return;
+        }
+        
+        // Ensure all video tracks are enabled
+        videoTracks.forEach(track => {
+          if (track.readyState === 'live' && !track.enabled) {
+            track.enabled = true;
+            console.log('✅ Enabled video track:', track.label);
+          }
+        });
+        
+        // Update video source if stream changed
+        if (videoElement.srcObject !== streamToUse) {
+          // Cancel any pending play operations
+          if (playPromise) {
+            playPromise.catch(() => {}); // Ignore abort errors
+          }
+          videoElement.srcObject = streamToUse;
+          console.log('📹 Local video stream attached:', {
+            hasVideoTracks: videoTracks.length > 0,
+            activeVideoTracks: activeVideoTracks.length,
+            videoTrackEnabled: videoTracks[0]?.enabled,
+            videoTrackReadyState: videoTracks[0]?.readyState,
+            videoTrackLabel: videoTracks[0]?.label,
+            isScreenSharing,
+          });
+        }
+        
+        // Ensure video plays
+        if (videoElement.paused) {
+          try {
+            playPromise = videoElement.play();
+            await playPromise;
+            playPromise = null;
+            console.log('✅ Local video playing successfully');
+          } catch (err) {
+            // Ignore AbortError (happens when video is removed/changed during play)
+            if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+              console.warn('⚠️ Error playing local video:', err.name, err.message);
+            }
+            playPromise = null;
+          }
+        } else {
+          console.log('✅ Local video already playing');
+        }
+      } catch (error) {
+        console.error('Error attaching local video:', error);
+        // Clear video on error to prevent test pattern
+        if (videoElement.srcObject) {
+          videoElement.srcObject = null;
+        }
       }
     };
     
-    playVideo();
+    attachAndPlay();
+    
+    // Cleanup
+    return () => {
+      isMounted = false;
+      if (playPromise) {
+        playPromise.catch(() => {}); // Ignore abort errors
+      }
+    };
+  }, [localStream, isScreenSharing, screenShareStream, isVideoEnabled]);
+  
+  useEffect(() => {
+    const videoElement = remoteVideoRef.current;
+    if (!videoElement || !remoteStream) {
+      // Clear video if no remote stream
+      if (videoElement?.srcObject) {
+        videoElement.srcObject = null;
+      }
+      return;
+    }
+    
+    let isMounted = true;
+    let playPromise = null;
+    
+    const attachAndPlay = async () => {
+      if (!isMounted || !videoElement || !remoteStream) return;
+      
+      try {
+        // Check if stream has video tracks
+        const videoTracks = remoteStream.getVideoTracks();
+        if (videoTracks.length === 0) {
+          console.warn('Remote stream has no video tracks');
+          if (videoElement.srcObject) {
+            videoElement.srcObject = null;
+          }
+          return;
+        }
+        
+        // Validation: Check if video tracks are enabled and live
+        const activeVideoTracks = videoTracks.filter(track => 
+          track.enabled && 
+          track.readyState === 'live' &&
+          !track.muted
+        );
+        
+        if (activeVideoTracks.length === 0) {
+          console.warn('No active video tracks in remote stream');
+          // Don't clear video element - tracks might become active soon
+          // Just log and wait
+          return;
+        }
+        
+        // Update video source if stream changed
+        if (videoElement.srcObject !== remoteStream) {
+          // Cancel any pending play operations
+          if (playPromise) {
+            playPromise.catch(() => {}); // Ignore abort errors
+          }
+          videoElement.srcObject = remoteStream;
+          console.log('📹 Remote video stream attached:', {
+            hasVideoTracks: videoTracks.length > 0,
+            activeVideoTracks: activeVideoTracks.length,
+            videoTrackEnabled: videoTracks[0]?.enabled,
+            videoTrackReadyState: videoTracks[0]?.readyState,
+            videoTrackLabel: videoTracks[0]?.label,
+          });
+        }
+        
+        // Ensure video plays
+        if (videoElement.paused) {
+          try {
+            playPromise = videoElement.play();
+            await playPromise;
+            playPromise = null;
+            console.log('✅ Remote video playing successfully');
+          } catch (err) {
+            // Ignore AbortError (happens when video is removed/changed during play)
+            if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+              if (isMounted) {
+                console.warn('⚠️ Error playing remote video:', err.name, err.message);
+              }
+            }
+            playPromise = null;
+          }
+        }
+      } catch (error) {
+        console.error('Error attaching remote video:', error);
+        // Don't clear video on error - might be temporary
+      }
+    };
+    
+    attachAndPlay();
     
     // Handle track changes (screen share replacing camera)
     const handleVideoUpdate = () => {
       if (isMounted && videoElement && remoteStream) {
-        if (videoElement.srcObject !== remoteStream) {
-          videoElement.srcObject = remoteStream;
+        const videoTracks = remoteStream.getVideoTracks();
+        const hasActiveTracks = videoTracks.some(track => 
+          track.enabled && track.readyState === 'live'
+        );
+        
+        if (hasActiveTracks) {
+          if (videoElement.srcObject !== remoteStream) {
+            videoElement.srcObject = remoteStream;
+          }
+          attachAndPlay();
         }
-        playVideo();
       }
     };
     
@@ -90,6 +240,7 @@ const VideoCallWindow = () => {
       track.addEventListener('ended', handleVideoUpdate);
       track.addEventListener('mute', handleVideoUpdate);
       track.addEventListener('unmute', handleVideoUpdate);
+      track.addEventListener('enabled', handleVideoUpdate);
     });
     
     const addTrackHandler = (event) => {
@@ -98,7 +249,14 @@ const VideoCallWindow = () => {
       }
     };
     
+    const removeTrackHandler = (event) => {
+      if (event.track.kind === 'video') {
+        handleVideoUpdate();
+      }
+    };
+    
     remoteStream.addEventListener('addtrack', addTrackHandler);
+    remoteStream.addEventListener('removetrack', removeTrackHandler);
     
     // Cleanup
     return () => {
@@ -110,8 +268,10 @@ const VideoCallWindow = () => {
         track.removeEventListener('ended', handleVideoUpdate);
         track.removeEventListener('mute', handleVideoUpdate);
         track.removeEventListener('unmute', handleVideoUpdate);
+        track.removeEventListener('enabled', handleVideoUpdate);
       });
       remoteStream.removeEventListener('addtrack', addTrackHandler);
+      remoteStream.removeEventListener('removetrack', removeTrackHandler);
     };
   }, [remoteStream]);
   
@@ -166,7 +326,7 @@ const VideoCallWindow = () => {
         )}
         
         {/* Local Video (Picture-in-Picture) - Screen Share or Camera */}
-        {((isScreenSharing && screenShareStream) || (localStream && isVideoEnabled)) && (
+        {((isScreenSharing && screenShareStream) || (localStream && isVideoEnabled && localStream.getVideoTracks().length > 0)) && (
           <div
             className={`absolute ${
               isLocalVideoSmall
@@ -181,10 +341,20 @@ const VideoCallWindow = () => {
               muted
               playsInline
               className="w-full h-full object-contain"
+              onError={(e) => {
+                console.error('Local video error:', e);
+                // Show error state if video fails to load
+              }}
             />
             {isScreenSharing && (
               <div className="absolute top-2 left-2 bg-red-500 text-white text-xs px-2 py-1 rounded">
                 Sharing Screen
+              </div>
+            )}
+            {/* Show error if video track is not available */}
+            {localStream && localStream.getVideoTracks().length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                <p className="text-white text-xs text-center px-2">Camera not available</p>
               </div>
             )}
           </div>
