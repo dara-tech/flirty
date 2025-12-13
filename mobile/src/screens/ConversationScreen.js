@@ -373,6 +373,41 @@ export default function ConversationScreen({ route, navigation }) {
     };
   }, []);
 
+  // Set selectedUser/selectedGroup when conversation opens (for real-time message handling)
+  useEffect(() => {
+    if (userId && !isGroup) {
+      // Find user in users array and set as selected
+      const user = users.find(u => {
+        const uId = typeof u._id === 'string' ? u._id : u._id?.toString();
+        return uId === userId?.toString();
+      });
+      if (user) {
+        chatStore.setSelectedUser(user);
+        if (__DEV__) {
+          console.log('✅ ConversationScreen: Set selectedUser for real-time:', user.fullname);
+        }
+      } else if (users.length === 0) {
+        // Users not loaded yet, load them first
+        chatStore.getUsers();
+      }
+    } else if (groupId && isGroup) {
+      // Find group in groups array and set as selected
+      const group = groups.find(g => {
+        const gId = typeof g._id === 'string' ? g._id : g._id?.toString();
+        return gId === groupId?.toString();
+      });
+      if (group) {
+        chatStore.setSelectedGroup(group);
+        if (__DEV__) {
+          console.log('✅ ConversationScreen: Set selectedGroup for real-time:', group.name);
+        }
+      } else if (groups.length === 0) {
+        // Groups not loaded yet, load them first
+        chatStore.getGroups();
+      }
+    }
+  }, [userId, groupId, isGroup, users, groups]);
+
   // Fetch messages and users/groups when screen loads
   useEffect(() => {
     // Reset loading state when params change
@@ -574,7 +609,18 @@ export default function ConversationScreen({ route, navigation }) {
         
         if ((senderId === userId || receiverId === userId) && 
             (senderId === currentUserId || receiverId === currentUserId)) {
+          // Add message using store's addMessage (which handles duplicates)
           chatStore.addMessage(message);
+          
+          if (__DEV__) {
+            console.log('✅ ConversationScreen: Added message to conversation:', {
+              messageId: message._id,
+              senderId,
+              receiverId,
+              userId,
+              currentUserId,
+            });
+          }
           
           // Mark as seen if it's from the other user
           if (senderId === userId && senderId !== currentUserId && !message.seen) {
@@ -592,6 +638,16 @@ export default function ConversationScreen({ route, navigation }) {
           setTimeout(() => {
             flatListRef.current?.scrollToEnd({ animated: true });
           }, 100);
+        } else {
+          if (__DEV__) {
+            console.log('⚠️ ConversationScreen: Message not for this conversation:', {
+              messageId: message._id,
+              senderId,
+              receiverId,
+              userId,
+              currentUserId,
+            });
+          }
         }
       }
     };
@@ -683,13 +739,16 @@ export default function ConversationScreen({ route, navigation }) {
       }
     };
 
+    // Note: newMessage is handled globally in App.js subscribeToMessages
+    // But we also need local handler for this conversation to add to messages array
+    // The global handler updates lastMessages, this one adds to messages if for this conversation
     socket.on('newMessage', handleNewMessage);
     socket.on('typing', handleTyping);
     socket.on('stopTyping', handleStopTyping);
-      socket.on('groupTyping', handleGroupTyping);
-      socket.on('groupStopTyping', handleGroupStopTyping);
-      socket.on('messageSeenUpdate', handleMessageSeenUpdate);
-      socket.on('groupMessageSeenUpdate', handleGroupMessageSeenUpdate);
+    socket.on('groupTyping', handleGroupTyping);
+    socket.on('groupStopTyping', handleGroupStopTyping);
+    socket.on('messageSeenUpdate', handleMessageSeenUpdate);
+    socket.on('groupMessageSeenUpdate', handleGroupMessageSeenUpdate);
 
     // Cleanup
     return () => {

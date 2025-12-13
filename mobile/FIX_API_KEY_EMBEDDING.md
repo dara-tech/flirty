@@ -29,7 +29,7 @@ You should now see:
 ```xml
 <meta-data
     android:name="com.google.android.geo.API_KEY"
-    android:value="AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"/>
+    android:value="YOUR_GOOGLE_MAPS_API_KEY_HERE"/>
 ```
 
 ### Step 3: If Still Not There, Manually Add It
@@ -44,7 +44,7 @@ If the plugin still doesn't add it, manually edit:
     <!-- Add this line -->
     <meta-data
         android:name="com.google.android.geo.API_KEY"
-        android:value="AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"/>
+        android:value="YOUR_GOOGLE_MAPS_API_KEY_HERE"/>
     
     <!-- Rest of your application config -->
 </application>

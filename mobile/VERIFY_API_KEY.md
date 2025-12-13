@@ -15,7 +15,7 @@ You should see:
 ```xml
 <meta-data
     android:name="com.google.android.geo.API_KEY"
-    android:value="AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"/>
+    android:value="YOUR_GOOGLE_MAPS_API_KEY_HERE"/>
 ```
 
 ## Step 2: Verify Google Cloud Console Settings

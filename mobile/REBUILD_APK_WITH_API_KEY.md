@@ -4,7 +4,7 @@
 
 The API key is correctly added to `android/app/src/main/AndroidManifest.xml`:
 ```xml
-<meta-data android:name="com.google.android.geo.API_KEY" android:value="AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"/>
+<meta-data android:name="com.google.android.geo.API_KEY" android:value="YOUR_GOOGLE_MAPS_API_KEY_HERE"/>
 ```
 
 ## ⚠️ Problem: Your Current APK Doesn't Have It

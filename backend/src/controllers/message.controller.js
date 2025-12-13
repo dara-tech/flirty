@@ -341,13 +341,19 @@ export const getUsersForSidebar = async (req, res) => {
       // Emit to both sender and receiver for real-time updates
       const receiverSocketId = getReceiverSocketId(receiverId);
       if (receiverSocketId) {
+        console.log(`📤 Emitting newMessage to receiver socket ${receiverSocketId} (userId: ${receiverId})`);
         io.to(receiverSocketId).emit("newMessage", newMessage);
+      } else {
+        console.warn(`⚠️ Receiver socket not found for userId: ${receiverId}`);
       }
       
       // Also emit to sender so they see their own message in real-time
       const senderSocketId = getReceiverSocketId(senderId.toString());
       if (senderSocketId) {
+        console.log(`📤 Emitting newMessage to sender socket ${senderSocketId} (userId: ${senderId})`);
         io.to(senderSocketId).emit("newMessage", newMessage);
+      } else {
+        console.warn(`⚠️ Sender socket not found for userId: ${senderId}`);
       }
   
       res.status(201).json(newMessage);

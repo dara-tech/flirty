@@ -1095,12 +1095,21 @@ export const useChatStore = create((set, get) => ({
     };
 
     const handleNewMessage = (message) => {
-      if (__DEV__) {
-        console.log('📨 New message received:', message);
-      }
+      // Always log in production too (for debugging real-time issues)
+      console.log('📨 New message received (global):', {
+        messageId: message._id,
+        senderId: message.senderId || message.sender?._id,
+        receiverId: message.receiverId || message.receiver?._id,
+        text: message.text?.substring(0, 50),
+        hasSocket: !!socket,
+        socketConnected: socket?.connected,
+      });
       
       const authUser = useAuthStore.getState().authUser;
-      if (!authUser || !authUser._id) return;
+      if (!authUser || !authUser._id) {
+        console.warn('⚠️ No authUser in handleNewMessage');
+        return;
+      }
       
       const authUserId = normalizeId(authUser._id);
       const senderId = normalizeId(message.senderId || message.sender?._id);
@@ -1111,16 +1120,78 @@ export const useChatStore = create((set, get) => ({
       // Determine the other user (not the current user)
       const otherUserId = senderId === authUserId ? receiverId : senderId;
       
-      // Add message to store
-      get().addMessage(message);
-      
-      // Update last message
-      set((state) => ({
-        lastMessages: {
+      // IMPORTANT: Always update lastMessages for chat list
+      // Also add to messages array if it matches current conversation
+      // ConversationScreen will also handle adding, but this ensures it works even if ConversationScreen handler fails
+      set((state) => {
+        // Update lastMessages always (for chat list)
+        const updatedLastMessages = {
           ...state.lastMessages,
           [otherUserId]: message,
-        },
-      }));
+        };
+        
+        // Check if this message should be added to messages array
+        // This happens if:
+        // 1. It's for the currently selected user/group, OR
+        // 2. It's a direct message and matches the conversation pattern
+        const currentSelectedUser = state.selectedUser;
+        const currentSelectedGroup = state.selectedGroup;
+        let shouldAddToMessages = false;
+        
+        // Check if it's a group message for selected group
+        if (currentSelectedGroup && message.groupId) {
+          const msgGroupId = normalizeId(message.groupId);
+          const selectedGroupId = normalizeId(currentSelectedGroup._id);
+          if (msgGroupId === selectedGroupId) {
+            shouldAddToMessages = true;
+          }
+        }
+        // Check if it's a direct message for selected user
+        else if (currentSelectedUser) {
+          const selectedUserId = normalizeId(currentSelectedUser._id);
+          if (selectedUserId === otherUserId) {
+            shouldAddToMessages = true;
+          }
+        }
+        // Also check if message matches any conversation in messages array
+        // This handles case where selectedUser might not be set but we're viewing a conversation
+        else if (state.messages.length > 0) {
+          // Check if any existing message in array is from/to this user
+          const hasConversationWithUser = state.messages.some(msg => {
+            const msgSenderId = normalizeId(msg.senderId || msg.sender?._id);
+            const msgReceiverId = normalizeId(msg.receiverId || msg.receiver?._id);
+            return (msgSenderId === otherUserId || msgReceiverId === otherUserId) &&
+                   (msgSenderId === authUserId || msgReceiverId === authUserId);
+          });
+          if (hasConversationWithUser) {
+            shouldAddToMessages = true;
+          }
+        }
+        
+        // Only add to messages array if it's for the current conversation
+        let updatedMessages = state.messages;
+        if (shouldAddToMessages) {
+          const messageExists = state.messages.some(
+            msg => normalizeId(msg._id) === normalizeId(message._id)
+          );
+          if (!messageExists) {
+            updatedMessages = [...state.messages, message];
+            if (__DEV__) {
+              console.log('✅ Added message to array (global handler):', message._id);
+            }
+          } else {
+            // Update existing message
+            updatedMessages = state.messages.map(msg => 
+              normalizeId(msg._id) === normalizeId(message._id) ? message : msg
+            );
+          }
+        }
+        
+        return {
+          messages: updatedMessages,
+          lastMessages: updatedLastMessages,
+        };
+      });
     };
 
     const handleMessageSeenUpdate = ({ messageId, seenAt }) => {
@@ -1240,6 +1311,20 @@ export const useChatStore = create((set, get) => ({
         handleMessageReactionRemoved(data);
       }
     });
+    
+    // Debug: Verify socket connection and listeners
+    console.log('🔌 Socket connection status:', {
+      connected: socket.connected,
+      id: socket.id,
+      disconnected: socket.disconnected,
+    });
+    
+    // Verify socket is actually connected
+    if (!socket.connected) {
+      console.warn('⚠️ Socket is not connected! Real-time messages will not work.');
+      console.warn('   Attempting to reconnect...');
+      socket.connect();
+    }
 
     // Return cleanup function
     return () => {

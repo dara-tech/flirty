@@ -58,7 +58,12 @@ const createAuthStore = (set, get) => {
         socket.on('connect', () => {
           console.log('✅ Socket connected successfully');
           console.log('   Socket ID:', socket.id);
+          console.log('   User ID:', user._id.toString());
           console.log('   Backend URL:', socketURL);
+          console.log('   Socket connected:', socket.connected);
+          
+          // Verify socket is properly mapped on backend
+          // The backend should log: "Socket {socket.id} mapped to user {userId}"
         });
 
         socket.on('connect_error', (error) => {
@@ -73,6 +78,8 @@ const createAuthStore = (set, get) => {
 
         // Listen for online users
         socket.on('getOnlineUsers', (userIds) => {
+          console.log('👥 Online users updated (login):', userIds?.length || 0, 'users');
+          console.log('   User IDs:', userIds);
           set({ onlineUsers: userIds || [] });
         });
 
@@ -195,6 +202,8 @@ const createAuthStore = (set, get) => {
                   });
                   
                   newSocket.on('getOnlineUsers', (userIds) => {
+                    console.log('👥 Online users updated (checkAuth):', userIds?.length || 0, 'users');
+                    console.log('   User IDs:', userIds);
                     set({ onlineUsers: userIds || [] });
                   });
                   
@@ -269,6 +278,8 @@ const createAuthStore = (set, get) => {
               });
               
               newSocket.on('getOnlineUsers', (userIds) => {
+                console.log('👥 Online users updated (reconnect):', userIds?.length || 0, 'users');
+                console.log('   User IDs:', userIds);
                 set({ onlineUsers: userIds || [] });
               });
               
@@ -292,6 +303,8 @@ const createAuthStore = (set, get) => {
                   });
                   
                   newSocket.on('getOnlineUsers', (userIds) => {
+                    console.log('👥 Online users updated (checkAuth reconnect):', userIds?.length || 0, 'users');
+                    console.log('   User IDs:', userIds);
                     set({ onlineUsers: userIds || [] });
                   });
                   
@@ -324,6 +337,8 @@ const createAuthStore = (set, get) => {
                 });
                 
                 newSocket.on('getOnlineUsers', (userIds) => {
+                  console.log('👥 Online users updated (checkAuth socket):', userIds?.length || 0, 'users');
+                  console.log('   User IDs:', userIds);
                   set({ onlineUsers: userIds || [] });
                 });
                 
@@ -431,6 +446,8 @@ const createAuthStore = (set, get) => {
 
         // Listen for online users
         socket.on('getOnlineUsers', (userIds) => {
+          console.log('👥 Online users updated (login):', userIds?.length || 0, 'users');
+          console.log('   User IDs:', userIds);
           set({ onlineUsers: userIds || [] });
         });
 

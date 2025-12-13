@@ -124,13 +124,13 @@ Your `app.json` already has:
 {
   "ios": {
     "config": {
-      "googleMapsApiKey": "AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"
+      "googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY_HERE"
     }
   },
   "android": {
     "config": {
       "googleMaps": {
-        "apiKey": "AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"
+        "apiKey": "YOUR_GOOGLE_MAPS_API_KEY_HERE"
       }
     }
   },
@@ -138,7 +138,7 @@ Your `app.json` already has:
     [
       "react-native-maps",
       {
-        "googleMapsApiKey": "AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"
+        "googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY_HERE"
       }
     ]
   ]

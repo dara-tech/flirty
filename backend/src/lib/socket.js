@@ -1235,7 +1235,10 @@ io.on("connection", (socket) => {
       });
       
       console.log(`User ${disconnectedUserId} removed from online list`);
-      io.emit("getOnlineUsers", Array.from(userSockets.keys()));
+      const onlineUserIds = Array.from(userSockets.keys());
+      console.log(`📢 Broadcasting online users after disconnect: ${onlineUserIds.length} users`);
+      console.log(`   User IDs:`, onlineUserIds);
+      io.emit("getOnlineUsers", onlineUserIds);
     }
   });
 });

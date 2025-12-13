@@ -20,6 +20,26 @@ dist-ssr
 .env.test
 .env.*.local
 
+# API Keys and Secrets
+# Note: app.json contains API keys - use app.json.example as template
+# If app.json is already tracked, you may need to:
+# 1. Remove it from git: git rm --cached mobile/app.json
+# 2. Add your actual API key locally (never commit it)
+# 3. Or use environment variables and a build script
+mobile/app.json
+*.key
+*.pem
+*.p12
+*.keystore
+*.jks
+
+# Build outputs that might contain secrets
+*.apk
+*.aab
+*.ipa
+android/app/build/
+ios/build/
+
 
 # Editor directories and files
 .vscode/*

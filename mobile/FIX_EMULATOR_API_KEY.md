@@ -28,7 +28,7 @@ cat android/app/src/main/AndroidManifest.xml | grep -A 1 "API_KEY"
 
 You should see:
 ```xml
-<meta-data android:name="com.google.android.geo.API_KEY" android:value="AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"/>
+<meta-data android:name="com.google.android.geo.API_KEY" android:value="YOUR_GOOGLE_MAPS_API_KEY_HERE"/>
 ```
 
 ### Step 4: Clean Build
