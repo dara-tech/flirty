@@ -2,6 +2,7 @@ import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axois";
 import { useAuthStore } from "./useAuthStore";
+import { getAuthToken } from "../lib/safariUtils";
 
 export const useChatStore = create((set, get) => ({
   messages: [],
@@ -73,17 +74,18 @@ export const useChatStore = create((set, get) => ({
         set({ users: [], lastMessages: {} });
         return;
       }
-      const authUserId = typeof authUser._id === 'string' ? authUser._id : authUser._id.toString();
+      
+      // Define normalizeId function at the top level so it's accessible throughout this function
+      const normalizeId = (id) => {
+        if (!id) return null;
+        if (typeof id === 'string') return id;
+        if (typeof id === 'object' && id._id) return id._id.toString();
+        return id.toString();
+      };
+      
+      const authUserIdNormalized = normalizeId(authUser._id);
       
       if (lastMessagesData && Array.isArray(lastMessagesData)) {
-        const normalizeId = (id) => {
-          if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
-          return id.toString();
-        };
-        
-        const authUserIdNormalized = normalizeId(authUser._id);
         
         lastMessagesRes.data.forEach(msg => {
           // Get sender and receiver IDs, handling both object and string formats
@@ -293,6 +295,11 @@ export const useChatStore = create((set, get) => ({
       return;
     }
 
+    if (!selectedUser || !selectedUser._id) {
+      toast.error("No chat selected");
+      return Promise.reject(new Error("No chat selected"));
+    }
+
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const baseURL = axiosInstance.defaults.baseURL || import.meta.env.VITE_BACKEND_URL || '';
@@ -344,6 +351,12 @@ export const useChatStore = create((set, get) => ({
       xhr.open('POST', url);
       xhr.withCredentials = true; // Use cookies for authentication (same as axios)
       xhr.setRequestHeader('Content-Type', 'application/json');
+      
+      // Add Bearer token as fallback (for Safari compatibility, same as axios interceptor)
+      const token = getAuthToken();
+      if (token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      }
       
       xhr.send(JSON.stringify(messageData));
     }).catch((error) => {

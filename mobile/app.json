@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "Chatu",
+    "slug": "chatu",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "scheme": "mobile",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.mobile",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "This app needs access to your location to share it with your contacts.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs access to your location to share it with your contacts.",
+        "NSMicrophoneUsageDescription": "This app needs access to your microphone to record voice messages."
+      },
+      "config": {
+        "googleMapsApiKey": "AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.anonymous.mobile",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "RECORD_AUDIO",
+        "CAMERA"
+      ]
+    },
+    "plugins": [
+      [
+        "react-native-maps",
+        {
+          "googleMapsApiKey": "AIzaSyDE9soRb5x5YPWrQqD8nm2K_VNXJVvTvx0"
+        }
+      ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

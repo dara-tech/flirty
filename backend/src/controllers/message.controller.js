@@ -37,7 +37,61 @@ export const getLastMessages = async (req, res) => {
         }
       },
       // Replace root with lastMessage
-      { $replaceRoot: { newRoot: "$lastMessage" } }
+      { $replaceRoot: { newRoot: "$lastMessage" } },
+      // Populate senderId and receiverId
+      {
+        $lookup: {
+          from: "users",
+          localField: "senderId",
+          foreignField: "_id",
+          as: "senderId"
+        }
+      },
+      {
+        $unwind: {
+          path: "$senderId",
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "receiverId",
+          foreignField: "_id",
+          as: "receiverId"
+        }
+      },
+      {
+        $unwind: {
+          path: "$receiverId",
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      // Project only necessary user fields
+      {
+        $project: {
+          senderId: {
+            _id: "$senderId._id",
+            fullname: "$senderId.fullname",
+            email: "$senderId.email",
+            profilePic: "$senderId.profilePic"
+          },
+          receiverId: {
+            _id: "$receiverId._id",
+            fullname: "$receiverId.fullname",
+            email: "$receiverId.email",
+            profilePic: "$receiverId.profilePic"
+          },
+          text: 1,
+          image: 1,
+          audio: 1,
+          file: 1,
+          createdAt: 1,
+          updatedAt: 1,
+          seen: 1,
+          _id: 1
+        }
+      }
     ]);
 
     res.status(200).json(lastMessages);
