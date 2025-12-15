@@ -30,6 +30,9 @@ const VideoCallWindow = () => {
   const [localCameraState, setLocalCameraState] = useState('loading');
   const [remoteCameraState, setRemoteCameraState] = useState('loading');
   
+  // Ref to track loading start time
+  const loadingStartTimeRef = useRef(null);
+  
   // Local Camera State Machine - Always reflect TRACK STATE
   useEffect(() => {
     const videoElement = localVideoRef.current;
@@ -49,36 +52,94 @@ const VideoCallWindow = () => {
     
     // State Machine: Determine state from track
     const updateLocalCameraState = () => {
+      // If no stream at all and we're in a video call, show loading initially
+      if (!localStream && !isScreenSharing && !screenShareStream) {
+        // Only show loading if we haven't timed out yet
+        if (!loadingStartTimeRef.current || Date.now() - loadingStartTimeRef.current < 3000) {
+          setLocalCameraState('loading');
+          if (!loadingStartTimeRef.current) {
+            loadingStartTimeRef.current = Date.now();
+          }
+          return;
+        } else {
+          // Timed out waiting for stream
+          setLocalCameraState('off');
+          loadingStartTimeRef.current = null;
+          return;
+        }
+      }
+      
       if (!track) {
         setLocalCameraState('off');
+        loadingStartTimeRef.current = null;
         return;
       }
       
       if (track.readyState === 'ended') {
         setLocalCameraState('ended');
+        loadingStartTimeRef.current = null;
         return;
       }
       
       if (!track.enabled) {
         setLocalCameraState('off');
+        loadingStartTimeRef.current = null;
         return;
       }
       
       if (track.readyState === 'live' && track.enabled && !track.muted) {
         setLocalCameraState('on');
+        loadingStartTimeRef.current = null;
         return;
       }
       
-      setLocalCameraState('loading');
+      // Track exists but not ready - check if it's actually starting or stuck
+      if (track.readyState !== 'live' && track.readyState !== 'ended') {
+        // Track is starting up - give it time
+        setLocalCameraState('loading');
+        if (!loadingStartTimeRef.current) {
+          loadingStartTimeRef.current = Date.now();
+        }
+      } else if (track.readyState === 'live' && (!track.enabled || track.muted)) {
+        // Track is live but disabled/muted - show as off
+        setLocalCameraState('off');
+        loadingStartTimeRef.current = null;
+      } else {
+        // Unknown state - set to loading
+        setLocalCameraState('loading');
+        if (!loadingStartTimeRef.current) {
+          loadingStartTimeRef.current = Date.now();
+        }
+      }
     };
     
     // Initial state check
     updateLocalCameraState();
     
+    // Safety timeout: If stuck in loading for more than 5 seconds, assume error
+    const loadingTimeout = setInterval(() => {
+      if (loadingStartTimeRef.current && Date.now() - loadingStartTimeRef.current > 5000) {
+        // Check current state
+        const currentTrack = isScreenSharing && screenShareStream 
+          ? screenShareStream.getVideoTracks()[0]
+          : localStream?.getVideoTracks()[0];
+        
+        if (currentTrack && currentTrack.readyState !== 'live') {
+          setLocalCameraState('off');
+          loadingStartTimeRef.current = null;
+        } else if (currentTrack && currentTrack.readyState === 'live') {
+          // Track became ready, reset timer
+          loadingStartTimeRef.current = null;
+          updateLocalCameraState();
+        }
+      }
+    }, 500);
+    
     // Listen to track state changes
     if (track) {
       track.onended = () => {
         setLocalCameraState('ended');
+        loadingStartTimeRef.current = null;
       };
       
       // Monitor enabled state (no event, so we check periodically)
@@ -91,11 +152,18 @@ const VideoCallWindow = () => {
       
       return () => {
         clearInterval(enabledCheckInterval);
+        clearInterval(loadingTimeout);
+      };
+    } else {
+      // No track - clear intervals and reset loading time
+      loadingStartTimeRef.current = null;
+      return () => {
+        clearInterval(loadingTimeout);
       };
     }
   }, [localStream, isScreenSharing, screenShareStream, isVideoEnabled]);
   
-  // Local Video Element Management - Show video only when state is 'on'
+  // Local Video Element Management - Always keep stream connected, just show/hide video
   useEffect(() => {
     const videoElement = localVideoRef.current;
     if (!videoElement) return;
@@ -106,64 +174,53 @@ const VideoCallWindow = () => {
     const attachAndPlay = async () => {
       if (!isMounted || !videoElement) return;
       
-      // State Machine Rule: Only show video when state is 'on'
-      if (localCameraState !== 'on') {
-        if (videoElement.srcObject) {
-          videoElement.srcObject = null;
-        }
-        return;
-      }
-      
       try {
-        // Determine which stream to use
+        // Determine which stream to use - always use stream if it exists
         let streamToUse = null;
         if (isScreenSharing && screenShareStream) {
           streamToUse = screenShareStream;
         } else if (localStream) {
-          const videoTracks = localStream.getVideoTracks();
-          const hasActiveTracks = videoTracks.some(track => 
-            track.enabled && track.readyState === 'live' && !track.muted
-          );
-          if (hasActiveTracks) {
-            streamToUse = localStream;
-          }
+          // Always attach localStream if it exists, even if camera is off
+          // The stream stays connected, we just hide/show the video element
+          streamToUse = localStream;
         }
         
-        if (!streamToUse) {
+        // Always attach stream if it exists - keep it connected
+        if (streamToUse) {
+          if (videoElement.srcObject !== streamToUse) {
+            if (playPromise) {
+              playPromise.catch(() => {});
+            }
+            videoElement.srcObject = streamToUse;
+            videoElement.muted = true; // Always mute local video to avoid echo
+          }
+          
+          // Always try to play if paused - stream should always be playing
+          if (videoElement.paused) {
+            try {
+              playPromise = videoElement.play();
+              await playPromise;
+              playPromise = null;
+            } catch (err) {
+              if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+                // If play fails, try again after a short delay
+                setTimeout(() => {
+                  if (isMounted && videoElement && videoElement.srcObject) {
+                    videoElement.play().catch(() => {});
+                  }
+                }, 500);
+              }
+              playPromise = null;
+            }
+          }
+        } else {
+          // Only clear if stream doesn't exist at all
           if (videoElement.srcObject) {
             videoElement.srcObject = null;
-          }
-          return;
-        }
-        
-        // Update video source if stream changed
-        if (videoElement.srcObject !== streamToUse) {
-          if (playPromise) {
-            playPromise.catch(() => {});
-          }
-          videoElement.srcObject = streamToUse;
-          console.log('📹 Local video stream attached');
-        }
-        
-        // Ensure video plays
-        if (videoElement.paused) {
-          try {
-            playPromise = videoElement.play();
-            await playPromise;
-            playPromise = null;
-            console.log('✅ Local video playing');
-          } catch (err) {
-            if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-              console.warn('⚠️ Error playing local video:', err.name);
-            }
-            playPromise = null;
           }
         }
       } catch (error) {
         console.error('Error attaching local video:', error);
-        if (videoElement.srcObject) {
-          videoElement.srcObject = null;
-        }
       }
     };
     
@@ -175,7 +232,7 @@ const VideoCallWindow = () => {
         playPromise.catch(() => {});
       }
     };
-  }, [localCameraState, localStream, isScreenSharing, screenShareStream]);
+  }, [localStream, isScreenSharing, screenShareStream]);
   
   // Remote Camera State Machine - Always reflect TRACK STATE
   useEffect(() => {
@@ -287,7 +344,6 @@ const VideoCallWindow = () => {
             playPromise.catch(() => {});
           }
           videoElement.srcObject = remoteStream;
-          console.log('📹 Remote video stream attached');
         }
         
         // Ensure video plays - hide loading only after video plays
@@ -296,11 +352,9 @@ const VideoCallWindow = () => {
             playPromise = videoElement.play();
             await playPromise;
             playPromise = null;
-            console.log('✅ Remote video playing');
           } catch (err) {
             if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
               if (isMounted) {
-                console.warn('⚠️ Error playing remote video:', err.name);
               }
             }
             playPromise = null;
@@ -332,14 +386,12 @@ const VideoCallWindow = () => {
     
     const addTrackHandler = (event) => {
       if (event.track.kind === 'video') {
-        console.log('📹 Video track added to remote stream');
         handleTrackChange();
       }
     };
     
     const removeTrackHandler = (event) => {
       if (event.track.kind === 'video') {
-        console.log('📹 Video track removed from remote stream');
         handleTrackChange();
       }
     };
@@ -370,7 +422,6 @@ const VideoCallWindow = () => {
     
     if (!remoteStream) {
       // No remote stream - clear video element immediately
-      console.log('📹 No remote stream - clearing video element');
       if (videoElement.srcObject) {
         videoElement.pause();
         videoElement.srcObject = null;
@@ -398,14 +449,12 @@ const VideoCallWindow = () => {
           }
         });
       } catch (error) {
-        console.warn('Error clearing video element:', error);
       }
     };
     
     // Check if there are any video tracks at all
     if (videoTracks.length === 0) {
       // No video tracks - clear video element immediately to prevent frozen frame
-      console.log('📹 No video tracks in remote stream - clearing video element immediately');
       if (videoElement.srcObject) {
         clearVideoElement();
       }
@@ -428,7 +477,6 @@ const VideoCallWindow = () => {
     // If no active tracks or all tracks disabled, clear video element immediately
     if (!hasActiveTracks || allTracksDisabled) {
       if (videoElement.srcObject) {
-        console.log('📹 Clearing video element - no active tracks or all disabled');
         clearVideoElement();
       }
       return;
@@ -436,24 +484,20 @@ const VideoCallWindow = () => {
     
     // If video element exists but srcObject is null and we have active tracks, reattach
     if (hasActiveTracks && !videoElement.srcObject) {
-      console.log('📹 Reattaching video element - tracks restored');
       videoElement.srcObject = remoteStream;
       videoElement.play().catch(err => {
         if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-          console.warn('Error playing video after reattach:', err.name);
         }
       });
     } else if (hasActiveTracks) {
       // Stream changed or tracks were re-enabled - always update srcObject to ensure latest tracks
       if (videoElement.srcObject !== remoteStream) {
-        console.log('📹 Updating video element srcObject - stream changed or tracks re-enabled');
         videoElement.srcObject = remoteStream;
       }
       // Ensure video is playing
       if (videoElement.paused) {
         videoElement.play().catch(err => {
           if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-            console.warn('Error playing video after update:', err.name);
           }
         });
       }
@@ -465,23 +509,64 @@ const VideoCallWindow = () => {
     const videoElement = remoteVideoRef.current;
     if (!videoElement || !remoteStream) return;
     
-    videoElement.volume = 1.0;
-    videoElement.setAttribute('playsinline', 'true');
-    
-    // Try to play if paused (with error handling)
-    if (videoElement.paused) {
-      videoElement.play().catch(err => {
-        // Ignore AbortError (happens when video is removed/changed)
-        if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-          console.warn('Error playing video:', err.name);
+    const updateAudioOutput = async () => {
+      try {
+        videoElement.volume = 1.0;
+        videoElement.setAttribute('playsinline', 'true');
+        
+        // Set audio output device if setSinkId is supported
+        if ('setSinkId' in HTMLVideoElement.prototype) {
+          try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
+            
+            if (audioOutputs.length > 0) {
+              const targetDeviceId = isSpeakerEnabled
+                ? audioOutputs.find(d => d.label.toLowerCase().includes('speaker') || d.label.toLowerCase().includes('headphone'))?.deviceId || audioOutputs[0]?.deviceId || ''
+                : 'default';
+              
+              try {
+                await videoElement.setSinkId(targetDeviceId);
+              } catch (err) {
+              }
+            }
+          } catch (err) {
+          }
         }
-      });
-    }
+        
+        // Try to play if paused (with error handling)
+        if (videoElement.paused) {
+          videoElement.play().catch(err => {
+            // Ignore AbortError (happens when video is removed/changed)
+            if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error updating audio output:', error);
+      }
+    };
+    
+    updateAudioOutput();
   }, [isSpeakerEnabled, remoteStream]);
   
   if (callState !== 'in-call') return null;
   
   const displayUser = receiver || caller;
+  
+  // Local video presence (for self preview)
+  const localVideoTracks = localStream?.getVideoTracks() || [];
+  const screenShareVideoTracks = screenShareStream?.getVideoTracks() || [];
+  const hasLocalCameraVideo =
+    !isScreenSharing &&
+    isVideoEnabled &&
+    localVideoTracks.some(
+      (track) => track.readyState === 'live' && track.enabled && !track.muted
+    );
+  const hasScreenShareVideo =
+    isScreenSharing &&
+    screenShareVideoTracks.some((track) => track.readyState === 'live');
+  const hasLocalVideo = hasLocalCameraVideo || hasScreenShareVideo;
   
   return (
     <div className="fixed inset-0 bg-black z-50 flex flex-col overflow-hidden">
@@ -577,15 +662,17 @@ const VideoCallWindow = () => {
           </div>
         )}
         
-        {/* Local Video (Picture-in-Picture) - State Machine UI */}
-        {/* Show video ONLY when state is 'on' */}
-        {localCameraState === 'on' && (
+        {/* Local Video (Picture-in-Picture) - Always render video element, show/hide based on state */}
+        {/* Stream is always connected, we just show/hide the video element */}
+        {(localStream || screenShareStream) && (
           <div
             className={`absolute ${
               isLocalVideoSmall
                 ? 'bottom-24 right-4 w-32 h-48'
                 : 'inset-0'
-            } bg-black rounded-lg overflow-hidden transition-all duration-300 cursor-pointer border-2 border-primary`}
+            } bg-black rounded-lg overflow-hidden transition-all duration-300 cursor-pointer border-2 border-primary ${
+              hasLocalVideo ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            }`}
             onClick={() => setIsLocalVideoSmall(!isLocalVideoSmall)}
           >
             <video
@@ -594,6 +681,8 @@ const VideoCallWindow = () => {
               muted
               playsInline
               className="w-full h-full object-contain"
+              onLoadedMetadata={() => {
+              }}
               onError={(e) => {
                 console.error('Local video error:', e);
                 setLocalCameraState('error');
@@ -604,11 +693,25 @@ const VideoCallWindow = () => {
                 Sharing Screen
               </div>
             )}
+            {!hasLocalVideo && localStream && !isScreenSharing && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                <div className="text-center">
+                  <div className="w-16 h-16 rounded-full overflow-hidden mx-auto mb-2">
+                    <ProfileImage
+                      src={caller?.profilePic}
+                      alt="You"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <p className="text-xs text-white/80">Camera off</p>
+                </div>
+              </div>
+            )}
           </div>
         )}
         
-        {/* Local Camera Off State - Show avatar, never black screen */}
-        {localCameraState === 'off' && !isScreenSharing && (
+        {/* Local Camera Off State - small card when no stream at all */}
+        {!localStream && !screenShareStream && !isScreenSharing && (
           <div className="absolute bottom-24 right-4 w-32 h-48 bg-base-200 rounded-lg flex items-center justify-center border-2 border-base-300">
             <div className="text-center">
               <div className="w-16 h-16 rounded-full overflow-hidden mx-auto mb-2">

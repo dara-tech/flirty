@@ -34,13 +34,7 @@ export const generateToken = (userId, res) => {
     
     // Log in production for debugging (can be removed later)
     if (!isDevelopment) {
-        console.log('🍪 Cookie set:', {
-            httpOnly: cookieOptions.httpOnly,
-            secure: cookieOptions.secure,
-            sameSite: cookieOptions.sameSite,
-            path: cookieOptions.path,
-            maxAge: cookieOptions.maxAge,
-        });
+
     }
     
     return token;

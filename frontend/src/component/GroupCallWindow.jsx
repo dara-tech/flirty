@@ -84,10 +84,8 @@ const GroupCallWindow = () => {
         videoElement.autoplay = true;
         videoElement.play().catch(err => {
           if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-            console.warn('Error playing local video:', err.name);
           }
         });
-        console.log('✅ Local video preview attached');
       } else {
         videoElement.srcObject = null;
       }
@@ -113,10 +111,8 @@ const GroupCallWindow = () => {
         screenShareElement.autoplay = true;
         screenShareElement.play().catch(err => {
           if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-            console.warn('Error playing local screen share:', err.name);
           }
         });
-        console.log('✅ Local screen share preview attached');
       } else {
         screenShareElement.srcObject = null;
       }
@@ -134,7 +130,6 @@ const GroupCallWindow = () => {
           const stream = await getLocalStream(callType);
           const store = useCallStore.getState();
           store.setLocalStream(stream);
-          console.log('✅ Local stream initialized for group call');
           
           // Step B: Update local participant's stream reference
           const authUserId = typeof authUser._id === 'object' ? authUser._id._id || authUser._id : authUser._id;
@@ -163,7 +158,6 @@ const GroupCallWindow = () => {
     const setupPeerConnectionForParticipant = async (targetUserId, streamToUse = null) => {
       const stream = streamToUse || localStream;
       if (!stream) {
-        console.warn('Cannot setup peer connection: local stream not ready');
         return;
       }
       
@@ -171,7 +165,6 @@ const GroupCallWindow = () => {
       const currentParticipants = useCallStore.getState().participants;
       const participant = currentParticipants.get(targetUserId);
       if (participant?.peerConnection) {
-        console.log('Peer connection already exists for:', targetUserId);
         return;
       }
       
@@ -189,13 +182,7 @@ const GroupCallWindow = () => {
           const stream = event.streams?.[0];
           
           if (!track || !stream) return;
-          
-          console.log('📹 Remote track received from:', targetUserId, {
-            kind: track.kind,
-            label: track.label,
-            id: track.id,
-          });
-          
+
           // Detect screen share tracks by label
           const isScreenShareTrack = track.kind === 'video' && (
             track.label.toLowerCase().includes('screen') ||
@@ -208,11 +195,9 @@ const GroupCallWindow = () => {
             // This is a screen share track - create separate stream
             const screenShareStream = new MediaStream([track]);
             updateParticipantScreenShare(targetUserId, screenShareStream);
-            console.log('📹 Screen share stream received from:', targetUserId);
             
             // Handle track ended
             track.onended = () => {
-              console.log('📹 Screen share track ended from:', targetUserId);
               updateParticipantScreenShare(targetUserId, null);
               updateParticipantTracks(targetUserId, { screenSharing: false });
             };
@@ -232,7 +217,6 @@ const GroupCallWindow = () => {
               const cameraStream = new MediaStream([track]);
               updateParticipantStream(targetUserId, cameraStream);
             }
-            console.log('📹 Camera stream received from:', targetUserId);
           } else if (track.kind === 'audio') {
             // Audio track - add to existing stream or create new
             const participant = useCallStore.getState().participants.get(targetUserId);
@@ -269,7 +253,6 @@ const GroupCallWindow = () => {
             offer,
             targetUserId,
           });
-          console.log('📤 Sent offer to participant:', targetUserId);
         }
       } catch (error) {
         console.error('Error creating peer connection for participant:', error);
@@ -284,11 +267,9 @@ const GroupCallWindow = () => {
       
       // Don't add local participant (already added)
       if (participantIdStr === authUserIdStr) {
-        console.log('⚠️ Ignoring local participant join event');
         return;
       }
       
-      console.log('📹 Remote participant joined:', participant.userId);
       addParticipant(participantIdStr, {
         userInfo: participant.userInfo,
         tracks: participant.tracks,
@@ -317,7 +298,6 @@ const GroupCallWindow = () => {
     
     // Participant left
     const handleParticipantLeft = ({ userId }) => {
-      console.log('📹 Participant left:', userId);
       removeParticipant(userId);
       
       // Clean up video refs
@@ -338,8 +318,6 @@ const GroupCallWindow = () => {
     // Tracks updated (WebSocket signaling event - UI state update only)
     // WebRTC tracks are updated via track.enabled, this is just for UI synchronization
     const handleTracksUpdated = ({ userId, tracks }) => {
-      console.log('📹 Tracks updated (WebSocket signal) for:', userId, tracks);
-      
       // Update participant track state in store (for UI rendering)
       updateParticipantTracks(userId, tracks);
       
@@ -362,7 +340,6 @@ const GroupCallWindow = () => {
               videoRef.current.srcObject = participant.stream;
               videoRef.current.play().catch(err => {
                 if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-                  console.warn('Error playing participant video:', err.name);
                 }
               });
             }
@@ -399,7 +376,6 @@ const GroupCallWindow = () => {
         
         // Setup remote stream handler
         setupRemoteStreamHandler(pc, (remoteStream) => {
-          console.log('📹 Remote stream received from:', senderId);
           updateParticipantStream(senderId, remoteStream);
         });
         
@@ -426,7 +402,6 @@ const GroupCallWindow = () => {
             answer,
             targetUserId: senderId,
           });
-          console.log('📤 Sent answer to participant:', senderId);
         }
       } catch (error) {
         console.error('Error handling group call offer:', error);
@@ -457,13 +432,11 @@ const GroupCallWindow = () => {
       try {
         await addIceCandidate(participant.peerConnection, candidate);
       } catch (error) {
-        console.warn('ICE candidate error:', error.message);
       }
     };
     
     // Joined event - received list of existing participants (Step C: room state)
     const handleJoined = ({ participants: existingParticipants, roomState }) => {
-      console.log('📹 Joined group call, existing participants:', existingParticipants.length, 'Room state:', roomState);
       
       const authUserId = typeof authUser._id === 'object' ? authUser._id._id || authUser._id : authUser._id;
       const authUserIdStr = String(authUserId);
@@ -501,7 +474,6 @@ const GroupCallWindow = () => {
     
     // Screen share started (remote participant)
     const handleScreenShareStarted = ({ userId, trackId }) => {
-      console.log('📹 Remote screen share started by:', userId);
       const participant = participants.get(userId);
       if (participant) {
         // Mark participant as screen sharing
@@ -511,7 +483,6 @@ const GroupCallWindow = () => {
     
     // Screen share stopped (remote participant)
     const handleScreenShareStopped = ({ userId }) => {
-      console.log('📹 Remote screen share stopped by:', userId);
       const participant = participants.get(userId);
       if (participant) {
         // Mark participant as not screen sharing
@@ -578,7 +549,6 @@ const GroupCallWindow = () => {
             videoElement.srcObject = participant.stream;
             videoElement.play().catch(err => {
               if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-                console.warn('Error playing participant video:', err.name);
               }
             });
           } else {
@@ -607,7 +577,6 @@ const GroupCallWindow = () => {
           screenShareElement.srcObject = participant.screenShareStream;
           screenShareElement.play().catch(err => {
             if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-              console.warn('Error playing participant screen share:', err.name);
             }
           });
         } else {

@@ -51,6 +51,16 @@ export const useChatStore = create((set, get) => ({
     if (state.users.length === 0) {
       set({ isUsersLoading: true });
     }
+    
+    // Create a safety timeout that ALWAYS clears loading state after 12 seconds
+    // This prevents stuck loading in production builds where errors might not be caught
+    const safetyTimeout = setTimeout(() => {
+      const currentState = get();
+      if (currentState.isUsersLoading) {
+        set({ isUsersLoading: false });
+      }
+    }, 12000);
+    
     try {
       const [usersRes, lastMessagesRes] = await Promise.all([
         axiosInstance.get("/messages/users"),
@@ -59,7 +69,6 @@ export const useChatStore = create((set, get) => ({
 
       // Handle 401 errors gracefully
       if (usersRes.status === 401 || lastMessagesRes.status === 401) {
-        console.warn("Authentication failed, clearing auth state");
         useAuthStore.getState().logout();
         set({ users: [], lastMessages: {}, isUsersLoading: false });
         return;
@@ -71,7 +80,7 @@ export const useChatStore = create((set, get) => ({
 
       const lastMessagesMap = {};
       if (!authUser || !authUser._id) {
-        set({ users: [], lastMessages: {} });
+        set({ users: [], lastMessages: {}, isUsersLoading: false });
         return;
       }
       
@@ -165,9 +174,13 @@ export const useChatStore = create((set, get) => ({
       }
       // Clear users on error (except 401)
       if (error.response?.status !== 401) {
-        set({ users: [], lastMessages: {} });
+        set({ users: [], lastMessages: {}, isUsersLoading: false });
+      } else {
+        // Even for 401, clear loading state
+        set({ isUsersLoading: false });
       }
     } finally {
+      clearTimeout(safetyTimeout);
       set({ isUsersLoading: false });
     }
   },
@@ -177,7 +190,6 @@ export const useChatStore = create((set, get) => ({
     set({ isMessagesLoading: true, hasMoreMessages: false });
     try {
       const res = await axiosInstance.get(`/messages/${userId}`);
-      
       // Handle new pagination format: { messages: [], hasMore: boolean }
       // Or fallback to old format: array directly
       const messagesData = res.data.messages || res.data;
@@ -255,7 +267,6 @@ export const useChatStore = create((set, get) => ({
     
     try {
       const res = await axiosInstance.get(`/messages/${userId}?before=${beforeMessageId}`);
-      
       // Handle new pagination format
       const messagesData = res.data.messages || res.data;
       const hasMore = res.data.hasMore || false;
@@ -735,11 +746,8 @@ export const useChatStore = create((set, get) => ({
   subscribeToMessages: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) {
-      console.log("⚠️ subscribeToMessages: No socket available");
       return;
     }
-
-    console.log("✅ Setting up socket listeners for messages");
 
     // Remove existing listeners first to prevent duplicates
     socket.off("newMessage");
@@ -902,11 +910,9 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("messageEdited", (editedMessage) => {
-      console.log("📝 Received messageEdited event:", editedMessage);
       set((state) => {
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id || !editedMessage) {
-          console.log("⚠️ messageEdited: Missing authUser or editedMessage");
           return state;
         }
         
@@ -920,11 +926,9 @@ export const useChatStore = create((set, get) => ({
         
         const editedMessageId = normalizeId(editedMessage._id);
         if (!editedMessageId) {
-          console.log("⚠️ messageEdited: No editedMessageId found");
           return state;
         }
         
-        console.log(`✅ Processing messageEdited for message ${editedMessageId}`);
         
         // Determine user IDs for chat matching
         const authUserId = normalizeId(authUser._id);
@@ -1001,9 +1005,7 @@ export const useChatStore = create((set, get) => ({
 
         const hasChanges = messageUpdated || shouldUpdateLastMessages;
         if (hasChanges) {
-          console.log(`✅ messageEdited: Updated message ${editedMessageId} in state`);
         } else {
-          console.log(`⚠️ messageEdited: No changes made for message ${editedMessageId}`);
         }
 
         return {
@@ -1014,11 +1016,9 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("conversationDeleted", ({ userId, deleteType = "forEveryone" }) => {
-      console.log("🗑️ Received conversationDeleted event:", { userId, deleteType });
       set((state) => {
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id) {
-          console.log("⚠️ conversationDeleted: Missing authUser");
           return state;
         }
         
@@ -1032,7 +1032,6 @@ export const useChatStore = create((set, get) => ({
         const userIdNormalized = normalizeId(userId);
         const authUserIdNormalized = normalizeId(authUser._id);
         
-        console.log(`🗑️ Processing conversationDeleted for userId: ${userIdNormalized}, authUserId: ${authUserIdNormalized}, deleteType: ${deleteType}`);
         
         // For "forEveryone", both users should remove the conversation
         // For "forMe", only the user who deleted should remove it
@@ -1048,7 +1047,6 @@ export const useChatStore = create((set, get) => ({
         });
         keysToDelete.forEach(key => {
           delete updatedLastMessages[key];
-          console.log(`🗑️ Removed lastMessage for key: ${key}`);
         });
         
         // Remove from unreadMessages - check all keys and remove matching ones
@@ -1062,14 +1060,12 @@ export const useChatStore = create((set, get) => ({
         });
         unreadKeysToDelete.forEach(key => {
           delete updatedUnreadMessages[key];
-          console.log(`🗑️ Removed unreadMessages for key: ${key}`);
         });
         
         // Clear messages if this conversation was selected
         const currentSelectedUserId = state.selectedUser?._id ? normalizeId(state.selectedUser._id) : null;
         const shouldClearMessages = currentSelectedUserId === userIdNormalized;
         
-        console.log(`🗑️ Conversation deleted - lastMessages keys removed: ${keysToDelete.length}, unreadMessages keys removed: ${unreadKeysToDelete.length}, clearMessages: ${shouldClearMessages}`);
         
         return {
           lastMessages: updatedLastMessages,
@@ -1081,11 +1077,9 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("messageDeleted", ({ messageId, deleteType = "forEveryone", newLastMessage, conversationDeleted }) => {
-      console.log("🗑️ Received messageDeleted event:", { messageId, deleteType, hasNewLastMessage: !!newLastMessage, conversationDeleted });
       set((state) => {
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id) {
-          console.log("⚠️ messageDeleted: Missing authUser");
           return state;
         }
         
@@ -1298,7 +1292,6 @@ export const useChatStore = create((set, get) => ({
 
     // Reaction socket listeners - handle both direct and group messages
     socket.on("messageReactionAdded", (data) => {
-      console.log("🔔 messageReactionAdded received:", data);
       
       // Handle both formats: direct message (just message object) or group message (wrapped object)
       const messageWithReaction = data.message || data;
@@ -1308,7 +1301,6 @@ export const useChatStore = create((set, get) => ({
       set((state) => {
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id) {
-          console.log("⚠️ No authUser in messageReactionAdded");
           return state;
         }
         
@@ -1325,7 +1317,6 @@ export const useChatStore = create((set, get) => ({
         if (groupId) {
           const groupIdStr = normalizeId(groupId);
           const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
-          console.log(`📦 Group reaction: viewing=${isViewingThisGroup}, groupId=${groupIdStr}`);
           // Only update if viewing this group
           if (!isViewingThisGroup) return state;
         } else {
@@ -1336,13 +1327,11 @@ export const useChatStore = create((set, get) => ({
           const otherUserId = isMyMessage ? receiverId : senderId;
           const isViewingThisChat = state.selectedUser && normalizeId(state.selectedUser._id) === otherUserId;
           
-          console.log(`💬 Direct reaction: viewing=${isViewingThisChat}, senderId=${senderId}, receiverId=${receiverId}, otherUserId=${otherUserId}`);
           
           // Only update if viewing this conversation
           if (!isViewingThisChat) return state;
         }
         
-        console.log("✅ Updating message reactions:", messageWithReaction._id);
         const updatedMessages = state.messages.map((msg) =>
           normalizeId(msg._id) === normalizeId(messageWithReaction._id) 
             ? { ...msg, reactions: messageWithReaction.reactions || [] } 
@@ -1353,7 +1342,6 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("messageReactionRemoved", (data) => {
-      console.log("🔔 messageReactionRemoved received:", data);
       
       // Handle both formats: direct message (just message object) or group message (wrapped object)
       const messageWithReaction = data.message || data;
@@ -1363,7 +1351,6 @@ export const useChatStore = create((set, get) => ({
       set((state) => {
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id) {
-          console.log("⚠️ No authUser in messageReactionRemoved");
           return state;
         }
         
@@ -1380,7 +1367,6 @@ export const useChatStore = create((set, get) => ({
         if (groupId) {
           const groupIdStr = normalizeId(groupId);
           const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
-          console.log(`📦 Group reaction removed: viewing=${isViewingThisGroup}, groupId=${groupIdStr}`);
           // Only update if viewing this group
           if (!isViewingThisGroup) return state;
         } else {
@@ -1391,13 +1377,11 @@ export const useChatStore = create((set, get) => ({
           const otherUserId = isMyMessage ? receiverId : senderId;
           const isViewingThisChat = state.selectedUser && normalizeId(state.selectedUser._id) === otherUserId;
           
-          console.log(`💬 Direct reaction removed: viewing=${isViewingThisChat}, senderId=${senderId}, receiverId=${receiverId}, otherUserId=${otherUserId}`);
           
           // Only update if viewing this conversation
           if (!isViewingThisChat) return state;
         }
         
-        console.log("✅ Updating message reactions (removed):", messageWithReaction._id);
         const updatedMessages = state.messages.map((msg) =>
           normalizeId(msg._id) === normalizeId(messageWithReaction._id) 
             ? { ...msg, reactions: messageWithReaction.reactions || [] } 
@@ -1671,6 +1655,16 @@ export const useChatStore = create((set, get) => ({
     if (state.groups.length === 0) {
       set({ isGroupsLoading: true });
     }
+    
+    // Create a safety timeout that ALWAYS clears loading state after 12 seconds
+    // This prevents stuck loading in production builds where errors might not be caught
+    const safetyTimeout = setTimeout(() => {
+      const currentState = get();
+      if (currentState.isGroupsLoading) {
+        set({ isGroupsLoading: false });
+      }
+    }, 12000);
+    
     try {
       const [groupsRes, lastMessagesRes] = await Promise.all([
         axiosInstance.get("/groups/my-groups"),
@@ -1698,8 +1692,11 @@ export const useChatStore = create((set, get) => ({
         groupLastMessages: groupLastMessagesMap
       });
     } catch (error) {
+      console.error("Error loading groups:", error);
       toast.error(error.response?.data?.error || "Failed to load groups");
+      set({ groups: [], groupLastMessages: {}, isGroupsLoading: false });
     } finally {
+      clearTimeout(safetyTimeout);
       set({ isGroupsLoading: false });
     }
   },
@@ -1708,6 +1705,14 @@ export const useChatStore = create((set, get) => ({
     const socket = useAuthStore.getState().socket;
     const authUser = useAuthStore.getState().authUser;
     if (!authUser || !authUser._id || !socket) return;
+
+    // Define normalizeId function for use throughout this function
+    const normalizeId = (id) => {
+      if (!id) return null;
+      if (typeof id === 'string') return id;
+      if (typeof id === 'object' && id._id) return id._id.toString();
+      return id.toString();
+    };
 
     // Remove existing listeners first to prevent duplicates
     socket.off("groupCreated");
@@ -1757,13 +1762,6 @@ export const useChatStore = create((set, get) => ({
     });
 
     // Global group status indicators (for group list)
-    const normalizeId = (id) => {
-      if (!id) return null;
-      if (typeof id === 'string') return id;
-      if (typeof id === 'object' && id._id) return id._id.toString();
-      return id.toString();
-    };
-
     socket.on("groupTyping", ({ groupId, senderId, senderName }) => {
       const authUserId = normalizeId(authUser._id);
       if (normalizeId(senderId) === authUserId) return; // Don't show own typing
@@ -2332,7 +2330,6 @@ export const useChatStore = create((set, get) => ({
     });
     try {
       const res = await axiosInstance.get(`/groups/${groupId}/messages`);
-      
       // Handle new pagination format: { messages: [], hasMore: boolean }
       // Or fallback to old format: array directly
       const messagesData = res.data.messages || res.data;
@@ -2376,7 +2373,6 @@ export const useChatStore = create((set, get) => ({
     
     try {
       const res = await axiosInstance.get(`/groups/${groupId}/messages?before=${beforeMessageId}`);
-      
       // Handle new pagination format
       const messagesData = res.data.messages || res.data;
       const hasMore = res.data.hasMore || false;
@@ -2529,7 +2525,6 @@ export const useChatStore = create((set, get) => ({
       // Fire API call in background
       axiosInstance.delete(`/groups/${groupId}`)
         .then((res) => {
-          console.log(`✅ Group deleted: ${res.data.deletedMessagesCount} messages removed`);
           // Socket event will confirm and handle proper state updates
         })
         .catch((error) => {
@@ -3108,8 +3103,7 @@ export const useChatStore = create((set, get) => ({
       data: { deleteType }
     })
     .then((res) => {
-      console.log(`✅ Conversation deleted: ${res.data.deletedCount} messages removed (${deleteType})`);
-      // Socket event will confirm and handle proper state updates if needed
+            // Socket event will confirm and handle proper state updates if needed
     })
     .catch((error) => {
       // Only handle errors - if delete fails, restore state

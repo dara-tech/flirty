@@ -6,14 +6,36 @@ import toast from "react-hot-toast";
 
 const CallButton = ({ userId, variant = "default" }) => {
   const { initiateCall, callState } = useCallStore();
-  const { onlineUsers } = useAuthStore();
+  const { onlineUsers, authUser } = useAuthStore();
   const { users } = useChatStore();
+  
+  // Helper function to normalize IDs for consistent comparison
+  const normalizeId = (id) => {
+    if (!id) return null;
+    if (typeof id === 'string') return id.trim();
+    if (typeof id === 'object' && id._id) {
+      const nestedId = typeof id._id === 'string' ? id._id.trim() : String(id._id).trim();
+      return nestedId;
+    }
+    return String(id).trim();
+  };
+  
+  // Check if trying to call self
+  const authUserId = normalizeId(authUser?._id);
+  const receiverId = normalizeId(userId);
+  const isSelf = authUserId && receiverId && authUserId === receiverId;
   
   const isOnline = onlineUsers.includes(userId);
   const isInCall = callState !== 'idle';
-  const isDisabled = !isOnline || isInCall;
+  const isDisabled = !isOnline || isInCall || isSelf;
   
   const handleVoiceCall = async () => {
+    // Prevent self-calls
+    if (isSelf) {
+      toast.error("You cannot call yourself");
+      return;
+    }
+    
     if (!isOnline) {
       toast.error("User is offline");
       return;
@@ -32,6 +54,12 @@ const CallButton = ({ userId, variant = "default" }) => {
   };
   
   const handleVideoCall = async () => {
+    // Prevent self-calls
+    if (isSelf) {
+      toast.error("You cannot call yourself");
+      return;
+    }
+    
     if (!isOnline) {
       toast.error("User is offline");
       return;
@@ -56,7 +84,7 @@ const CallButton = ({ userId, variant = "default" }) => {
           onClick={handleVoiceCall}
           disabled={isDisabled}
           className="btn btn-sm btn-circle btn-ghost"
-          title={!isOnline ? "User is offline" : "Voice call"}
+          title={isSelf ? "Cannot call yourself" : !isOnline ? "User is offline" : "Voice call"}
         >
           <FaPhone className="w-4 h-4" />
         </button>
@@ -64,7 +92,7 @@ const CallButton = ({ userId, variant = "default" }) => {
           onClick={handleVideoCall}
           disabled={isDisabled}
           className="btn btn-sm btn-circle btn-ghost"
-          title={!isOnline ? "User is offline" : "Video call"}
+          title={isSelf ? "Cannot call yourself" : !isOnline ? "User is offline" : "Video call"}
         >
           <FaVideo className="w-4 h-4" />
         </button>
@@ -78,7 +106,7 @@ const CallButton = ({ userId, variant = "default" }) => {
         onClick={handleVoiceCall}
         disabled={isDisabled}
         className="btn btn-sm btn-primary gap-2"
-        title={!isOnline ? "User is offline" : "Voice call"}
+        title={isSelf ? "Cannot call yourself" : !isOnline ? "User is offline" : "Voice call"}
       >
         <FaPhone className="w-4 h-4" />
         <span className="hidden sm:inline">Call</span>
@@ -87,7 +115,7 @@ const CallButton = ({ userId, variant = "default" }) => {
         onClick={handleVideoCall}
         disabled={isDisabled}
         className="btn btn-sm btn-secondary gap-2"
-        title={!isOnline ? "User is offline" : "Video call"}
+        title={isSelf ? "Cannot call yourself" : !isOnline ? "User is offline" : "Video call"}
       >
         <FaVideo className="w-4 h-4" />
         <span className="hidden sm:inline">Video</span>

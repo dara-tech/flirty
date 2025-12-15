@@ -647,7 +647,6 @@ export const deleteGroup = async (req, res) => {
 
     // Delete all messages in the group
     const messagesResult = await Message.deleteMany({ groupId: groupIdStr });
-    console.log(`Deleted ${messagesResult.deletedCount} messages from group ${groupIdStr}`);
 
     // Delete the group
     await Group.findByIdAndDelete(groupId);
@@ -661,9 +660,7 @@ export const deleteGroup = async (req, res) => {
           groupId: groupIdStr,
           memberId: memberIdStr,
         });
-        console.log(`Emitted groupDeleted to member socket ${memberSocketId} for userId: ${memberIdStr}`);
       } else {
-        console.log(`Member socket not found for userId: ${memberIdStr}`);
       }
     });
 

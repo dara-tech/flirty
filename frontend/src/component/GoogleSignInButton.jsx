@@ -65,8 +65,7 @@ const GoogleSignInButton = ({ text = "Continue with Google" }) => {
 
           setIsInitialized(true);
           retryCountRef.current = 0;
-          console.log(`✅ Google Sign-In initialized successfully (mode: ${isWebViewEnv ? 'redirect' : 'popup'})`);
-        } catch (err) {
+                  } catch (err) {
           console.error("Error initializing Google:", err);
           if (retryCountRef.current < maxRetries) {
             retryCountRef.current++;

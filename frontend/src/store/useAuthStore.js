@@ -25,7 +25,6 @@ const getSocketURL = () => {
 
 const BASE_URL = getSocketURL();
 
-
 export const useAuthStore = create((set, get) => ({
   authUser: null,
   isSigningUp: false,
@@ -145,7 +144,6 @@ export const useAuthStore = create((set, get) => ({
       
       // Check if cookie was set (in production, verify cookie is available)
       if (import.meta.env.MODE === 'production') {
-        console.log('✅ Login successful, checking cookie...');
         // Small delay to ensure cookie is set by browser
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -172,14 +170,12 @@ export const useAuthStore = create((set, get) => ({
         
         // Safari-specific warning if cookie issues detected
         if (isSafari() && detectSafariCookieIssue()) {
-          console.warn('⚠️ Safari cookie issue detected. Using token-based auth as fallback.');
         }
         
         // Verify auth immediately after login
         try {
           await get().checkAuth();
         } catch (checkError) {
-          console.warn('⚠️ Auth check after login failed:', checkError);
           // If check fails, the cookie might not be set - but continue anyway
           // The user might need to refresh or the cookie will be set on next request
         }
@@ -251,7 +247,6 @@ export const useAuthStore = create((set, get) => ({
           try {
             await get().checkAuth();
           } catch (checkError) {
-            console.warn('⚠️ Auth check after Google login failed:', checkError);
           }
         }, 200);
         
@@ -308,7 +303,6 @@ export const useAuthStore = create((set, get) => ({
       set({ authUser: userData });
       toast.success("Profile updated successfully");
     } catch (error) {
-      console.log("Error updating profile:", error);
       const errorData = error.response?.data;
       // Handle validation errors
       if (errorData?.errors && Array.isArray(errorData.errors)) {
@@ -330,7 +324,6 @@ export const useAuthStore = create((set, get) => ({
       toast.success("Password changed successfully");
       return true;
     } catch (error) {
-      console.log("Error changing password:", error);
       const errorData = error.response?.data;
       // Handle validation errors
       if (errorData?.errors && Array.isArray(errorData.errors)) {
@@ -361,21 +354,21 @@ export const useAuthStore = create((set, get) => ({
       timeout: 20000,
     });
 
-    newSocket.on("connect", () => console.log("Socket connected:", newSocket.id));
+    newSocket.on("connect", () => {
+      // Socket connected
+    });
     newSocket.on("getOnlineUsers", (userIds) => set({ onlineUsers: userIds }));
     newSocket.on("disconnect", (reason) => {
       if (reason === "io server disconnect") {
         // Server disconnected, manually reconnect
         newSocket.connect();
       }
-      console.log("Socket disconnected:", reason);
     });
     
     // Suppress connection error logs (Socket.IO handles reconnection automatically)
     newSocket.on("connect_error", (error) => {
       // Only log if not a connection refused error (which is expected when backend is down)
       if (error.message && !error.message.includes("ECONNREFUSED") && !error.message.includes("Network")) {
-        console.warn("Socket connection error:", error.message);
       }
     });
 

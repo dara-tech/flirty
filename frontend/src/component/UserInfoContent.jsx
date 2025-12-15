@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
+import { useCallStore } from "../store/useCallStore";
 import { FaTimes, FaAngleLeft, FaSearch, FaEllipsisV, FaBell, FaBellSlash, FaImage, FaSpinner, FaPhone, FaVideo, FaEnvelope, FaFile, FaLink, FaMicrophone, FaDownload } from "react-icons/fa";
 import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
@@ -13,6 +14,7 @@ const UserInfoContent = ({ userId, onClose, embedded = false }) => {
   const navigate = useNavigate();
   const { users, getUsers } = useChatStore();
   const { authUser, onlineUsers } = useAuthStore();
+  const { initiateCall } = useCallStore();
   const [activeTab, setActiveTab] = useState("info");
   const [isMuted, setIsMuted] = useState(false);
   const [userPic, setUserPic] = useState(null);
@@ -146,18 +148,57 @@ const UserInfoContent = ({ userId, onClose, embedded = false }) => {
 
         {/* Action Buttons */}
         <div className="flex gap-4 w-full max-w-xs px-4">
-          <button className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-base-200/50 transition-colors">
-            <div className="size-12 rounded-lg bg-primary/10 flex items-center justify-center">
-              <FaPhone className="size-6 text-primary" />
-            </div>
-            <span className="text-xs font-medium text-base-content">Call</span>
-          </button>
-          <button className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-base-200/50 transition-colors">
-            <div className="size-12 rounded-lg bg-primary/10 flex items-center justify-center">
-              <FaVideo className="size-6 text-primary" />
-            </div>
-            <span className="text-xs font-medium text-base-content">Video</span>
-          </button>
+          {!isCurrentUser ? (
+            <>
+              <button
+                onClick={async () => {
+                  try {
+                    await initiateCall(userIdNormalized, 'voice');
+                  } catch (error) {
+                    toast.error(error.message || "Failed to start call");
+                  }
+                }}
+                disabled={!isOnline}
+                className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-base-200/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <div className="size-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <FaPhone className="size-6 text-primary" />
+                </div>
+                <span className="text-xs font-medium text-base-content">Call</span>
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await initiateCall(userIdNormalized, 'video');
+                  } catch (error) {
+                    toast.error(error.message || "Failed to start video call");
+                  }
+                }}
+                disabled={!isOnline}
+                className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-base-200/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <div className="size-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <FaVideo className="size-6 text-primary" />
+                </div>
+                <span className="text-xs font-medium text-base-content">Video</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg opacity-50 cursor-not-allowed">
+                <div className="size-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <FaPhone className="size-6 text-primary" />
+                </div>
+                <span className="text-xs font-medium text-base-content">Call</span>
+              </div>
+              <div className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg opacity-50 cursor-not-allowed">
+                <div className="size-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <FaVideo className="size-6 text-primary" />
+                </div>
+                <span className="text-xs font-medium text-base-content">Video</span>
+              </div>
+            </>
+          )}
           <button 
             onClick={() => setIsMuted(!isMuted)}
             className="flex-1 flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-base-200/50 transition-colors"

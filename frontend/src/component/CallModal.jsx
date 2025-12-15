@@ -87,25 +87,7 @@ const CallModal = ({ answerCallWithMedia }) => {
   let shouldShowModal = false;
   let displayUser = null;
   
-  // Debug logging
-  if (callState === 'calling' || callState === 'ringing') {
-    const callerId = caller ? normalizeId(caller.userId) : null;
-    const authUserId = authUser ? normalizeId(authUser._id) : null;
-    const receiverId = receiver ? normalizeId(receiver.userId) : null;
-    
-    console.log('📞 CallModal check:', {
-      callState,
-      isRequesting,
-      isIncoming,
-      callerId,
-      authUserId,
-      receiverId,
-      isCurrentUserCaller: isCurrentUserCaller(),
-      isCallForCurrentUser: isCallForCurrentUser(),
-      hasCaller: !!caller,
-      hasReceiver: !!receiver,
-    });
-  }
+  // Debug logging removed to keep UI clean
   
   // Determine if we should show modal and which user to display
   const userIsCaller = isCurrentUserCaller();
@@ -180,20 +162,11 @@ const CallModal = ({ answerCallWithMedia }) => {
   // Don't show if conditions not met
   if (!shouldShowModal || !displayUser) {
     if (callState === 'calling' || callState === 'ringing') {
-      console.log('❌ CallModal not showing:', { 
-        shouldShowModal, 
-        displayUser: !!displayUser,
-        userIsCaller,
-        userIsReceiver,
-        hasCaller: !!caller,
-        hasReceiver: !!receiver,
-        callState,
-      });
+
     }
     return null;
   }
   
-  console.log('✅ CallModal showing:', { callState, isRequesting, isIncoming, displayUser: displayUser?.fullname });
   
   const handleAnswer = async () => {
     if (isAnswering) return; // Prevent double-click

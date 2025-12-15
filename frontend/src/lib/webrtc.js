@@ -152,7 +152,6 @@ export const getLocalStream = async (callType) => {
       if (callType === 'video') {
         const videoTracks = stream.getVideoTracks();
         if (videoTracks.length === 0) {
-          console.warn('Stream obtained but no video tracks found');
           // Try to get video again with minimal constraints
           stream.getTracks().forEach(track => track.stop());
           const minimalStream = await navigator.mediaDevices.getUserMedia({
@@ -161,18 +160,12 @@ export const getLocalStream = async (callType) => {
           });
           return minimalStream;
         }
-        console.log('Camera stream obtained:', {
-          videoTracks: videoTracks.length,
-          audioTracks: stream.getAudioTracks().length,
-          videoTrackSettings: videoTracks[0]?.getSettings(),
-        });
       }
       
       return stream;
     } catch (firstError) {
       // If first attempt fails, try with more relaxed constraints
       if (callType === 'video') {
-        console.warn('Failed with ideal constraints, trying relaxed constraints:', firstError);
         
         // Try without facingMode constraint
         constraints = {
@@ -188,7 +181,6 @@ export const getLocalStream = async (callType) => {
           return stream;
         } catch (secondError) {
           // Try with minimal constraints
-          console.warn('Failed with relaxed constraints, trying minimal constraints:', secondError);
           constraints = {
             audio: true,
             video: true, // Just request any video
@@ -265,16 +257,10 @@ export const replaceVideoTrack = async (peerConnection, newTrack, stream) => {
   
   if (videoSender) {
     const oldTrack = videoSender.track;
-    console.log('🔄 Replacing video track:', {
-      old: oldTrack?.label,
-      new: newTrack.label,
-    });
-    
+
     await videoSender.replaceTrack(newTrack);
     newTrack.enabled = true;
-    console.log('✅ Video track replaced');
   } else if (stream) {
-    console.log('➕ Adding new video track');
     peerConnection.addTrack(newTrack, stream);
   } else {
     throw new Error('Cannot add track: stream is missing');
@@ -309,7 +295,6 @@ export const addLocalStreamTracks = (peerConnection, stream) => {
           googHighpassFilter: true,
           googTypingNoiseDetection: true,
         }).catch(err => {
-          console.warn('Could not apply audio constraints:', err);
         });
       }
       
@@ -329,13 +314,11 @@ export const addLocalStreamTracks = (peerConnection, stream) => {
               opusCodec.clockRate = 48000;
               // Opus payload type is usually 111
               sender.setParameters(params).catch(err => {
-                console.warn('Could not optimize Opus codec:', err);
               });
             }
           }
         } catch (err) {
           // setParameters might not be available in all browsers
-          console.warn('Could not access RTCRtpSender parameters:', err);
         }
       }
     }
@@ -345,17 +328,7 @@ export const addLocalStreamTracks = (peerConnection, stream) => {
       // Ensure video track is enabled
       if (!track.enabled && track.readyState === 'live') {
         track.enabled = true;
-        console.log('✅ Enabled video track:', track.label);
       }
-      
-      // Log video track details
-      console.log('📹 Adding video track to peer connection:', {
-        id: track.id,
-        label: track.label,
-        enabled: track.enabled,
-        readyState: track.readyState,
-        settings: track.getSettings(),
-      });
     }
     
     peerConnection.addTrack(track, stream);
@@ -577,7 +550,6 @@ export const createAnswer = async (peerConnection, offer) => {
     if (errorMessage.includes('state') || errorMessage.includes('description')) {
       // If it's a state error but connection might still work, log warning instead
       if (peerConnection.signalingState === 'stable') {
-        console.warn('Connection state warning:', errorMessage);
         return peerConnection.localDescription || null;
       }
       throw new Error('Call connection error. Please try again.');
@@ -646,7 +618,7 @@ export const addIceCandidate = async (peerConnection, candidate) => {
     if (!error.message?.includes('not found') && 
         !error.message?.includes('already added') &&
         peerConnection.connectionState !== 'closed') {
-      console.warn('ICE candidate error (non-fatal):', error.message);
+      // Error logged silently - non-fatal
     }
   }
 };
@@ -670,11 +642,8 @@ export const setupIceCandidateHandler = (peerConnection, socket, callId, receive
     const state = peerConnection.iceConnectionState;
     
     if (state === 'failed') {
-      console.warn('ICE connection failed - connection may not work');
     } else if (state === 'disconnected') {
-      console.warn('ICE connection disconnected');
     } else if (state === 'connected' || state === 'completed') {
-      console.log('ICE connection established');
     }
   };
 };
@@ -702,14 +671,12 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     // Listen for track additions/removals (screen share replacing camera)
     stream.onaddtrack = (event) => {
       if (event.track.kind === 'video') {
-        console.log('🔄 Video track added to remote stream');
         handleVideoTrackChange();
       }
     };
     
     stream.onremovetrack = (event) => {
       if (event.track.kind === 'video') {
-        console.log('🔄 Video track removed from remote stream');
         handleVideoTrackChange();
       }
     };
@@ -732,7 +699,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
         lastVideoTrackId = videoReceiver.track.id;
         lastVideoTrackLabel = videoReceiver.track.label;
         lastVideoTrackEnabled = videoReceiver.track.enabled;
-        console.log('✅ Created new remote stream with video track from receiver');
       }
       return;
     }
@@ -746,7 +712,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     if (!receiverTrack) {
       // No video receiver track - video was removed
       if (currentVideoTrack) {
-        console.log('🔄 Video track removed - clearing from stream');
         const updatedStream = new MediaStream([
           ...remoteStream.getAudioTracks(),
         ]);
@@ -766,7 +731,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     
     if (!currentVideoTrack && receiverTrackActive) {
       // No video track in stream but receiver has active track - add it
-      console.log('🔄 Video track re-enabled - adding to stream');
       const updatedStream = new MediaStream([
         ...remoteStream.getAudioTracks(),
         receiverTrack,
@@ -781,7 +745,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     
     if (!receiverTrackActive && currentVideoTrack) {
       // Track exists in stream but receiver track is disabled - remove it
-      console.log('🔄 Video track disabled - removing from stream');
       const updatedStream = new MediaStream([
         ...remoteStream.getAudioTracks(),
       ]);
@@ -797,11 +760,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     
     // Check if track ID changed (completely new track)
     if (currentVideoTrack?.id !== receiverTrack.id) {
-      console.log('🔄 Video track changed via receiver (ID changed):', {
-        old: currentVideoTrack?.label || 'none',
-        new: receiverTrack.label,
-      });
-      
       // Create updated stream with new video track
       const updatedStream = new MediaStream([
         ...remoteStream.getAudioTracks(),
@@ -818,11 +776,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
     // Check if track label changed (indicates screen share switch)
     // Screen share tracks typically have different labels like "screen" or contain "screen"
     if (currentVideoTrack && receiverTrack.label !== currentVideoTrack.label) {
-      console.log('🔄 Video track label changed (screen share?):', {
-        old: currentVideoTrack.label,
-        new: receiverTrack.label,
-      });
-      
       const updatedStream = new MediaStream([
         ...remoteStream.getAudioTracks(),
         receiverTrack,
@@ -840,11 +793,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
       // Always update to ensure latest track content is used
       // This handles cases where replaceTrack() doesn't change the track ID
       if (lastVideoTrackLabel !== receiverTrack.label) {
-        console.log('🔄 Video track updated (label changed):', {
-          old: lastVideoTrackLabel,
-          new: receiverTrack.label,
-        });
-        
         const updatedStream = new MediaStream([
           ...remoteStream.getAudioTracks(),
           receiverTrack,
@@ -867,11 +815,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
           currentSettings.frameRate !== receiverSettings.frameRate;
         
         if (settingsChanged) {
-          console.log('🔄 Video track settings changed (possible screen share):', {
-            old: { width: currentSettings.width, height: currentSettings.height },
-            new: { width: receiverSettings.width, height: receiverSettings.height },
-          });
-          
           const updatedStream = new MediaStream([
             ...remoteStream.getAudioTracks(),
             receiverTrack,
@@ -893,13 +836,7 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
       const wasDisabledNowEnabled = lastVideoTrackEnabled === false && receiverTrack.enabled === true;
       
       if (trackStateChanged || wasDisabledNowEnabled) {
-        console.log('🔄 Video track state changed:', {
-          muted: receiverTrack.muted,
-          enabled: receiverTrack.enabled,
-          readyState: receiverTrack.readyState,
-          wasDisabledNowEnabled,
-        });
-        
+
         // If track is now enabled and active, update stream
         if (receiverTrackActive) {
           const updatedStream = new MediaStream([
@@ -921,7 +858,6 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
       }
     } else if (receiverTrack && receiverTrackActive && !currentVideoTrack) {
       // Track exists in receiver but not in stream - add it
-      console.log('🔄 Video track exists in receiver but not in stream - adding');
       const updatedStream = new MediaStream([
         ...remoteStream.getAudioTracks(),
         receiverTrack,
@@ -952,19 +888,16 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
         
         // Listen for track mute/unmute (indicates track change)
         track.onmute = () => {
-          console.log('🔄 Remote video track muted');
           lastVideoTrackEnabled = track.enabled;
           checkReceiverTracks();
         };
         track.onunmute = () => {
-          console.log('🔄 Remote video track unmuted');
           lastVideoTrackEnabled = track.enabled;
           checkReceiverTracks();
         };
         
         // Listen for track ended (track was replaced)
         track.onended = () => {
-          console.log('🔄 Remote video track ended');
           lastVideoTrackId = null;
           lastVideoTrackLabel = null;
           lastVideoTrackEnabled = null;
@@ -977,10 +910,7 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
           if (track.readyState === 'live') {
             const currentEnabled = track.enabled;
             if (lastVideoTrackEnabled !== null && lastVideoTrackEnabled !== currentEnabled) {
-              console.log('🔄 Video track enabled state changed:', {
-                was: lastVideoTrackEnabled,
-                now: currentEnabled,
-              });
+
               lastVideoTrackEnabled = currentEnabled;
               checkReceiverTracks();
             } else if (lastVideoTrackEnabled === null) {
@@ -1023,21 +953,12 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
   peerConnection.ontrack = (event) => {
     const track = event.track;
     const stream = event.streams?.[0];
-    
-    console.log('🎵 Received remote track:', track.kind, {
-      id: track.id,
-      label: track.label,
-      enabled: track.enabled,
-      muted: track.muted,
-    });
-    
+
     // Listen to track changes directly
     track.onmute = () => {
-      console.log('🔄 Remote track muted:', track.kind, track.label);
       checkReceiverTracks();
     };
     track.onunmute = () => {
-      console.log('🔄 Remote track unmuted:', track.kind, track.label);
       checkReceiverTracks();
     };
     
@@ -1056,16 +977,9 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
       
       if (isNewStream || videoTrackChanged || videoTrackReEnabled) {
         if (videoTrackChanged) {
-          console.log('🔄 Video track replaced:', {
-            old: currentVideoTrack.label,
-            new: newVideoTrack.label,
-          });
+
         } else if (videoTrackReEnabled) {
-          console.log('🔄 Video track re-enabled via ontrack event:', {
-            track: newVideoTrack.label,
-            enabled: newVideoTrack.enabled,
-            readyState: newVideoTrack.readyState,
-          });
+
         }
         
         setupStreamListeners(stream);
@@ -1082,13 +996,11 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
         const enabledStateChanged = currentVideoTrack.enabled !== newVideoTrack.enabled;
         if (enabledStateChanged && newVideoTrack.enabled && newVideoTrack.readyState === 'live') {
           // Track was re-enabled - update stream
-          console.log('🔄 Same track ID but re-enabled - updating stream');
           setupStreamListeners(stream);
           updateRemoteStream(stream);
           lastVideoTrackEnabled = newVideoTrack.enabled;
         } else {
           // Update anyway to ensure latest content
-          console.log('🔄 Same track ID, but updating stream to ensure latest content');
           setupStreamListeners(stream);
           updateRemoteStream(stream);
         }
@@ -1107,16 +1019,13 @@ export const setupRemoteStreamHandler = (peerConnection, onRemoteStream) => {
   
   // Connection state management
   peerConnection.onconnectionstatechange = () => {
-    console.log('🌐 Connection state:', peerConnection.connectionState);
     manageMonitoring();
   };
   
   peerConnection.oniceconnectionstatechange = () => {
     const state = peerConnection.iceConnectionState;
-    console.log('🔌 ICE connection state:', state);
     
     if (state === 'connected' || state === 'completed') {
-      console.log('✅ WebRTC connection established!');
       manageMonitoring();
       // Force immediate track check
       setTimeout(() => {
@@ -1201,7 +1110,6 @@ export const isWebRTCSupported = () => {
                           navigator.mediaDevices.getUserMedia;
   
   if (!hasRTCPeerConnection || !hasMediaDevices) {
-    console.warn('WebRTC not fully supported in this browser');
     return false;
   }
   
@@ -1210,7 +1118,6 @@ export const isWebRTCSupported = () => {
     if (browserInfo.isSafari) {
       // Safari requires HTTPS for WebRTC (except localhost)
       if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-        console.warn('Safari requires HTTPS for WebRTC');
         return false;
       }
     }
@@ -1242,7 +1149,6 @@ export const formatCallDuration = (seconds) => {
 export const setupConnectionStateHandler = (peerConnection, onStateChange) => {
   peerConnection.onconnectionstatechange = () => {
     const state = peerConnection.connectionState;
-    console.log('Connection state:', state);
     
     if (onStateChange) {
       onStateChange(state);

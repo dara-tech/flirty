@@ -122,10 +122,21 @@ export const updateProfile = asyncHandler(async (req, res) => {
 
 // Check auth controller
 // Get current authenticated user (RESTful: GET /auth/me)
+// Uses optionalAuth - returns user if authenticated, null if not (no 401 error)
 export const getMe = asyncHandler(async (req, res) => {
+  if (!req.user) {
+    // User not authenticated - return success with null data (not an error)
+    return res.status(200).json({
+      success: true,
+      data: null,
+      authenticated: false
+    });
+  }
+  
   res.status(200).json({
     success: true,
-    data: AuthService.formatUserResponse(req.user)
+    data: AuthService.formatUserResponse(req.user),
+    authenticated: true
   });
 });
 

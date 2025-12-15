@@ -128,8 +128,8 @@ export const useCallStore = create((set, get) => ({
   // Step 1: Update WebRTC track.enabled (actual media control)
   // Step 2: Send WebSocket signal for UI synchronization (signaling only, no media)
   toggleMute: () => {
-    const { localStream, isMuted, isGroupCall, roomId } = get();
-    const { socket } = useAuthStore.getState();
+    const { localStream, isMuted, isGroupCall, roomId, callId } = get();
+    const { socket, authUser } = useAuthStore.getState();
     
     // Step 1: Update WebRTC track state (actual media control)
     if (localStream) {
@@ -139,12 +139,32 @@ export const useCallStore = create((set, get) => ({
       });
       
       // Step 2: Send WebSocket signal for UI synchronization (signaling only)
-      if (isGroupCall && socket && roomId) {
-        socket.emit('groupcall:update-tracks', {
-          roomId,
-          tracks: { audio: newMuteState }, // WebSocket: UI state sync
-        });
+      if (socket) {
+        if (isGroupCall && roomId) {
+          socket.emit('groupcall:update-tracks', {
+            roomId,
+            tracks: { audio: newMuteState }, // WebSocket: UI state sync
+          });
+        } else if (callId) {
+          // For 1-on-1 calls, also send mute status
+          const { caller, receiver } = get();
+          const authUserId = typeof authUser._id === 'object' ? authUser._id._id || authUser._id : authUser._id;
+          const callerId = caller ? (typeof caller.userId === 'object' ? caller.userId._id || caller.userId : caller.userId) : null;
+          const receiverId = receiver ? (typeof receiver.userId === 'object' ? receiver.userId._id || receiver.userId : receiver.userId) : null;
+          
+          const isCaller = String(authUserId) === String(callerId);
+          const otherUserId = isCaller ? receiverId : callerId;
+          
+          if (otherUserId) {
+            socket.emit('call:mute-status', {
+              callId,
+              receiverId: otherUserId,
+              isMuted: newMuteState,
+            });
+          }
+        }
       }
+    } else {
     }
     
     set({ isMuted: !isMuted });
@@ -197,12 +217,7 @@ export const useCallStore = create((set, get) => ({
     // The actual emit will fail gracefully if not connected
     const isSocketConnected = socket.connected === true || (socket.id && typeof socket.emit === 'function');
     if (!isSocketConnected) {
-      console.warn('Socket connection check:', { 
-        connected: socket.connected, 
-        disconnected: socket.disconnected,
-        id: socket.id,
-        hasEmit: typeof socket.emit === 'function'
-      });
+
       // Don't block - let the emit try anyway, it will handle errors gracefully
       // toast.error("Connection lost. Please reconnect.");
       // return;
@@ -227,12 +242,10 @@ export const useCallStore = create((set, get) => ({
             if (track.readyState === 'live') {
               track.enabled = false;
               disabledCount++;
-              console.log('✅ Video track disabled:', track.label);
             }
           });
           
           if (disabledCount === 0) {
-            console.warn('⚠️ No live video tracks found to disable');
           }
         }
         
@@ -242,7 +255,6 @@ export const useCallStore = create((set, get) => ({
           const videoSender = senders.find(sender => sender.track?.kind === 'video');
           if (videoSender && videoSender.track && videoSender.track.readyState === 'live') {
             videoSender.track.enabled = false;
-            console.log('✅ Video track disabled in peer connection sender');
           }
         }
         
@@ -261,7 +273,6 @@ export const useCallStore = create((set, get) => ({
         
         // Update state
         set({ isVideoEnabled: false });
-        console.log('✅ Video disabled (track.enabled = false) - no renegotiation needed');
         
         // Update group call tracks if in group call
         if (isGroupCall && socket && roomId) {
@@ -313,7 +324,6 @@ export const useCallStore = create((set, get) => ({
           if (liveTrack) {
             // Track is live - just enable it (Best Practice)
             liveTrack.enabled = true;
-            console.log('✅ Video track enabled:', liveTrack.label);
             
             // Also enable in peer connection sender if it exists - for 1-on-1 calls
             if (!isGroupCall && peerConnection) {
@@ -321,7 +331,6 @@ export const useCallStore = create((set, get) => ({
               const videoSender = senders.find(sender => sender.track?.kind === 'video');
               if (videoSender && videoSender.track && videoSender.track.readyState === 'live') {
                 videoSender.track.enabled = true;
-                console.log('✅ Video track enabled in peer connection sender');
               }
             }
             
@@ -340,7 +349,7 @@ export const useCallStore = create((set, get) => ({
             
             // Update state
         set({ isVideoEnabled: true });
-        console.log('✅ Video enabled (track.enabled = true) - no renegotiation needed');
+
         
         // Update group call tracks if in group call
         if (isGroupCall && socket && roomId) {
@@ -354,7 +363,6 @@ export const useCallStore = create((set, get) => ({
         return;
           } else {
             // Tracks exist but all ended - need to get new stream
-            console.log('⚠️ Video tracks exist but all ended - need to get new stream');
             // Fall through to get new stream
           }
         }
@@ -428,7 +436,6 @@ export const useCallStore = create((set, get) => ({
               const offer = await createOffer(peerConnection);
               if (offer) {
                 socket.emit('webrtc:offer', { callId, offer, receiverId: otherUserId });
-                console.log('📤 Renegotiation offer sent for new video track');
               }
             } catch (offerError) {
               console.error('Error creating offer for new video track:', offerError);
@@ -437,7 +444,6 @@ export const useCallStore = create((set, get) => ({
         }
         
         set({ isVideoEnabled: true });
-        console.log('✅ Video enabled (new track added)');
         
         // Update group call tracks if in group call
         if (isGroupCall && socket && roomId) {
@@ -466,9 +472,51 @@ export const useCallStore = create((set, get) => ({
     }
   },
   
-  // Toggle speaker
-  toggleSpeaker: () => {
-    set({ isSpeakerEnabled: !get().isSpeakerEnabled });
+  // Toggle speaker - Change audio output device
+  toggleSpeaker: async () => {
+    const currentState = get().isSpeakerEnabled;
+    const newState = !currentState;
+    
+    try {
+      // Get all audio elements that might be playing remote audio
+      const audioElements = document.querySelectorAll('audio, video');
+      
+      // Try to set audio output device using setSinkId (if supported)
+      if (audioElements.length > 0 && 'setSinkId' in HTMLAudioElement.prototype) {
+        // Get available audio output devices
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
+          
+          if (audioOutputs.length > 0) {
+            // If speaker enabled, use the first speaker/headphone device
+            // If speaker disabled, use default (usually earpiece on mobile)
+            const targetDeviceId = newState 
+              ? audioOutputs.find(d => d.label.toLowerCase().includes('speaker') || d.label.toLowerCase().includes('headphone'))?.deviceId || audioOutputs[0]?.deviceId || ''
+              : 'default';
+            
+            // Set sink ID for all audio/video elements
+            for (const element of audioElements) {
+              if (element.srcObject || element.src) {
+                try {
+                  await element.setSinkId(targetDeviceId);
+                } catch (err) {
+                }
+              }
+            }
+          }
+        } catch (err) {
+        }
+      } else {
+        // Fallback: Use volume or other methods if setSinkId not supported
+              }
+      
+      set({ isSpeakerEnabled: newState });
+    } catch (error) {
+      console.error('Error toggling speaker:', error);
+      // Still update state even if setting device fails
+      set({ isSpeakerEnabled: newState });
+    }
   },
 
   // Set screen sharing state
@@ -509,19 +557,33 @@ export const useCallStore = create((set, get) => ({
       return;
     }
     
-    // Prevent users from calling themselves
-    const authUserId = typeof authUser._id === 'object' ? authUser._id._id || authUser._id : authUser._id;
-    const receiverIdStr = typeof receiverId === 'object' ? receiverId._id || receiverId : receiverId;
+    // Helper function to normalize IDs for consistent comparison
+    const normalizeId = (id) => {
+      if (!id) return null;
+      if (typeof id === 'string') return id.trim();
+      if (typeof id === 'object' && id._id) {
+        const nestedId = typeof id._id === 'string' ? id._id.trim() : String(id._id).trim();
+        return nestedId;
+      }
+      return String(id).trim();
+    };
     
-    if (String(authUserId) === String(receiverIdStr)) {
+    // Prevent users from calling themselves - check early before any state changes
+    const authUserId = normalizeId(authUser._id);
+    const receiverIdStr = normalizeId(receiverId);
+    
+    // More robust comparison - handle all edge cases
+    if (!authUserId || !receiverIdStr || authUserId === receiverIdStr) {
       toast.error("You cannot call yourself");
+      // Reset any call state that might have been set
+      get().resetCallState();
       return;
     }
     
-    // Find receiver info
+    // Find receiver info using normalized ID comparison
     const receiver = users.find(u => {
-      const uId = typeof u._id === 'object' ? u._id._id || u._id : u._id;
-      return String(uId) === String(receiverIdStr);
+      const uId = normalizeId(u._id);
+      return uId === receiverIdStr;
     });
     if (!receiver) {
       toast.error("User not found");
@@ -845,7 +907,6 @@ export const useCallStore = create((set, get) => ({
       },
     });
     
-    console.log(`✅ Group call ${roomId} initiated - Local participant added immediately`);
   },
   
   // Join group call
@@ -902,7 +963,6 @@ export const useCallStore = create((set, get) => ({
     });
     
     get().startCallTimer();
-    console.log(`✅ Joined group call ${roomId} - Local participant added immediately`);
   },
   
   // Leave group call
@@ -920,7 +980,6 @@ export const useCallStore = create((set, get) => ({
   // End call
   endCall: (reason = 'ended') => {
     try {
-      console.log('📞 Ending call...', reason);
       
       const { socket } = useAuthStore.getState();
       const { callId, callType, callDuration } = get();
@@ -941,21 +1000,17 @@ export const useCallStore = create((set, get) => ({
       if (socket && callId) {
         if (isGroupCall && roomId) {
           // Group call - emit leave event
-          console.log('📤 Leaving group call:', roomId);
           socket.emit('groupcall:leave', { roomId });
         } else {
           // 1-on-1 call - emit end event
-          console.log('📤 Emitting call:end event:', callId);
           socket.emit('call:end', { callId, reason });
         }
       } else {
-        console.warn('⚠️ Cannot emit call:end - missing socket or callId', { socket: !!socket, callId });
       }
       
       // Always reset state, even if socket/callId is missing
       get().resetCallState();
       
-      console.log('✅ Call ended successfully');
       
       // Show toast notification
       toast("Call ended");

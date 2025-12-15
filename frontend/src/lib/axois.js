@@ -22,13 +22,11 @@ const getBackendURL = () => {
     const finalUrl = cleanUrl.endsWith('/api') ? cleanUrl : `${cleanUrl}/api`;
     
     // Log in production for debugging (can be removed later)
-    console.log('🌐 Backend API URL configured:', finalUrl);
     
     return finalUrl;
   }
   
   // Fallback to relative path (for same-domain hosting)
-  console.warn('⚠️ VITE_API_URL not set, using relative path /api');
   return '/api';
 };
 
@@ -75,7 +73,6 @@ axiosInstance.interceptors.response.use(
       
       // Only clear if we have an auth user (session expired/invalid)
       if (authStore.authUser) {
-        console.warn('⚠️ Session expired or invalid. Clearing auth state.');
         // Clear auth state using Zustand's setState method
         useAuthStore.setState({ authUser: null });
         // Disconnect socket if connected
@@ -132,15 +129,6 @@ axiosInstance.interceptors.request.use(
       // Check if cookies are available (for debugging)
       const hasCookies = document.cookie.includes('jwt');
       const hasBearerToken = !!config.headers.Authorization;
-      console.log('📤 Request:', {
-        url: config.url,
-        method: config.method,
-        hasCredentials: config.withCredentials,
-        baseURL: config.baseURL,
-        cookiesAvailable: hasCookies,
-        bearerTokenUsed: hasBearerToken,
-        isSafari: isSafari(),
-      });
     }
     return config;
   },

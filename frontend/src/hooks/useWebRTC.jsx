@@ -65,13 +65,11 @@ const useWebRTC = () => {
       // Prevent duplicate incoming call processing
       // If we already have an incoming call with the same callId, ignore it
       if (currentState.callState === 'ringing' && currentState.callId === callId) {
-        console.log('⚠️ Duplicate incoming call event ignored:', callId);
         return;
       }
       
       // If there's already an active call, ignore new incoming calls
       if (currentState.callState !== 'idle' && currentState.callState !== 'ringing') {
-        console.log('⚠️ Ignoring incoming call - another call is active');
         return;
       }
       
@@ -90,7 +88,6 @@ const useWebRTC = () => {
         },
       });
       
-      console.log('📞 Incoming call received:', callId, callerInfo.fullname);
     };
     
     // Call ringing (for caller) - don't change state, caller should stay in 'calling' state
@@ -98,7 +95,6 @@ const useWebRTC = () => {
     const handleCallRinging = () => {
       // Don't change caller's state - they should stay in 'calling' state
       // Only receiver should be in 'ringing' state
-      console.log('📞 Call is ringing on receiver side');
     };
     
     // Call answered
@@ -112,7 +108,6 @@ const useWebRTC = () => {
       if (isCallerRef.current) {
         // Use a flag to prevent duplicate processing
         if (offerCreatedRef.current) {
-          console.log('Offer already created, skipping duplicate call:answered event');
           return;
         }
         
@@ -210,13 +205,11 @@ const useWebRTC = () => {
       
       // Don't show invitation if user is already in a call
       if (currentState.callState !== 'idle' && currentState.callState !== 'ringing') {
-        console.log('⚠️ Ignoring group call invitation - another call is active');
         return;
       }
       
       // Don't show if already in this group call
       if (currentState.isGroupCall && currentState.roomId === roomId) {
-        console.log('⚠️ Ignoring group call invitation - already in this call');
         return;
       }
       
@@ -240,7 +233,6 @@ const useWebRTC = () => {
         },
       });
       
-      console.log('📞 Group call invitation received:', roomId, groupName);
     };
     
     // WebRTC Offer received
@@ -249,7 +241,6 @@ const useWebRTC = () => {
       
       // Prevent duplicate processing
       if (processingOfferRef.current) {
-        console.log('Already processing offer, ignoring duplicate');
         return;
       }
       
@@ -259,13 +250,12 @@ const useWebRTC = () => {
       
       // If answer already created and this is NOT a renegotiation, ignore
       if (answerCreatedRef.current && !isRenegotiation) {
-        console.log('Answer already created, ignoring duplicate offer');
         return;
       }
       
       // If this is a renegotiation, allow it
       if (isRenegotiation) {
-        console.log('🔄 Processing renegotiation offer (camera/screen share enabled)');
+        // Renegotiation specific handling can be added here if needed
       }
       
       processingOfferRef.current = true;
@@ -342,12 +332,10 @@ const useWebRTC = () => {
         
         if (isRenegotiation) {
           // This is a renegotiation - set remote description first, then create answer
-          console.log('🔄 Handling renegotiation offer (camera/screen share)');
           try {
             // Ensure remote stream handler is set up to detect new tracks
             if (!pc.ontrack) {
               setupRemoteStreamHandler(pc, (remoteStream) => {
-                console.log('📹 Remote stream updated with new video track');
                 useCallStore.getState().setRemoteStream(remoteStream);
               });
             }
@@ -360,7 +348,6 @@ const useWebRTC = () => {
                 answer,
                 callerId: offerCallerId,
               });
-              console.log('✅ Renegotiation answer sent');
             }
             
             // Check for video tracks immediately and after a short delay (both added and removed)
@@ -394,21 +381,11 @@ const useWebRTC = () => {
                     useCallStore.getState().setRemoteStream(updatedStream);
                     
                     if (!hasVideoTrack) {
-                      console.log('✅ Remote stream updated with NEW video track', {
-                        trackId: videoReceiver.track.id,
-                        enabled: videoReceiver.track.enabled,
-                        readyState: videoReceiver.track.readyState,
-                      });
+
                     } else if (!hasActiveExistingTrack) {
-                      console.log('✅ Remote stream updated - video track RE-ENABLED', {
-                        trackId: videoReceiver.track.id,
-                        enabled: videoReceiver.track.enabled,
-                        readyState: videoReceiver.track.readyState,
-                      });
+
                     } else {
-                      console.log('✅ Remote stream updated - ensuring active video track is in stream', {
-                        trackId: videoReceiver.track.id,
-                      });
+
                     }
                   }
                 } else {
@@ -419,14 +396,12 @@ const useWebRTC = () => {
                       ...currentRemoteStream.getAudioTracks(),
                     ]);
                     useCallStore.getState().setRemoteStream(updatedStream);
-                    console.log('✅ Remote stream updated - video track removed (immediate)');
                   } else {
                     // No tracks existed, but ensure stream is updated without video
                     const updatedStream = new MediaStream([
                       ...currentRemoteStream.getAudioTracks(),
                     ]);
                     useCallStore.getState().setRemoteStream(updatedStream);
-                    console.log('✅ Remote stream updated - ensuring no video tracks');
                   }
                 }
               } else if (videoReceiver && videoReceiver.track) {
@@ -437,7 +412,6 @@ const useWebRTC = () => {
                 if (receiverTrackActive) {
                   const newStream = new MediaStream([videoReceiver.track]);
                   useCallStore.getState().setRemoteStream(newStream);
-                  console.log('✅ New remote stream created with video track');
                 }
               }
             };
@@ -459,7 +433,6 @@ const useWebRTC = () => {
         
         // Initial offer - check if answer already exists
         if (pc.localDescription && pc.localDescription.type === 'answer') {
-          console.log('Answer already exists, skipping');
           answerCreatedRef.current = true;
           processingOfferRef.current = false;
           return;
@@ -498,7 +471,6 @@ const useWebRTC = () => {
           // Check if connection is actually working
           if (pc.signalingState === 'stable' || pc.connectionState === 'connected' || pc.connectionState === 'connecting') {
             // Connection seems to be working, don't end call
-            console.warn('Connection state warning, but connection appears to be working');
             answerCreatedRef.current = true;
             processingOfferRef.current = false;
             return;
@@ -511,7 +483,6 @@ const useWebRTC = () => {
           toast.error("Connection issue. Attempting to continue...");
         } else if (error.message?.includes('Call connection error')) {
           // Connection error - might be recoverable
-          console.warn('Call connection error, but continuing...');
           // Don't end call immediately, let it try to recover
         } else {
           // Critical error - end call
@@ -540,7 +511,6 @@ const useWebRTC = () => {
       // Check if we're the caller (should have local description set)
       if (!isCallerRef.current && !isRenegotiation) {
         // We're the receiver, shouldn't receive an answer (unless renegotiation)
-        console.warn('Received answer but we are not the caller');
         return;
       }
       
@@ -554,14 +524,12 @@ const useWebRTC = () => {
       // Check connection state - should be "have-local-offer" to set remote answer
       // If already stable, might be renegotiation
       if (pc.signalingState === 'stable' && !isRenegotiation) {
-        console.log('Connection already stable, answer already processed');
         pendingAnswerRef.current = null;
         return;
       }
       
       // For renegotiation, allow setting answer even if state is stable
       if (!isRenegotiation && pc.signalingState !== 'have-local-offer') {
-        console.warn(`Unexpected signaling state: ${pc.signalingState}, expected have-local-offer`);
         // Buffer and retry later
         pendingAnswerRef.current = answer;
         return;
@@ -573,12 +541,10 @@ const useWebRTC = () => {
         
         // If this is a renegotiation, check for new video tracks
         if (isRenegotiation) {
-          console.log('🔄 Processing renegotiation answer - checking for new video tracks');
           
           // Ensure remote stream handler is set up
           if (!pc.ontrack) {
             setupRemoteStreamHandler(pc, (remoteStream) => {
-              console.log('📹 Remote stream updated with new video track');
               useCallStore.getState().setRemoteStream(remoteStream);
             });
           }
@@ -614,21 +580,11 @@ const useWebRTC = () => {
                   useCallStore.getState().setRemoteStream(updatedStream);
                   
                   if (!hasVideoTrack) {
-                    console.log('✅ Remote stream updated with NEW video track after renegotiation answer', {
-                      trackId: videoReceiver.track.id,
-                      enabled: videoReceiver.track.enabled,
-                      readyState: videoReceiver.track.readyState,
-                    });
+
                   } else if (!hasActiveExistingTrack) {
-                    console.log('✅ Remote stream updated - video track RE-ENABLED after renegotiation', {
-                      trackId: videoReceiver.track.id,
-                      enabled: videoReceiver.track.enabled,
-                      readyState: videoReceiver.track.readyState,
-                    });
+
                   } else {
-                    console.log('✅ Remote stream updated - ensuring active video track after renegotiation', {
-                      trackId: videoReceiver.track.id,
-                    });
+
                   }
                 }
               } else {
@@ -639,7 +595,6 @@ const useWebRTC = () => {
                     ...currentRemoteStream.getAudioTracks(),
                   ]);
                   useCallStore.getState().setRemoteStream(updatedStream);
-                  console.log('✅ Remote stream updated - video track removed after renegotiation');
                 }
               }
             } else if (videoReceiver && videoReceiver.track) {
@@ -650,10 +605,8 @@ const useWebRTC = () => {
               if (receiverTrackActive) {
                 const newStream = new MediaStream([videoReceiver.track]);
                 useCallStore.getState().setRemoteStream(newStream);
-                console.log('✅ New remote stream created with video track after renegotiation');
               }
             } else {
-              console.log('⚠️ No active video track found in receivers after renegotiation');
             }
           };
           
@@ -695,7 +648,6 @@ const useWebRTC = () => {
       
       const pc = peerConnection || useCallStore.getState().peerConnection;
       if (!pc) {
-        console.warn('ICE candidate received but no peer connection');
         return;
       }
       
@@ -707,18 +659,28 @@ const useWebRTC = () => {
         // Only log unexpected errors
         if (!error.message?.includes('not found') && 
             !error.message?.includes('already added')) {
-          console.warn('ICE candidate error (non-fatal):', error.message);
+          // Error logged silently
         }
       }
     };
     
     // Register event listeners
+    // Mute status update handler
+    const handleMuteStatus = ({ callId: muteCallId, isMuted }) => {
+      const currentState = useCallStore.getState();
+      if (muteCallId !== currentState.callId) return;
+      
+      // Update peer mute status in UI (optional - for showing mute indicator)
+      // The actual audio is already controlled by WebRTC track.enabled
+    };
+    
     socket.on('call:incoming', handleIncomingCall);
     socket.on('call:ringing', handleCallRinging);
     socket.on('call:answered', handleCallAnswered);
     socket.on('call:rejected', handleCallRejected);
     socket.on('call:ended', handleCallEnded);
     socket.on('call:failed', handleCallFailed);
+    socket.on('call:mute-status', handleMuteStatus);
     socket.on('groupcall:invitation', handleGroupCallInvitation);
     socket.on('webrtc:offer', handleWebRTCOffer);
     socket.on('webrtc:answer', handleWebRTCAnswer);
@@ -731,6 +693,7 @@ const useWebRTC = () => {
       socket.off('call:rejected', handleCallRejected);
       socket.off('call:ended', handleCallEnded);
       socket.off('call:failed', handleCallFailed);
+      socket.off('call:mute-status', handleMuteStatus);
       socket.off('groupcall:invitation', handleGroupCallInvitation);
       socket.off('webrtc:offer', handleWebRTCOffer);
       socket.off('webrtc:answer', handleWebRTCAnswer);
@@ -773,7 +736,6 @@ const useWebRTC = () => {
         videoTracks.forEach(track => {
           if (track.readyState === 'live' && !track.enabled) {
             track.enabled = true;
-            console.log('✅ Enabled video track during call initialization:', track.label);
           }
         });
         
@@ -783,7 +745,6 @@ const useWebRTC = () => {
         );
         
         if (activeVideoTracks.length === 0 && videoTracks.length > 0) {
-          console.warn('⚠️ Video tracks exist but none are active - enabling all tracks');
           // Try to enable all tracks
           videoTracks.forEach(track => {
             if (track.readyState === 'live') {
@@ -791,17 +752,6 @@ const useWebRTC = () => {
             }
           });
         }
-        
-        console.log('📹 Video call initialized:', {
-          totalTracks: videoTracks.length,
-          activeTracks: activeVideoTracks.length,
-          trackDetails: videoTracks.map(t => ({
-            id: t.id,
-            label: t.label,
-            enabled: t.enabled,
-            readyState: t.readyState,
-          })),
-        });
       }
       
       setLocalStream(stream);
@@ -925,7 +875,6 @@ const useWebRTC = () => {
       
       // Validation: Must be screen sharing
       if (!currentState.isScreenSharing || !screenShareStream) {
-        console.warn('Not currently screen sharing');
         setScreenSharing(false, null);
         return;
       }
@@ -963,7 +912,6 @@ const useWebRTC = () => {
           // Camera track exists - replace screen share with camera
           try {
             await replaceVideoTrack(peerConnection, cameraVideoTrack, localStream);
-            console.log('✅ Switched back to camera from screen share');
           } catch (error) {
             console.error('Error switching to camera:', error);
             toast.error("Stopped screen sharing but failed to switch to camera");
@@ -994,7 +942,6 @@ const useWebRTC = () => {
                 setLocalStream(cameraStream);
               }
               
-              console.log('✅ Switched back to camera from screen share');
             }
           } catch (error) {
             console.error('Error getting camera stream:', error);
@@ -1090,12 +1037,7 @@ const useWebRTC = () => {
       // The actual emit will fail gracefully if not connected
       const isSocketConnected = socket.connected === true || (socket.id && typeof socket.emit === 'function');
       if (!isSocketConnected) {
-        console.warn('Socket connection check:', { 
-          connected: socket.connected, 
-          disconnected: socket.disconnected,
-          id: socket.id,
-          hasEmit: typeof socket.emit === 'function'
-        });
+
         // Don't block - let the emit try anyway, it will handle errors gracefully
         // toast.error("Connection lost. Please reconnect.");
         // return;
@@ -1188,7 +1130,6 @@ const useWebRTC = () => {
         
         // Handle browser UI stop event (user clicks stop in browser UI)
         videoTrack.onended = () => {
-          console.log('📹 Screen share ended by user (browser UI)');
           stopScreenShare();
         };
         
@@ -1236,7 +1177,6 @@ const useWebRTC = () => {
           }
           
           socket.emit('webrtc:offer', { callId, offer, receiverId: otherUserId });
-          console.log('📤 Renegotiation offer sent for screen share');
         }
         
         toast.success("Screen sharing started");
@@ -1330,7 +1270,6 @@ const useWebRTC = () => {
       
       // Handle browser UI stop event (user clicks stop in browser UI)
       screenShareVideoTrack.onended = () => {
-        console.log('📹 Screen share ended by user (browser UI)');
         handleGroupCallScreenShare(true, displayStream, socket, roomId, participants);
       };
       

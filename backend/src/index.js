@@ -44,20 +44,11 @@ app.use(
         ].filter(Boolean); // Remove undefined/null/empty values
         
         // Log for debugging (only in production if needed)
-        if (process.env.NODE_ENV === 'production') {
-          console.log('CORS check:', {
-            origin,
-            allowedOrigins,
-            isAllowed: allowedOrigins.includes(origin),
-            frontendUrl: process.env.FRONTEND_URL
-          });
-        }
+        // (console logging removed to keep server logs clean)
         
         // In production, allow the frontend origin
         if (process.env.NODE_ENV === 'production') {
           // Log the origin for debugging
-          console.log('CORS Origin:', origin);
-          console.log('FRONTEND_URL:', process.env.FRONTEND_URL);
           
           // Allow if matches FRONTEND_URL or if FRONTEND_URL not set, allow common patterns
           if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL) {
@@ -79,7 +70,6 @@ app.use(
         }
         
         // Origin not allowed
-        console.warn(`CORS blocked origin: ${origin}. Allowed origins:`, allowedOrigins);
         callback(new Error(`Origin ${origin} is not allowed by CORS policy`));
       } catch (error) {
         console.error('CORS error:', error);
@@ -133,7 +123,6 @@ app.get('/api', (req, res) => {
 
 // Graceful shutdown function
 const gracefulShutdown = async (signal) => {
-  console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
   
   // Clear keep-alive timer if it exists
   if (keepAliveTimer) {
@@ -146,14 +135,12 @@ const gracefulShutdown = async (signal) => {
     if (io) {
       io.emit('server:shutting_down', { message: 'Server is shutting down...' });
       io.close(() => {
-        console.log('✅ Socket.IO server closed');
       });
     }
     
     // Close HTTP server (stop accepting new connections)
     if (server) {
       server.close(() => {
-        console.log('✅ HTTP server closed');
       });
     }
     
@@ -163,10 +150,8 @@ const gracefulShutdown = async (signal) => {
     // Close database connection
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
-      console.log('✅ Database connection closed');
     }
     
-    console.log('✅ Graceful shutdown completed');
     process.exit(0);
   } catch (error) {
     console.error('❌ Error during graceful shutdown:', error);
@@ -183,12 +168,10 @@ let keepAliveTimer = null;
 
 const setupKeepAlive = () => {
   if (!KEEP_ALIVE_ENABLED) {
-    console.log('⏸️  Keep-alive is disabled');
     return;
   }
   
   const intervalMinutes = KEEP_ALIVE_INTERVAL / (60 * 1000);
-  console.log(`💓 Keep-alive enabled: Server will ping itself every ${intervalMinutes} minutes`);
   
   // Ping the health endpoint to keep the server awake
   const pingServer = async () => {
@@ -217,21 +200,18 @@ const setupKeepAlive = () => {
         res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
           const timestamp = new Date().toISOString();
-          console.log(`💓 Keep-alive ping successful at ${timestamp}`);
         });
       });
       
       req.on('error', (error) => {
         // Don't spam logs if ping fails (might be normal in some environments)
         if (process.env.NODE_ENV === 'development') {
-          console.warn(`⚠️  Keep-alive ping failed: ${error.message}`);
         }
       });
       
       req.on('timeout', () => {
         req.destroy();
         if (process.env.NODE_ENV === 'development') {
-          console.warn('⚠️  Keep-alive ping timed out');
         }
       });
       
@@ -239,7 +219,6 @@ const setupKeepAlive = () => {
     } catch (error) {
       // Silent fail - keep-alive is best effort
       if (process.env.NODE_ENV === 'development') {
-        console.warn(`⚠️  Keep-alive ping error: ${error.message}`);
       }
     }
   };
@@ -260,8 +239,6 @@ const startServer = async () => {
 
     // Start the socket server
     server.listen(PORT, () => {
-      console.log(`🌐 Server is running on port ${PORT} ✅`);
-      console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
       
       // Setup keep-alive ping after server starts
       setupKeepAlive();

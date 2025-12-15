@@ -59,7 +59,6 @@ const VoiceCallWindow = () => {
             // Ignore AbortError (happens when audio is removed/changed during play)
             if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
               if (isMounted) {
-                console.warn('Error playing remote audio:', err.name);
               }
             }
             playPromise = null;
@@ -97,6 +96,31 @@ const VoiceCallWindow = () => {
         audioElement.volume = 1.0;
         audioElement.setAttribute('playsinline', 'true');
         
+        // Set audio output device if setSinkId is supported
+        if ('setSinkId' in HTMLAudioElement.prototype) {
+          try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
+            
+            if (audioOutputs.length > 0) {
+              const { isSpeakerEnabled } = useCallStore.getState();
+              const targetDeviceId = isSpeakerEnabled
+                ? audioOutputs.find(d => d.label.toLowerCase().includes('speaker') || d.label.toLowerCase().includes('headphone'))?.deviceId || audioOutputs[0]?.deviceId || ''
+                : 'default';
+              
+              try {
+                await audioElement.setSinkId(targetDeviceId);
+              } catch (err) {
+              }
+            }
+          } catch (err) {
+          }
+        } else {
+          // Fallback: Adjust volume or use other methods
+          const { isSpeakerEnabled } = useCallStore.getState();
+          audioElement.volume = isSpeakerEnabled ? 1.0 : 0.8;
+        }
+        
         // Try to play if paused
         if (audioElement.paused) {
           try {
@@ -107,7 +131,6 @@ const VoiceCallWindow = () => {
             // Ignore AbortError and NotAllowedError
             if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
               if (isMounted) {
-                console.warn('Error playing audio:', err.name);
               }
             }
             playPromise = null;
@@ -196,7 +219,6 @@ const VoiceCallWindow = () => {
             playPromise = null;
           } catch (err) {
             if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-              console.warn('Error playing local video:', err.name);
             }
             playPromise = null;
           }
@@ -250,7 +272,6 @@ const VoiceCallWindow = () => {
           playPromise = null;
         } catch (err) {
           if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-            console.warn('Error playing remote video:', err.name);
           }
           playPromise = null;
         }

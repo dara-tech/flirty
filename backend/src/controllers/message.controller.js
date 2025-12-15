@@ -3,7 +3,6 @@ import Message from "../model/message.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
 
-
 import mongoose from 'mongoose';
 
 export const getLastMessages = async (req, res) => {
@@ -113,8 +112,6 @@ export const getUsersForSidebar = async (req, res) => {
     }
   };
 
-
-
   export const getMessages = async (req, res) => {
     try {
       const { id: userToChatId } = req.params;
@@ -166,7 +163,6 @@ export const getUsersForSidebar = async (req, res) => {
         hasMore: hasMore, // If we got full limit, there might be more
       });
     } catch (error) {
-      console.log("Error in getMessages controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -341,19 +337,13 @@ export const getUsersForSidebar = async (req, res) => {
       // Emit to both sender and receiver for real-time updates
       const receiverSocketId = getReceiverSocketId(receiverId);
       if (receiverSocketId) {
-        console.log(`📤 Emitting newMessage to receiver socket ${receiverSocketId} (userId: ${receiverId})`);
         io.to(receiverSocketId).emit("newMessage", newMessage);
-      } else {
-        console.warn(`⚠️ Receiver socket not found for userId: ${receiverId}`);
       }
       
       // Also emit to sender so they see their own message in real-time
       const senderSocketId = getReceiverSocketId(senderId.toString());
       if (senderSocketId) {
-        console.log(`📤 Emitting newMessage to sender socket ${senderSocketId} (userId: ${senderId})`);
         io.to(senderSocketId).emit("newMessage", newMessage);
-      } else {
-        console.warn(`⚠️ Sender socket not found for userId: ${senderId}`);
       }
   
       res.status(201).json(newMessage);
@@ -426,9 +416,7 @@ export const getUsersForSidebar = async (req, res) => {
         const receiverSocketId = getReceiverSocketId(receiverIdStr);
         if (receiverSocketId) {
           io.to(receiverSocketId).emit("messageEdited", messageObj);
-          console.log(`Emitted messageEdited to receiver socket ${receiverSocketId}`);
         } else {
-          console.log(`Receiver socket not found for userId: ${receiverIdStr}`);
         }
         
         // Also notify sender
@@ -436,9 +424,7 @@ export const getUsersForSidebar = async (req, res) => {
         const senderSocketId = getReceiverSocketId(senderIdStr);
         if (senderSocketId) {
           io.to(senderSocketId).emit("messageEdited", messageObj);
-          console.log(`Emitted messageEdited to sender socket ${senderSocketId}`);
         } else {
-          console.log(`Sender socket not found for userId: ${senderIdStr}`);
         }
       } else if (message.groupId) {
         // Group message - notify all group members
@@ -463,7 +449,6 @@ export const getUsersForSidebar = async (req, res) => {
       
       res.status(200).json(populatedMessage);
     } catch (error) {
-      console.log("Error in editMessage controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -517,9 +502,7 @@ export const getUsersForSidebar = async (req, res) => {
             // Ensure edited flag is included
             newLastMessage.edited = remainingMessages[0].edited || false;
             newLastMessage.editedAt = remainingMessages[0].editedAt || null;
-            console.log(`Found new last message: ${newLastMessage._id} for conversation`);
           } else {
-            console.log(`No remaining messages found - conversation is now empty`);
           }
         }
 
@@ -541,9 +524,7 @@ export const getUsersForSidebar = async (req, res) => {
               newLastMessage: newLastMessage, // Send new last message if exists
               conversationDeleted: !newLastMessage // Flag if conversation is now empty
             });
-            console.log(`Emitted messageDeleted to receiver socket ${receiverSocketId}, newLastMessage: ${newLastMessage ? 'exists' : 'none'}`);
           } else {
-            console.log(`Receiver socket not found for userId: ${receiverIdStr}`);
           }
           
           // Also notify sender
@@ -556,9 +537,7 @@ export const getUsersForSidebar = async (req, res) => {
               newLastMessage: newLastMessage, // Send new last message if exists
               conversationDeleted: !newLastMessage // Flag if conversation is now empty
             });
-            console.log(`Emitted messageDeleted to sender socket ${senderSocketId}, newLastMessage: ${newLastMessage ? 'exists' : 'none'}`);
           } else {
-            console.log(`Sender socket not found for userId: ${senderIdStr}`);
           }
         } else if (message.groupId) {
           // Group message - notify all group members
@@ -597,7 +576,6 @@ export const getUsersForSidebar = async (req, res) => {
 
       res.status(200).json({ message: "Message deleted successfully", deleteType });
     } catch (error) {
-      console.log("Error in deleteMessage controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -668,9 +646,6 @@ export const getUsersForSidebar = async (req, res) => {
         const receiverSocketId = getReceiverSocketId(receiverIdStr);
         if (receiverSocketId) {
           io.to(receiverSocketId).emit("messageEdited", messageObj);
-          console.log(`Emitted messageEdited (image) to receiver socket ${receiverSocketId}`);
-        } else {
-          console.log(`Receiver socket not found for userId: ${receiverIdStr}`);
         }
         
         // Also notify sender
@@ -678,9 +653,6 @@ export const getUsersForSidebar = async (req, res) => {
         const senderSocketId = getReceiverSocketId(senderIdStr);
         if (senderSocketId) {
           io.to(senderSocketId).emit("messageEdited", messageObj);
-          console.log(`Emitted messageEdited (image) to sender socket ${senderSocketId}`);
-        } else {
-          console.log(`Sender socket not found for userId: ${senderIdStr}`);
         }
       } else if (message.groupId) {
         // Group message - notify all group members
@@ -700,7 +672,6 @@ export const getUsersForSidebar = async (req, res) => {
 
       res.status(200).json(message);
     } catch (error) {
-      console.log("Error in updateMessageImage controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -732,44 +703,31 @@ export const getUsersForSidebar = async (req, res) => {
         ]
       });
 
-        console.log(`Deleted ${result.deletedCount} messages between users ${myIdStr} and ${otherUserIdStr} for everyone`);
-
       // Emit socket event to notify both users with normalized IDs
       const otherUserSocketId = getReceiverSocketId(otherUserIdStr);
       if (otherUserSocketId) {
-          io.to(otherUserSocketId).emit("conversationDeleted", { 
-            userId: myIdStr,
-            deleteType: "forEveryone"
-          });
-          console.log(`Emitted conversationDeleted (forEveryone) to other user socket ${otherUserSocketId}`);
-      } else {
-        console.log(`Other user socket not found for userId: ${otherUserIdStr}`);
+        io.to(otherUserSocketId).emit("conversationDeleted", { 
+          userId: myIdStr,
+          deleteType: "forEveryone"
+        });
       }
       
       const mySocketId = getReceiverSocketId(myIdStr);
       if (mySocketId) {
-          io.to(mySocketId).emit("conversationDeleted", { 
-            userId: otherUserIdStr,
-            deleteType: "forEveryone"
-          });
-          console.log(`Emitted conversationDeleted (forEveryone) to my socket ${mySocketId}`);
-        } else {
-          console.log(`My socket not found for userId: ${myIdStr}`);
-        }
+        io.to(mySocketId).emit("conversationDeleted", { 
+          userId: otherUserIdStr,
+          deleteType: "forEveryone"
+        });
+      }
       } else {
         // Delete for me - just notify the user's client (no database changes)
         // The frontend will handle filtering this conversation from the user's view
-        console.log(`Conversation deleted for me (user ${myIdStr}) with user ${otherUserIdStr}`);
-        
         const mySocketId = getReceiverSocketId(myIdStr);
         if (mySocketId) {
           io.to(mySocketId).emit("conversationDeleted", { 
             userId: otherUserIdStr,
             deleteType: "forMe"
           });
-          console.log(`Emitted conversationDeleted (forMe) to my socket ${mySocketId}`);
-      } else {
-        console.log(`My socket not found for userId: ${myIdStr}`);
         }
         
         result.deletedCount = 0; // No messages deleted from database
@@ -781,7 +739,6 @@ export const getUsersForSidebar = async (req, res) => {
         deleteType
       });
     } catch (error) {
-      console.log("Error in deleteConversation controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -837,7 +794,6 @@ export const getUsersForSidebar = async (req, res) => {
 
       res.status(200).json(messages);
     } catch (error) {
-      console.log("Error in getMessagesByType controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -964,7 +920,6 @@ export const getUsersForSidebar = async (req, res) => {
 
       res.status(200).json(message);
     } catch (error) {
-      console.log("Error in pinMessage controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -1040,7 +995,6 @@ export const getUsersForSidebar = async (req, res) => {
 
       res.status(200).json(message);
     } catch (error) {
-      console.log("Error in unpinMessage controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -1115,7 +1069,6 @@ export const getUsersForSidebar = async (req, res) => {
 
       res.status(200).json(message);
     } catch (error) {
-      console.log("Error in addReaction controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -1174,7 +1127,6 @@ export const getUsersForSidebar = async (req, res) => {
 
       res.status(200).json(message);
     } catch (error) {
-      console.log("Error in removeReaction controller: ", error.message);
       res.status(500).json({ error: "Internal server error" });
     }
   };

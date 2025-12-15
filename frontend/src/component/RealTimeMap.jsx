@@ -412,7 +412,6 @@ const RealTimeMap = () => {
     
     const handleLocationConfirmed = (data) => {
       // Confirmation that our location was received
-      console.log("Location confirmed:", data);
     };
     
     socket.on("location:peer", handleLocationPeer);

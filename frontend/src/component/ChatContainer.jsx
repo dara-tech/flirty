@@ -9,6 +9,7 @@ import MessageSkeleton from "./skeletons/MessageSkeleton";
 import EditMessageModal from "./EditMessageModal";
 import DeleteMessageModal from "./DeleteMessageModal";
 import ProfileImage from "./ProfileImage";
+import AudioPlayer from "./AudioPlayer";
 import { formatMessageTime } from "../lib/utils";
 import toast from "react-hot-toast";
 
@@ -1310,30 +1311,16 @@ const ChatContainer = () => {
                   
                 </div>
               ) : message.audio ? (
-                /* Audio Message - Enhanced styling */
+                /* Audio Message - Custom player with waveform */
                 <div 
-                  className={`relative group/message max-w-[320px] sm:max-w-[360px] px-5 py-4 transition-all duration-200 hover:scale-[1.01] ${
+                  className={`relative group/message max-w-[320px] sm:max-w-[360px] px-4 py-3 transition-all duration-200 hover:scale-[1.01] ${
                     isMyMessage 
                       ? "bg-gradient-to-br from-primary to-primary/90 text-primary-content rounded-3xl rounded-br-sm shadow-lg shadow-primary/20" 
                       : "bg-base-200/95 backdrop-blur-sm text-base-content rounded-3xl rounded-bl-sm shadow-lg shadow-black/10 border border-base-300/50"
                   }`}
                 >
-                  {/* Enhanced Audio player */}
-                  <div className="flex items-center gap-3">
-                    <div className={`flex-shrink-0 size-11 rounded-xl flex items-center justify-center transition-all ${
-                      isMyMessage 
-                        ? 'bg-primary-content/25 shadow-lg shadow-primary-content/10' 
-                        : 'bg-primary/15 shadow-md'
-                    }`}>
-                      <FaMicrophone className={`size-5 ${isMyMessage ? 'text-primary-content' : 'text-primary'}`} />
-                    </div>
-                    <audio
-                      src={message.audio}
-                      controls
-                      className="flex-1 h-9"
-                      controlsList="nodownload"
-                    />
-                  </div>
+                  {/* Custom Audio Player */}
+                  <AudioPlayer src={message.audio} isMyMessage={isMyMessage} />
                   
                   {/* Text with audio if exists */}
                   {message.text ? (

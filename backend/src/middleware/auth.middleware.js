@@ -21,7 +21,8 @@ export const protectRoute = asyncHandler(async (req, res, next) => {
   if (!token) {
     return res.status(401).json({ 
       success: false,
-      message: "Unauthorized - No token provided" 
+      message: "Authentication required",
+      code: "NO_TOKEN"
     });
   }
 
@@ -30,16 +31,20 @@ export const protectRoute = asyncHandler(async (req, res, next) => {
   try {
     decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch (jwtError) {
+    // Provide specific error based on JWT error type
+    const isExpired = jwtError.name === 'TokenExpiredError';
     return res.status(401).json({ 
       success: false,
-      message: "Unauthorized - Invalid or expired token" 
+      message: isExpired ? "Session expired. Please login again." : "Invalid authentication token",
+      code: isExpired ? "TOKEN_EXPIRED" : "INVALID_TOKEN"
     });
   }
 
   if (!decoded || !decoded.userId) {
     return res.status(401).json({ 
       success: false,
-      message: "Unauthorized - Invalid token format" 
+      message: "Invalid authentication token",
+      code: "INVALID_TOKEN_FORMAT"
     });
   }
 
@@ -48,7 +53,8 @@ export const protectRoute = asyncHandler(async (req, res, next) => {
   if (!user) {
     return res.status(401).json({ 
       success: false,
-      message: "Unauthorized - User not found" 
+      message: "User account not found",
+      code: "USER_NOT_FOUND"
     });
   }
 

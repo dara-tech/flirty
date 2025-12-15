@@ -36,15 +36,7 @@ const socketCorsOrigin = (origin, callback) => {
     
     const allowedOrigins = getAllowedSocketOrigins();
     
-    // Log for debugging (only in production if needed)
-    if (process.env.NODE_ENV === 'production') {
-      console.log('Socket.IO CORS check:', {
-        origin,
-        allowedOrigins,
-        isAllowed: allowedOrigins.includes(origin),
-        frontendUrl: process.env.FRONTEND_URL
-      });
-    }
+    // Log for debugging (removed to keep logs clean)
     
     // In development, allow all origins (for flexibility)
     if (process.env.NODE_ENV === 'development') {
@@ -57,7 +49,6 @@ const socketCorsOrigin = (origin, callback) => {
     }
     
     // Origin not allowed
-    console.warn(`Socket.IO CORS blocked origin: ${origin}. Allowed origins:`, allowedOrigins);
     return callback(new Error(`Origin ${origin} is not allowed by Socket.io CORS policy`), false);
   } catch (error) {
     console.error('Socket.IO CORS error:', error);
@@ -100,7 +91,6 @@ export function getReceiverSocketId(userId) {
 }
 
 io.on("connection", (socket) => {
-  console.log("A user connected:", socket.id);
 
   const userId = socket.handshake.query.userId;
 
@@ -108,10 +98,8 @@ io.on("connection", (socket) => {
     // Ensure userId is stored as string for consistent lookup
     const userIdStr = typeof userId === 'string' ? userId : userId.toString();
     if (userSockets.has(userIdStr)) {
-      console.log(`User ${userIdStr} reconnected, updating socket ID.`);
     }
     userSockets.set(userIdStr, socket.id);
-    console.log(`Socket ${socket.id} mapped to user ${userIdStr}`);
   }
 
   io.emit("getOnlineUsers", Array.from(userSockets.keys()));
@@ -200,7 +188,6 @@ io.on("connection", (socket) => {
       message.seenAt = new Date();
       await message.save();
 
-      console.log(`Message ${messageId} seen by receiver`);
       const senderSocketId = getReceiverSocketId(senderId);
       if (senderSocketId) {
         io.to(senderSocketId).emit("messageSeenUpdate", { 
@@ -545,8 +532,6 @@ io.on("connection", (socket) => {
         callId,
         receiverId,
       });
-      
-      console.log(`Call ${callId} initiated: ${userId} -> ${receiverId} (${callType})`);
     } catch (error) {
       console.error("Error in call:initiate:", error);
       io.to(socket.id).emit("call:failed", {
@@ -594,7 +579,6 @@ io.on("connection", (socket) => {
         });
       }
       
-      console.log(`Call ${callId} answered by ${userId}`);
     } catch (error) {
       console.error("Error in call:answer:", error);
     }
@@ -619,7 +603,6 @@ io.on("connection", (socket) => {
       // Remove call from active calls
       activeCalls.delete(callId);
       
-      console.log(`Call ${callId} rejected by ${userId}`);
     } catch (error) {
       console.error("Error in call:reject:", error);
     }
@@ -651,8 +634,6 @@ io.on("connection", (socket) => {
       
       // Remove call from active calls
       activeCalls.delete(callId);
-      
-      console.log(`Call ${callId} ended (${reason || "ended"})`);
     } catch (error) {
       console.error("Error in call:end:", error);
     }
@@ -690,11 +671,25 @@ io.on("connection", (socket) => {
     }
   });
   
+  // Mute Status Update (1-on-1 calls)
+  socket.on("call:mute-status", ({ callId, receiverId, isMuted }) => {
+    try {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("call:mute-status", {
+          callId,
+          isMuted,
+        });
+      }
+    } catch (error) {
+      console.error("Error in call:mute-status:", error);
+    }
+  });
+  
   // ICE Candidate Exchange
   socket.on("webrtc:ice-candidate", ({ callId, candidate, receiverId }) => {
     try {
       if (!callId || !candidate || !receiverId) {
-        console.warn("Invalid ICE candidate data:", { callId, candidate, receiverId });
         return;
       }
       
@@ -705,9 +700,7 @@ io.on("connection", (socket) => {
           candidate,
           senderId: userId,
         });
-        console.log(`ICE candidate forwarded: ${userId} -> ${receiverId}`);
       } else {
-        console.warn(`Receiver ${receiverId} not found for ICE candidate`);
       }
     } catch (error) {
       console.error("Error in webrtc:ice-candidate:", error);
@@ -769,9 +762,7 @@ io.on("connection", (socket) => {
                 callerInfo: userInfo || {},
                 groupName: group.name || 'Group',
               });
-              console.log(`📞 Group call invitation sent to ${memberIdStr} for room ${roomId}`);
             } else {
-              console.log(`⚠️ Member ${memberIdStr} is offline, skipping invitation`);
             }
           }
         });
@@ -782,7 +773,6 @@ io.on("connection", (socket) => {
       if (existingParticipant) {
         // Update socket ID if reconnecting
         existingParticipant.socketId = socket.id;
-        console.log(`User ${userIdStr} reconnected to group call ${roomId}`);
       } else {
         // Add new participant
         room.participants.push({
@@ -792,7 +782,6 @@ io.on("connection", (socket) => {
           tracks: { audio: true, video: callType === 'video' },
           joinedAt: new Date(),
         });
-        console.log(`User ${userIdStr} joined group call ${roomId}`);
       }
       
       // Notify existing participants about new join
@@ -830,7 +819,6 @@ io.on("connection", (socket) => {
         },
       });
       
-      console.log(`📞 Room state sent to ${userIdStr}: ${existingParticipants.length} existing participants`);
       
     } catch (error) {
       console.error("Error in groupcall:join:", error);
@@ -866,10 +854,8 @@ io.on("connection", (socket) => {
         // Clean up room if empty
         if (room.participants.length === 0) {
           groupCallRooms.delete(roomId);
-          console.log(`Group call room ${roomId} closed (empty)`);
         }
         
-        console.log(`User ${userIdStr} left group call ${roomId}`);
       }
     } catch (error) {
       console.error("Error in groupcall:leave:", error);
@@ -932,7 +918,6 @@ io.on("connection", (socket) => {
           }
         });
         
-        console.log(`📹 Screen share started by ${userIdStr} in room ${roomId}`);
       }
     } catch (error) {
       console.error("Error in groupcall:screen-share-start:", error);
@@ -964,7 +949,6 @@ io.on("connection", (socket) => {
           }
         });
         
-        console.log(`📹 Screen share stopped by ${userIdStr} in room ${roomId}`);
       }
     } catch (error) {
       console.error("Error in groupcall:screen-share-stop:", error);
@@ -1036,7 +1020,6 @@ io.on("connection", (socket) => {
       
       const room = groupCallRooms.get(roomId);
       if (!room) {
-        console.warn(`Room ${roomId} not found for ICE candidate`);
         return;
       }
       
@@ -1049,9 +1032,6 @@ io.on("connection", (socket) => {
             candidate,
             senderId: userId,
           });
-          console.log(`ICE candidate forwarded: ${userId} -> ${targetUserId} (room: ${roomId})`);
-        } else {
-          console.warn(`Target participant ${targetUserId} not found in room ${roomId}`);
         }
       } else {
         // Broadcast to all other participants (fallback)
@@ -1158,7 +1138,6 @@ io.on("connection", (socket) => {
   
   // Cleanup active calls on disconnect
   socket.on("disconnect", () => {
-    console.log("A user disconnected:", socket.id);
 
     let disconnectedUserId = null;
     for (const [userId, socketId] of userSockets.entries()) {
@@ -1214,7 +1193,6 @@ io.on("connection", (socket) => {
           // Clean up room if empty
           if (room.participants.length === 0) {
             groupCallRooms.delete(roomId);
-            console.log(`Group call room ${roomId} closed (empty)`);
           }
         }
       }
@@ -1234,10 +1212,7 @@ io.on("connection", (socket) => {
         userId: disconnectedUserId,
       });
       
-      console.log(`User ${disconnectedUserId} removed from online list`);
       const onlineUserIds = Array.from(userSockets.keys());
-      console.log(`📢 Broadcasting online users after disconnect: ${onlineUserIds.length} users`);
-      console.log(`   User IDs:`, onlineUserIds);
       io.emit("getOnlineUsers", onlineUserIds);
     }
   });

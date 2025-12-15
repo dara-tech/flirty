@@ -8,7 +8,7 @@ import {
   changePassword, 
   googleAuth 
 } from "../controllers/auth.controller.js";
-import { protectRoute } from "../middleware/auth.middleware.js";
+import { protectRoute, optionalAuth } from "../middleware/auth.middleware.js";
 import {
   validateSignup,
   validateLogin,
@@ -26,7 +26,7 @@ router.post('/logout', logout);
 router.post('/google', validateGoogleAuth, googleAuth);
 
 // Protected routes
-router.get('/me', protectRoute, getMe);
+router.get('/me', optionalAuth, getMe); // Use optionalAuth to avoid 401 errors when not logged in
 router.put('/update-profile', protectRoute, validateUpdateProfile, updateProfile);
 router.put('/change-password', protectRoute, validateChangePassword, changePassword);
 

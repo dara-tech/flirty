@@ -139,7 +139,6 @@ export const sendContactRequest = async (req, res) => {
 
     res.status(201).json({ message: "Contact request sent", request });
   } catch (error) {
-    console.log("Error sending contact request:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -158,7 +157,6 @@ export const getPendingRequests = async (req, res) => {
 
     res.status(200).json(requests);
   } catch (error) {
-    console.log("Error getting pending requests:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -228,7 +226,6 @@ export const acceptContactRequest = async (req, res) => {
 
     res.status(200).json({ message: "Contact request accepted", request });
   } catch (error) {
-    console.log("Error accepting contact request:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -283,7 +280,6 @@ export const rejectContactRequest = async (req, res) => {
 
     res.status(200).json({ message: "Contact request rejected" });
   } catch (error) {
-    console.log("Error rejecting contact request:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -310,7 +306,6 @@ export const getContacts = async (req, res) => {
 
     res.status(200).json(contactUsers);
   } catch (error) {
-    console.log("Error getting contacts:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -334,7 +329,6 @@ export const getContactStatus = async (req, res) => {
 
     res.status(200).json({ status: request.status, requestId: request._id });
   } catch (error) {
-    console.log("Error getting contact status:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 };

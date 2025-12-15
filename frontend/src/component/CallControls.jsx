@@ -127,7 +127,6 @@ const CallControls = () => {
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            console.log('🔴 End call button clicked');
             if (endCall) {
               endCall();
             } else {
