@@ -18,7 +18,8 @@ const KEEP_ALIVE_INTERVAL = parseInt(process.env.KEEP_ALIVE_INTERVAL) || 14 * 60
 const KEEP_ALIVE_ENABLED = process.env.KEEP_ALIVE_ENABLED !== 'false'; // Enabled by default, set to 'false' to disable
 
 // Middleware setup
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '500mb' })); // Increased for large video uploads
+app.use(express.urlencoded({ limit: '500mb', extended: true }));
 app.use(cookieParser());
 app.use(
   cors({
@@ -168,63 +169,97 @@ let keepAliveTimer = null;
 
 const setupKeepAlive = () => {
   if (!KEEP_ALIVE_ENABLED) {
+    console.log('⏸️  Keep-alive mechanism is disabled');
     return;
   }
   
   const intervalMinutes = KEEP_ALIVE_INTERVAL / (60 * 1000);
+  console.log(`🔄 Keep-alive enabled: pinging every ${intervalMinutes} minutes`);
   
   // Ping the health endpoint to keep the server awake
   const pingServer = async () => {
     try {
-      const http = await import('http');
+      // Use https for production URLs, http for localhost
+      let http, url;
       
-      // Determine hostname based on environment
-      // In production (Render, Heroku, etc.), use the server's own URL or localhost
-      // The server will respond to requests on its own port
-      const hostname = process.env.KEEP_ALIVE_HOST || 'localhost';
-      const pingPort = process.env.KEEP_ALIVE_PORT || PORT;
+      // Determine the URL to ping
+      let pingUrl;
+      if (process.env.KEEP_ALIVE_URL) {
+        // Explicit URL from environment variable
+        pingUrl = process.env.KEEP_ALIVE_URL;
+      } else if (process.env.BACKEND_URL) {
+        // Use backend URL from environment
+        pingUrl = `${process.env.BACKEND_URL}/health`;
+      } else if (process.env.NODE_ENV === 'production') {
+        // In production, try to construct URL from common environment variables
+        // Render provides RENDER_EXTERNAL_URL, Heroku provides different vars
+        const externalUrl = process.env.RENDER_EXTERNAL_URL || 
+                           process.env.HEROKU_APP_NAME ? `https://${process.env.HEROKU_APP_NAME}.herokuapp.com` : null;
+        if (externalUrl) {
+          pingUrl = `${externalUrl}/health`;
+        } else {
+          // Fallback: use localhost (might work in some containerized environments)
+          pingUrl = `http://localhost:${PORT}/health`;
+        }
+      } else {
+        // Development: use localhost
+        pingUrl = `http://localhost:${PORT}/health`;
+      }
       
+      // Determine if we should use http or https
+      const useHttps = pingUrl.startsWith('https://');
+      http = useHttps ? await import('https') : await import('http');
+      
+      // Parse the URL
+      const urlObj = new URL(pingUrl);
       const options = {
-        hostname: hostname,
-        port: pingPort,
-        path: '/health',
+        hostname: urlObj.hostname,
+        port: urlObj.port || (useHttps ? 443 : 80),
+        path: urlObj.pathname,
         method: 'GET',
-        timeout: 5000,
+        timeout: 10000, // Increased timeout to 10 seconds
         headers: {
           'User-Agent': 'Keep-Alive-Ping/1.0'
         }
       };
+      
+      console.log(`📡 Keep-alive ping: ${pingUrl}`);
       
       const req = http.request(options, (res) => {
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
           const timestamp = new Date().toISOString();
+          if (res.statusCode === 200) {
+            console.log(`✅ Keep-alive ping successful (${res.statusCode}) at ${timestamp}`);
+          } else {
+            console.warn(`⚠️  Keep-alive ping returned status ${res.statusCode} at ${timestamp}`);
+          }
         });
       });
       
       req.on('error', (error) => {
-        // Don't spam logs if ping fails (might be normal in some environments)
-        if (process.env.NODE_ENV === 'development') {
-        }
+        console.error(`❌ Keep-alive ping failed: ${error.message}`);
+        console.error(`   Attempted URL: ${pingUrl}`);
       });
       
       req.on('timeout', () => {
         req.destroy();
-        if (process.env.NODE_ENV === 'development') {
-        }
+        console.error(`⏱️  Keep-alive ping timeout after 10s`);
+        console.error(`   Attempted URL: ${pingUrl}`);
       });
       
       req.end();
     } catch (error) {
-      // Silent fail - keep-alive is best effort
-      if (process.env.NODE_ENV === 'development') {
-      }
+      console.error(`❌ Keep-alive ping error: ${error.message}`);
+      console.error(error.stack);
     }
   };
   
-  // Ping immediately on setup
-  pingServer();
+  // Wait a bit for server to be fully ready, then ping
+  setTimeout(() => {
+    pingServer();
+  }, 2000);
   
   // Then ping at regular intervals
   keepAliveTimer = setInterval(() => {
@@ -239,6 +274,8 @@ const startServer = async () => {
 
     // Start the socket server
     server.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
       
       // Setup keep-alive ping after server starts
       setupKeepAlive();
