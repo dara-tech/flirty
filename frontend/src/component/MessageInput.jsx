@@ -3,6 +3,7 @@ import { useChatStore } from "../store/useChatStore";
 import { FaImage, FaPaperPlane, FaTimes, FaSpinner, FaPaperclip, FaSmile, FaMicrophone, FaStop } from "react-icons/fa";
 import { useAuthStore } from "../store/useAuthStore";
 import toast from "react-hot-toast";
+import EmojiPicker from "emoji-picker-react";
 
 const MessageInput = () => {
   const [text, setText] = useState("");
@@ -17,6 +18,7 @@ const MessageInput = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isRecordingSupported, setIsRecordingSupported] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const fileInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const lastTypingEventRef = useRef(0);
@@ -25,6 +27,7 @@ const MessageInput = () => {
   const audioBase64Ref = useRef(null);
   const audioBlobUrlRef = useRef(null); // Store blob URL for cleanup
   const recordingTimerRef = useRef(null);
+  const emojiPickerRef = useRef(null);
 
   const { sendMessage, sendGroupMessage, sendTypingStatus, sendUploadingPhotoStatus, sendGroupTypingStatus, sendGroupUploadingPhotoStatus } = useChatStore();
   const { selectedUser, selectedGroup } = useChatStore();
@@ -133,6 +136,26 @@ const MessageInput = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUser?._id, selectedGroup?._id]);
+
+  // Close emoji picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target)) {
+        // Check if click is not on the emoji button
+        const emojiButton = event.target.closest('button[title="Emoji"]');
+        if (!emojiButton) {
+          setShowEmojiPicker(false);
+        }
+      }
+    };
+
+    if (showEmojiPicker) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showEmojiPicker]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1070,13 +1093,44 @@ const MessageInput = () => {
           multiple={true}
         />
 
-        <button
-          type="button"
-          className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary"
-          title="Emoji"
-        >
-          <FaSmile className="size-4" />
-        </button>
+        <div className="relative">
+          <button
+            type="button"
+            className={`flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 ${
+              showEmojiPicker ? 'bg-primary/20 text-primary' : 'text-primary'
+            } disabled:opacity-50 disabled:cursor-not-allowed`}
+            title="Emoji"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setShowEmojiPicker(!showEmojiPicker);
+            }}
+            disabled={isSending || isUploading}
+          >
+            <FaSmile className="size-4" />
+          </button>
+          
+          {showEmojiPicker && (
+            <div 
+              ref={emojiPickerRef}
+              className="absolute bottom-full right-0 mb-2 z-[100]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <EmojiPicker
+                onEmojiClick={(emojiData) => {
+                  setText((prev) => prev + emojiData.emoji);
+                  setShowEmojiPicker(false);
+                }}
+                theme="dark"
+                width={350}
+                height={400}
+                previewConfig={{
+                  showPreview: false
+                }}
+              />
+            </div>
+          )}
+        </div>
 
         <button
           type="button"

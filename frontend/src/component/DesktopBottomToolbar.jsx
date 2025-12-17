@@ -14,6 +14,7 @@ import {
 } from "react-icons/fa";
 import { useChatStore } from "../store/useChatStore";
 import toast from "react-hot-toast";
+import EmojiPicker from "emoji-picker-react";
 
 const DesktopBottomToolbar = () => {
   const location = useLocation();
@@ -35,11 +36,33 @@ const DesktopBottomToolbar = () => {
   const [imagePreview, setImagePreview] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const fileInputRef = useRef(null);
   const resizerRef = useRef(null);
   const containerRef = useRef(null);
+  const emojiPickerRef = useRef(null);
   
   const isGroupChat = !!selectedGroup;
+  
+  // Close emoji picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target)) {
+        // Check if click is not on the emoji button
+        const emojiButton = event.target.closest('button[title="Emoji"]');
+        if (!emojiButton) {
+          setShowEmojiPicker(false);
+        }
+      }
+    };
+
+    if (showEmojiPicker) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showEmojiPicker]);
   
   // Listen for group info state changes (desktop panel)
   useEffect(() => {
@@ -396,14 +419,44 @@ const DesktopBottomToolbar = () => {
                   accept="image/*"
                 />
 
-                <button
-                  type="button"
-                  className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Emoji"
-                  disabled={isSending}
-                >
-                  <FaSmile className="size-4" />
-                </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    className={`flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 ${
+                      showEmojiPicker ? 'bg-primary/20 text-primary' : 'text-primary'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    title="Emoji"
+                    disabled={isSending}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setShowEmojiPicker(!showEmojiPicker);
+                    }}
+                  >
+                    <FaSmile className="size-4" />
+                  </button>
+                  
+                  {showEmojiPicker && (
+                    <div 
+                      ref={emojiPickerRef}
+                      className="absolute bottom-full right-0 mb-2 z-[100]"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <EmojiPicker
+                        onEmojiClick={(emojiData) => {
+                          setText((prev) => prev + emojiData.emoji);
+                          setShowEmojiPicker(false);
+                        }}
+                        theme="dark"
+                        width={350}
+                        height={400}
+                        previewConfig={{
+                          showPreview: false
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
 
                 <button
                   type="button"
