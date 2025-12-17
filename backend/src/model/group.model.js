@@ -33,6 +33,16 @@ const groupSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for query performance
+// Index for membership checks (array field)
+groupSchema.index({ members: 1 });
+// Index for admin queries
+groupSchema.index({ admin: 1 });
+// Index for sorting groups by update time
+groupSchema.index({ updatedAt: -1 });
+// Compound index for admin + members queries
+groupSchema.index({ admin: 1, members: 1 });
+
 const Group = mongoose.model("Group", groupSchema);
 export default Group;
 

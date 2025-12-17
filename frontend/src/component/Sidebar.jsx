@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaUsers, FaTimes, FaBars, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaComment, FaMicrophone } from "react-icons/fa";
+import { FaUsers, FaTimes, FaBars, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaComment, FaMicrophone, FaBookmark } from "react-icons/fa";
 import SidebarSkeleton from "./skeletons/SideBarSkeleton";
 import CreateGroupModal from "./CreateGroupModal";
 import ProfileImage from "./ProfileImage";
+import SavedMessages from "./SavedMessages";
 import { formatDistanceToNow } from "date-fns";
 
 const Sidebar = () => {
@@ -36,7 +37,7 @@ const Sidebar = () => {
   }, [selectedUser, selectedGroup]);
   const [searchQuery, setSearchQuery] = useState("");
   const [showCreateGroup, setShowCreateGroup] = useState(false);
-  const [activeTab, setActiveTab] = useState("chats"); // "chats" or "groups"
+  const [activeTab, setActiveTab] = useState("chats"); // "chats", "groups", or "saved"
 
   useEffect(() => {
     getUsers();
@@ -185,6 +186,18 @@ const Sidebar = () => {
               }`}
             >
               Groups
+            </button>
+            <button
+              onClick={() => setActiveTab("saved")}
+              className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-all flex items-center justify-center gap-1.5 ${
+                activeTab === "saved" 
+                  ? "bg-primary text-white shadow-sm" 
+                  : "text-base-content/60 hover:text-base-content hover:bg-base-200"
+              }`}
+              title="Saved Messages"
+            >
+              <FaBookmark className="size-3.5" />
+              <span className="hidden sm:inline">Saved</span>
             </button>
           </div>
 
@@ -421,7 +434,9 @@ const Sidebar = () => {
                   </div>
                 )}
               </>
-            )}
+            ) : activeTab === "saved" ? (
+              <SavedMessages />
+            ) : null}
           </div>
         </div>
       </aside>

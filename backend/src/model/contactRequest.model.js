@@ -23,6 +23,10 @@ const contactRequestSchema = new mongoose.Schema(
 
 // Ensure one request per sender-receiver pair
 contactRequestSchema.index({ senderId: 1, receiverId: 1 }, { unique: true });
+// Index for pending requests query (receiverId + status)
+contactRequestSchema.index({ receiverId: 1, status: 1, createdAt: -1 });
+// Index for sender's requests
+contactRequestSchema.index({ senderId: 1, status: 1, createdAt: -1 });
 
 const ContactRequest = mongoose.model("ContactRequest", contactRequestSchema);
 

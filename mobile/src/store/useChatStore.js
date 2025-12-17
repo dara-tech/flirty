@@ -420,7 +420,7 @@ export const useChatStore = create((set, get) => ({
       set({ users: uniqueUsers, lastMessages: lastMessagesMap, isUsersLoading: false });
       
       if (__DEV__) {
-        console.log(`✅ Loaded ${usersList.length} users from last messages`);
+        console.log(`✅ Loaded ${uniqueUsers.length} users from last messages`);
       }
     } catch (error) {
       clearTimeout(safetyTimeout); // Clear safety timeout on error
@@ -651,31 +651,162 @@ export const useChatStore = create((set, get) => ({
   },
 
   // Send message
-  sendMessage: async (receiverId, text, imageUri = null, fileUri = null, audioUri = null) => {
+  sendMessage: async (receiverId, text, imageUris = [], videoUris = [], fileUris = [], audioUri = null) => {
     const authUser = useAuthStore.getState().authUser;
     const socket = useAuthStore.getState().socket;
     
-    if (!authUser || !receiverId || (!text?.trim() && !imageUri && !fileUri && !audioUri)) {
+    // Normalize arrays
+    const images = Array.isArray(imageUris) ? imageUris : (imageUris ? [imageUris] : []);
+    const videos = Array.isArray(videoUris) ? videoUris : (videoUris ? [videoUris] : []);
+    const files = Array.isArray(fileUris) ? fileUris : (fileUris ? [fileUris] : []);
+    
+    if (!authUser || !receiverId || (!text?.trim() && images.length === 0 && videos.length === 0 && files.length === 0 && !audioUri)) {
+      throw new Error('Invalid message data');
+    }
+
+    // Send multiple messages if multiple media items
+    // First, send text message if there's text and no media, or if there are multiple media items
+    const totalMedia = images.length + videos.length + files.length;
+    const shouldSendTextSeparately = text?.trim() && totalMedia > 0;
+    
+    if (shouldSendTextSeparately) {
+      try {
+        const textRes = await axiosInstance.post(`/messages/send/${receiverId}`, { text: text.trim() });
+        const textMessage = textRes.data;
+        get().addMessage(textMessage);
+        messages.push(textMessage);
+      } catch (error) {
+        console.error('Error sending text message:', error);
+      }
+    }
+
+    // Send each media item as a separate message
+    const allMedia = [
+      ...images.map(uri => ({ type: 'image', uri })),
+      ...videos.map(video => ({ type: 'video', ...video })),
+      ...files.map(file => ({ type: 'file', ...file })),
+    ];
+
+    // If there's only one media item and no text, include text in that message
+    if (allMedia.length === 1 && !shouldSendTextSeparately && text?.trim()) {
+      allMedia[0].text = text.trim();
+    }
+
+    // Send all media messages
+    const messages = [];
+    for (const media of allMedia) {
+      try {
+        const messageData = {};
+        
+        if (media.text) {
+          messageData.text = media.text;
+        }
+
+        if (media.type === 'image') {
+          try {
+            const base64 = await FileSystem.readAsStringAsync(media.uri, {
+              encoding: getBase64Encoding(),
+            });
+            const filename = media.uri.split('/').pop();
+            const match = /\.(\w+)$/.exec(filename);
+            const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
+            messageData.image = `data:${mimeType};base64,${base64}`;
+          } catch (imageError) {
+            console.error('Error converting image to base64:', imageError);
+            continue; // Skip this image
+          }
+        } else if (media.type === 'video') {
+          try {
+            const videoUriString = media.uri;
+            const base64 = await FileSystem.readAsStringAsync(videoUriString, {
+              encoding: getBase64Encoding(),
+            });
+            const filename = videoUriString.split('/').pop();
+            const match = /\.(\w+)$/.exec(filename);
+            const mimeType = match ? `video/${match[1]}` : 'video/mp4';
+            messageData.video = `data:${mimeType};base64,${base64}`;
+            if (media.duration) {
+              messageData.videoDuration = media.duration;
+            }
+          } catch (videoError) {
+            console.error('Error converting video to base64:', videoError);
+            continue; // Skip this video
+          }
+        } else if (media.type === 'file') {
+          try {
+            const base64 = await FileSystem.readAsStringAsync(media.uri, {
+              encoding: getBase64Encoding(),
+            });
+            const mimeType = media.mimeType || 'application/octet-stream';
+            messageData.file = `data:${mimeType};base64,${base64}`;
+            messageData.fileName = media.name || media.uri.split('/').pop();
+            messageData.fileSize = media.size || null;
+            messageData.fileType = mimeType;
+          } catch (fileError) {
+            console.error('Error converting file to base64:', fileError);
+            continue; // Skip this file
+          }
+        }
+
+        const res = await axiosInstance.post(`/messages/send/${receiverId}`, messageData);
+        const message = res.data;
+        get().addMessage(message);
+        messages.push(message);
+      } catch (error) {
+        console.error(`Error sending ${media.type}:`, error);
+        // Continue with next media item
+      }
+    }
+
+    // Handle audio separately (only one audio at a time)
+    if (audioUri) {
+      try {
+        const audioMessage = await get()._sendSingleMediaMessage(receiverId, '', null, null, null, audioUri);
+        if (audioMessage) {
+          messages.push(audioMessage);
+        }
+      } catch (error) {
+        console.error('Error sending audio:', error);
+      }
+    }
+
+    // Emit via socket for real-time delivery (only for the last message)
+    if (socket && socket.connected && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      socket.emit('sendMessage', {
+        receiverId,
+        text: lastMessage.text,
+        image: lastMessage.image,
+        video: lastMessage.video,
+        file: lastMessage.file,
+        audio: lastMessage.audio,
+      });
+    }
+
+    return messages.length > 0 ? messages : null;
+  },
+
+  // Helper function to send a single media message (used internally)
+  _sendSingleMediaMessage: async (receiverId, text, imageUri = null, videoUri = null, fileUri = null, audioUri = null) => {
+    const authUser = useAuthStore.getState().authUser;
+    const socket = useAuthStore.getState().socket;
+    
+    if (!authUser || !receiverId || (!text?.trim() && !imageUri && !videoUri && !fileUri && !audioUri)) {
       throw new Error('Invalid message data');
     }
 
     try {
-      // Backend expects text, image, file, audio as strings (base64 or URLs)
-      // For React Native, we need to convert local URIs to base64
       const messageData = {};
       
-      // Only include text if it has content
       if (text?.trim()) {
         messageData.text = text.trim();
       }
 
-      // Convert image to base64 if provided
       if (imageUri) {
         try {
           const base64 = await FileSystem.readAsStringAsync(imageUri, {
             encoding: getBase64Encoding(),
           });
-          // Create data URI for backend
           const filename = imageUri.split('/').pop();
           const match = /\.(\w+)$/.exec(filename);
           const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
@@ -683,6 +814,25 @@ export const useChatStore = create((set, get) => ({
         } catch (imageError) {
           console.error('Error converting image to base64:', imageError);
           throw new Error('Failed to process image');
+        }
+      }
+
+      if (videoUri) {
+        try {
+          const videoUriString = typeof videoUri === 'object' ? videoUri.uri : videoUri;
+          const base64 = await FileSystem.readAsStringAsync(videoUriString, {
+            encoding: getBase64Encoding(),
+          });
+          const filename = videoUriString.split('/').pop();
+          const match = /\.(\w+)$/.exec(filename);
+          const mimeType = match ? `video/${match[1]}` : 'video/mp4';
+          messageData.video = `data:${mimeType};base64,${base64}`;
+          if (typeof videoUri === 'object' && videoUri.duration) {
+            messageData.videoDuration = videoUri.duration;
+          }
+        } catch (videoError) {
+          console.error('Error converting video to base64:', videoError);
+          throw new Error('Failed to process video');
         }
       }
 
@@ -813,6 +963,7 @@ export const useChatStore = create((set, get) => ({
           receiverId,
           text: messageData.text,
           image: messageData.image,
+          video: messageData.video,
           file: messageData.file,
           audio: messageData.audio,
         });
@@ -826,16 +977,295 @@ export const useChatStore = create((set, get) => ({
   },
 
   // Send group message
-  sendGroupMessage: async (groupId, text, imageUri = null, fileUri = null, audioUri = null) => {
+  sendGroupMessage: async (groupId, text, imageUris = [], videoUris = [], fileUris = [], audioUri = null) => {
     const authUser = useAuthStore.getState().authUser;
     const socket = useAuthStore.getState().socket;
     
-    if (!authUser || !groupId || (!text?.trim() && !imageUri && !fileUri && !audioUri)) {
+    // Normalize arrays
+    const images = Array.isArray(imageUris) ? imageUris : (imageUris ? [imageUris] : []);
+    const videos = Array.isArray(videoUris) ? videoUris : (videoUris ? [videoUris] : []);
+    const files = Array.isArray(fileUris) ? fileUris : (fileUris ? [fileUris] : []);
+    
+    if (!authUser || !groupId || (!text?.trim() && images.length === 0 && videos.length === 0 && files.length === 0 && !audioUri)) {
+      throw new Error('Invalid message data');
+    }
+
+    // Send multiple messages if multiple media items
+    const totalMedia = images.length + videos.length + files.length;
+    const shouldSendTextSeparately = text?.trim() && totalMedia > 0;
+    const messages = [];
+    
+    if (shouldSendTextSeparately) {
+      try {
+        const textRes = await axiosInstance.post(`/groups/${groupId}/send`, { text: text.trim() });
+        const textMessage = textRes.data;
+        get().addMessage(textMessage);
+        messages.push(textMessage);
+      } catch (error) {
+        console.error('Error sending text message:', error);
+      }
+    }
+
+    // Send each media item as a separate message
+    const allMedia = [
+      ...images.map(uri => ({ type: 'image', uri })),
+      ...videos.map(video => ({ type: 'video', ...video })),
+      ...files.map(file => ({ type: 'file', ...file })),
+    ];
+
+    // If there's only one media item and no text, include text in that message
+    if (allMedia.length === 1 && !shouldSendTextSeparately && text?.trim()) {
+      allMedia[0].text = text.trim();
+    }
+
+    // Send all media messages
+    for (const media of allMedia) {
+      try {
+        const messageData = {};
+        
+        if (media.text) {
+          messageData.text = media.text;
+        }
+
+        if (media.type === 'image') {
+          try {
+            const base64 = await FileSystem.readAsStringAsync(media.uri, {
+              encoding: getBase64Encoding(),
+            });
+            const filename = media.uri.split('/').pop();
+            const match = /\.(\w+)$/.exec(filename);
+            const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
+            messageData.image = `data:${mimeType};base64,${base64}`;
+          } catch (imageError) {
+            console.error('Error converting image to base64:', imageError);
+            continue;
+          }
+        } else if (media.type === 'video') {
+          try {
+            const videoUriString = media.uri;
+            const base64 = await FileSystem.readAsStringAsync(videoUriString, {
+              encoding: getBase64Encoding(),
+            });
+            const filename = videoUriString.split('/').pop();
+            const match = /\.(\w+)$/.exec(filename);
+            const mimeType = match ? `video/${match[1]}` : 'video/mp4';
+            messageData.video = `data:${mimeType};base64,${base64}`;
+            if (media.duration) {
+              messageData.videoDuration = media.duration;
+            }
+          } catch (videoError) {
+            console.error('Error converting video to base64:', videoError);
+            continue;
+          }
+        } else if (media.type === 'file') {
+          try {
+            const base64 = await FileSystem.readAsStringAsync(media.uri, {
+              encoding: getBase64Encoding(),
+            });
+            const mimeType = media.mimeType || 'application/octet-stream';
+            messageData.file = `data:${mimeType};base64,${base64}`;
+            messageData.fileName = media.name || media.uri.split('/').pop();
+            messageData.fileSize = media.size || null;
+            messageData.fileType = mimeType;
+          } catch (fileError) {
+            console.error('Error converting file to base64:', fileError);
+            continue;
+          }
+        }
+
+        const res = await axiosInstance.post(`/groups/${groupId}/send`, messageData);
+        const message = res.data;
+        get().addMessage(message);
+        messages.push(message);
+      } catch (error) {
+        console.error(`Error sending ${media.type}:`, error);
+      }
+    }
+
+    // Handle audio separately
+    if (audioUri) {
+      try {
+        const audioMessage = await get()._sendSingleGroupMessage(groupId, '', null, null, null, audioUri);
+        if (audioMessage) {
+          messages.push(audioMessage);
+        }
+      } catch (error) {
+        console.error('Error sending audio:', error);
+      }
+    }
+
+    // Emit via socket for real-time delivery
+    if (socket && socket.connected && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      socket.emit('sendGroupMessage', {
+        groupId,
+        text: lastMessage.text,
+        image: lastMessage.image,
+        video: lastMessage.video,
+        file: lastMessage.file,
+        audio: lastMessage.audio,
+      });
+    }
+
+    return messages.length > 0 ? messages : null;
+  },
+
+  // Helper function to send a single group media message (used internally)
+  _sendSingleGroupMessage: async (groupId, text, imageUri = null, videoUri = null, fileUri = null, audioUri = null) => {
+    const authUser = useAuthStore.getState().authUser;
+    const socket = useAuthStore.getState().socket;
+    
+    if (!authUser || !groupId || (!text?.trim() && !imageUri && !videoUri && !fileUri && !audioUri)) {
       throw new Error('Invalid message data');
     }
 
     try {
-      // Backend expects text, image, file, audio as strings (base64 or URLs)
+      const messageData = {};
+      
+      if (text?.trim()) {
+        messageData.text = text.trim();
+      }
+
+      if (imageUri) {
+        try {
+          const base64 = await FileSystem.readAsStringAsync(imageUri, {
+            encoding: getBase64Encoding(),
+          });
+          const filename = imageUri.split('/').pop();
+          const match = /\.(\w+)$/.exec(filename);
+          const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
+          messageData.image = `data:${mimeType};base64,${base64}`;
+        } catch (imageError) {
+          console.error('Error converting image to base64:', imageError);
+          throw new Error('Failed to process image');
+        }
+      }
+
+      if (videoUri) {
+        try {
+          const videoUriString = typeof videoUri === 'object' ? videoUri.uri : videoUri;
+          const base64 = await FileSystem.readAsStringAsync(videoUriString, {
+            encoding: getBase64Encoding(),
+          });
+          const filename = videoUriString.split('/').pop();
+          const match = /\.(\w+)$/.exec(filename);
+          const mimeType = match ? `video/${match[1]}` : 'video/mp4';
+          messageData.video = `data:${mimeType};base64,${base64}`;
+          if (typeof videoUri === 'object' && videoUri.duration) {
+            messageData.videoDuration = videoUri.duration;
+          }
+        } catch (videoError) {
+          console.error('Error converting video to base64:', videoError);
+          throw new Error('Failed to process video');
+        }
+      }
+
+      if (fileUri) {
+        try {
+          const base64 = await FileSystem.readAsStringAsync(fileUri.uri, {
+            encoding: getBase64Encoding(),
+          });
+          const mimeType = fileUri.mimeType || 'application/octet-stream';
+          messageData.file = `data:${mimeType};base64,${base64}`;
+          messageData.fileName = fileUri.name || fileUri.uri.split('/').pop();
+          messageData.fileSize = fileUri.size || null;
+          messageData.fileType = mimeType;
+        } catch (fileError) {
+          console.error('Error converting file to base64:', fileError);
+          throw new Error('Failed to process file');
+        }
+      }
+
+      if (audioUri) {
+        try {
+          if (__DEV__) {
+            console.log('🎤 Converting audio to base64, URI:', audioUri);
+          }
+          
+          if (!audioUri || typeof audioUri !== 'string') {
+            throw new Error('Invalid audio URI');
+          }
+          
+          let fileInfo;
+          try {
+            fileInfo = await FileSystem.getInfoAsync(audioUri);
+          } catch (fsError) {
+            console.warn('⚠️ FileSystem.getInfoAsync failed, attempting direct read:', fsError.message);
+            fileInfo = { exists: true };
+          }
+          
+          if (fileInfo && !fileInfo.exists) {
+            throw new Error(`Audio file does not exist at: ${audioUri}`);
+          }
+          
+          if (fileInfo && fileInfo.size === 0) {
+            throw new Error('Audio file is empty (0 bytes)');
+          }
+          
+          const encoding = getBase64Encoding();
+          let base64;
+          try {
+            base64 = await FileSystem.readAsStringAsync(audioUri, {
+              encoding: encoding,
+            });
+          } catch (readError) {
+            console.error('❌ Error reading audio file:', readError);
+            throw new Error(`Failed to read audio file: ${readError.message}`);
+          }
+          
+          if (!base64 || base64.length === 0) {
+            throw new Error('Audio file read as empty string');
+          }
+          
+          let audioFormat = 'webm';
+          let codecs = 'opus';
+          const uriLower = audioUri.toLowerCase();
+          
+          if (uriLower.endsWith('.m4a') || uriLower.includes('.m4a')) {
+            audioFormat = 'm4a';
+            codecs = 'mp4a.40.2';
+          } else if (uriLower.endsWith('.webm') || uriLower.includes('.webm')) {
+            audioFormat = 'webm';
+            codecs = 'opus';
+          } else if (uriLower.endsWith('.mp3') || uriLower.includes('.mp3')) {
+            audioFormat = 'mp3';
+            codecs = 'mp3';
+          } else if (uriLower.endsWith('.aac') || uriLower.includes('.aac')) {
+            audioFormat = 'aac';
+            codecs = 'mp4a.40.2';
+          }
+          
+          messageData.audio = `data:audio/${audioFormat};codecs=${codecs};base64,${base64}`;
+        } catch (audioError) {
+          console.error('Error converting audio to base64:', audioError);
+          throw new Error(`Failed to process audio: ${audioError.message || 'Unknown error'}`);
+        }
+      }
+
+      const res = await axiosInstance.post(`/groups/${groupId}/send`, messageData);
+      const message = res.data;
+      get().addMessage(message);
+      
+      if (socket && socket.connected) {
+        socket.emit('sendGroupMessage', {
+          groupId,
+          text: messageData.text,
+          image: messageData.image,
+          video: messageData.video,
+          file: messageData.file,
+          audio: messageData.audio,
+        });
+      }
+
+      return message;
+    } catch (error) {
+      console.error('Error sending group message:', error);
+      throw error;
+    }
+  },
+
+    try {
+      // Backend expects text, image, video, file, audio as strings (base64 or URLs)
       const messageData = {};
       
       // Only include text if it has content
@@ -856,6 +1286,27 @@ export const useChatStore = create((set, get) => ({
         } catch (imageError) {
           console.error('Error converting image to base64:', imageError);
           throw new Error('Failed to process image');
+        }
+      }
+
+      // Convert video to base64 if provided
+      if (videoUri) {
+        try {
+          const videoUriString = typeof videoUri === 'object' ? videoUri.uri : videoUri;
+          const base64 = await FileSystem.readAsStringAsync(videoUriString, {
+            encoding: getBase64Encoding(),
+          });
+          const filename = videoUriString.split('/').pop();
+          const match = /\.(\w+)$/.exec(filename);
+          const mimeType = match ? `video/${match[1]}` : 'video/mp4';
+          messageData.video = `data:${mimeType};base64,${base64}`;
+          // Include video metadata if available
+          if (typeof videoUri === 'object' && videoUri.duration) {
+            messageData.videoDuration = videoUri.duration;
+          }
+        } catch (videoError) {
+          console.error('Error converting video to base64:', videoError);
+          throw new Error('Failed to process video');
         }
       }
 
@@ -985,6 +1436,7 @@ export const useChatStore = create((set, get) => ({
           groupId,
           text: messageData.text,
           image: messageData.image,
+          video: messageData.video,
           file: messageData.file,
           audio: messageData.audio,
         });

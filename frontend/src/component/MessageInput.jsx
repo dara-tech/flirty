@@ -7,9 +7,11 @@ import toast from "react-hot-toast";
 const MessageInput = () => {
   const [text, setText] = useState("");
   const [imagePreview, setImagePreview] = useState(null);
+  const [videoPreview, setVideoPreview] = useState(null);
   const [audioPreview, setAudioPreview] = useState(null);
   const [filePreview, setFilePreview] = useState(null);
   const [fileData, setFileData] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]); // Array of { file, preview, type, data }
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -66,9 +68,30 @@ const MessageInput = () => {
       audioBlobUrlRef.current = null;
     }
     
+    // Cleanup video preview URLs
+    selectedFiles.forEach(file => {
+      if (file.preview && file.preview.startsWith('blob:')) {
+        URL.revokeObjectURL(file.preview);
+      }
+    });
+    
     // Stop upload status when switching chats - use functional updates to get latest state
     setImagePreview((prevImage) => {
       if (prevImage) {
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+        } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+        }
+      }
+      return null;
+    });
+    
+    setVideoPreview((prevVideo) => {
+      if (prevVideo && prevVideo.startsWith('blob:')) {
+        URL.revokeObjectURL(prevVideo);
+      }
+      if (prevVideo) {
         if (isGroupChat && selectedGroup?._id) {
           sendGroupUploadingPhotoStatus(selectedGroup._id, false);
         } else if (selectedUser?._id) {
@@ -92,6 +115,7 @@ const MessageInput = () => {
     setText("");
     setAudioPreview(null);
     setFileData(null);
+    setSelectedFiles([]);
     audioChunksRef.current = [];
     audioBase64Ref.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -128,8 +152,8 @@ const MessageInput = () => {
   }, []);
 
   const handleFileChange = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (!file) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) {
       // Reset input value to allow selecting the same file again
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -139,65 +163,110 @@ const MessageInput = () => {
 
     setIsUploading(true);
     
-    // Send upload status immediately when file is selected
+    // Send upload status immediately when files are selected
     if (isGroupChat && selectedGroup?._id) {
       sendGroupUploadingPhotoStatus(selectedGroup._id, true);
     } else if (selectedUser?._id) {
       sendUploadingPhotoStatus(selectedUser._id, true);
     }
     
-    const reader = new FileReader();
+    const newFiles = [];
+    let filesProcessed = 0;
+    const totalFiles = files.length;
 
-    reader.onloadend = () => {
-      const fileDataUrl = reader.result;
-      
-      // Check if it's an image
-      if (file.type.startsWith("image/")) {
-        setImagePreview(fileDataUrl);
-        setFilePreview(null);
-        setFileData(null);
-      } else {
-        // It's a regular file
-        setFilePreview({
+    files.forEach((file) => {
+      const reader = new FileReader();
+
+      reader.onloadend = () => {
+        const fileDataUrl = reader.result;
+        const fileType = file.type;
+        
+        let preview = null;
+        let type = 'file';
+        
+        // Determine file type and create preview
+        if (fileType.startsWith("image/")) {
+          type = 'image';
+          preview = fileDataUrl;
+          // For single image, keep backward compatibility
+          if (files.length === 1) {
+            setImagePreview(fileDataUrl);
+            setFilePreview(null);
+            setFileData(null);
+          }
+        } else if (fileType.startsWith("video/")) {
+          type = 'video';
+          preview = URL.createObjectURL(file);
+          // For single video, keep backward compatibility
+          if (files.length === 1) {
+            setVideoPreview(preview);
+            setImagePreview(null);
+            setFilePreview(null);
+            setFileData(null);
+          }
+        } else {
+          type = 'file';
+          // For single file, keep backward compatibility
+          if (files.length === 1) {
+            setFilePreview({
+              name: file.name,
+              size: file.size,
+              type: file.type,
+            });
+            setFileData(fileDataUrl);
+            setImagePreview(null);
+            setVideoPreview(null);
+          }
+        }
+        
+        newFiles.push({
+          file: file,
+          data: fileDataUrl,
+          preview: preview,
+          type: type,
           name: file.name,
           size: file.size,
-          type: file.type,
+          mimeType: file.type,
         });
-        setFileData(fileDataUrl);
-        setImagePreview(null);
-      }
-      
-      // File reading is complete, no longer uploading (upload happens when sending)
-      setIsUploading(false);
-      
-      // Reset input value to allow selecting the same file again
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    };
+        
+        filesProcessed++;
+        
+        // When all files are processed
+        if (filesProcessed === totalFiles) {
+          if (files.length > 1) {
+            // Multiple files selected - add to selectedFiles array
+            setSelectedFiles(prev => [...prev, ...newFiles]);
+          }
+          setIsUploading(false);
+          
+          // Reset input value to allow selecting the same files again
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        }
+      };
 
-    reader.onerror = () => {
-      toast.error("Failed to read file");
-      setIsUploading(false);
-      // Stop upload status on error
-      if (isGroupChat && selectedGroup?._id) {
-        sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-      } else if (selectedUser?._id) {
-        sendUploadingPhotoStatus(selectedUser._id, false);
-      }
-      // Stop upload status on error
-      if (isGroupChat && selectedGroup?._id) {
-        sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-      } else if (selectedUser?._id) {
-        sendUploadingPhotoStatus(selectedUser._id, false);
-      }
-      // Reset input value on error
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    };
+      reader.onerror = () => {
+        toast.error(`Failed to read file: ${file.name}`);
+        filesProcessed++;
+        
+        if (filesProcessed === totalFiles) {
+          setIsUploading(false);
+          // Stop upload status on error
+          if (isGroupChat && selectedGroup?._id) {
+            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+          } else if (selectedUser?._id) {
+            sendUploadingPhotoStatus(selectedUser._id, false);
+          }
+          // Reset input value on error
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        }
+      };
 
-    reader.readAsDataURL(file);
+      reader.readAsDataURL(file);
+    });
   }, [isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
 
   // Keep upload status active while image preview exists (before sending)
@@ -223,6 +292,20 @@ const MessageInput = () => {
     }
   }, [isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
 
+  const removeVideo = useCallback(() => {
+    if (videoPreview && videoPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(videoPreview);
+    }
+    setVideoPreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    // Stop upload status when removing video
+    if (isGroupChat && selectedGroup?._id) {
+      sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+    } else if (selectedUser?._id) {
+      sendUploadingPhotoStatus(selectedUser._id, false);
+    }
+  }, [videoPreview, isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
+
   const removeFile = useCallback(() => {
     setFilePreview(null);
     setFileData(null);
@@ -233,6 +316,26 @@ const MessageInput = () => {
     } else if (selectedUser?._id) {
       sendUploadingPhotoStatus(selectedUser._id, false);
     }
+  }, [isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
+
+  const removeSelectedFile = useCallback((index) => {
+    setSelectedFiles(prev => {
+      const newFiles = [...prev];
+      const removed = newFiles.splice(index, 1)[0];
+      // Cleanup blob URL if it exists
+      if (removed?.preview && removed.preview.startsWith('blob:')) {
+        URL.revokeObjectURL(removed.preview);
+      }
+      // If no files left, stop upload status
+      if (newFiles.length === 0) {
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+        } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+        }
+      }
+      return newFiles;
+    });
   }, [isGroupChat, selectedGroup?._id, selectedUser?._id, sendGroupUploadingPhotoStatus, sendUploadingPhotoStatus]);
 
   const removeAudio = useCallback(() => {
@@ -479,7 +582,8 @@ const MessageInput = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!text.trim() && !imagePreview && !audioPreview && !fileData) return;
+    const hasContent = text.trim() || imagePreview || videoPreview || audioPreview || fileData || selectedFiles.length > 0;
+    if (!hasContent) return;
     if (isSending) return; // Prevent double submission
     
     // Stop recording if still recording
@@ -489,29 +593,33 @@ const MessageInput = () => {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     
-    // Clear input immediately for instant feedback
+    // Store values before clearing
     const messageText = text.trim();
     const messageImage = imagePreview;
+    const messageVideo = videoPreview;
     const messageAudio = audioBase64Ref.current;
     const messageFile = fileData;
     const messageFileInfo = filePreview;
+    const filesToSend = [...selectedFiles];
     
     // Store audio preview URL before clearing (for loading state)
     const audioPreviewUrl = audioPreview;
     
+    // Clear inputs immediately for instant feedback
     setText("");
     setImagePreview(null);
+    setVideoPreview(null);
     // Keep audio preview visible while sending to show loading state
-    // Only clear if it's not an audio message
     if (!messageAudio) {
-    setAudioPreview(null);
+      setAudioPreview(null);
     }
     setFilePreview(null);
     setFileData(null);
+    setSelectedFiles([]);
     // Don't clear audioBase64Ref yet - we'll clear it after successful send
     if (!messageAudio) {
-    audioChunksRef.current = [];
-    audioBase64Ref.current = null;
+      audioChunksRef.current = [];
+      audioBase64Ref.current = null;
     }
     if (fileInputRef.current) fileInputRef.current.value = "";
     
@@ -521,6 +629,16 @@ const MessageInput = () => {
       audioBlobUrlRef.current = null;
     }
     
+    // Cleanup video preview blob URLs
+    if (messageVideo && messageVideo.startsWith('blob:')) {
+      URL.revokeObjectURL(messageVideo);
+    }
+    filesToSend.forEach(file => {
+      if (file.preview && file.preview.startsWith('blob:')) {
+        URL.revokeObjectURL(file.preview);
+      }
+    });
+    
     // Clear typing status
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
@@ -528,9 +646,8 @@ const MessageInput = () => {
     
     setIsSending(true);
     
-    // Emit uploading status if sending an image, file, or audio
-    // Note: Status may already be sent when file was selected, but we ensure it's active during upload
-    const hasMedia = messageImage || messageFile || messageAudio;
+    // Emit uploading status if sending media
+    const hasMedia = messageImage || messageVideo || messageFile || messageAudio || filesToSend.length > 0;
     if (hasMedia) {
       if (isGroupChat && selectedGroup?._id) {
         sendGroupUploadingPhotoStatus(selectedGroup._id, true);
@@ -539,104 +656,203 @@ const MessageInput = () => {
       }
     }
     
-    // Prepare message payload
-    const messagePayload = {
-      text: messageText || "", // Ensure text is always a string, even if empty
-      image: messageImage || undefined,
-      audio: messageAudio || undefined,
+    // Function to send a single message
+    const sendSingleMessage = async (payload) => {
+      if (isGroupChat) {
+        if (!selectedGroup?._id) {
+          throw new Error("No group selected");
+        }
+        return await sendGroupMessage(selectedGroup._id, payload);
+      } else {
+        if (!selectedUser?._id) {
+          throw new Error("No chat selected");
+        }
+        return await sendMessage(payload);
+      }
     };
-
-    // Add file info if sending a file
-    if (messageFile && messageFileInfo) {
-      messagePayload.file = messageFile;
-      messagePayload.fileName = messageFileInfo.name;
-      messagePayload.fileSize = messageFileInfo.size;
-      messagePayload.fileType = messageFileInfo.type;
+    
+    try {
+      // Send text message first if there's text and no single media
+      if (messageText && !messageImage && !messageVideo && !messageAudio && !messageFile && filesToSend.length === 0) {
+        await sendSingleMessage({ text: messageText });
+      }
+      
+      // Send single image/video/audio/file (backward compatibility)
+      if (messageImage || messageVideo || messageAudio || messageFile) {
+        let videoDataUri = undefined;
+        if (messageVideo) {
+          try {
+            console.log(`Converting video to data URI: ${messageVideo.substring(0, 50)}...`);
+            videoDataUri = await blobToDataURL(messageVideo);
+            console.log(`Video converted successfully: ${videoDataUri ? videoDataUri.substring(0, 50) + '...' : 'null'}`);
+          } catch (error) {
+            console.error("Failed to convert video to data URI:", error);
+            toast.error("Failed to process video. Please try again.");
+            return;
+          }
+        }
+        
+        const payload = {
+          text: messageText || "",
+          image: messageImage || undefined,
+          video: videoDataUri,
+          audio: messageAudio || undefined,
+        };
+        
+        if (messageFile && messageFileInfo) {
+          payload.file = messageFile;
+          payload.fileName = messageFileInfo.name;
+          payload.fileSize = messageFileInfo.size;
+          payload.fileType = messageFileInfo.type;
+        }
+        
+        await sendSingleMessage(payload);
+      }
+      
+      // Send multiple files as separate messages
+      if (filesToSend.length > 0) {
+        for (const fileItem of filesToSend) {
+          let videoDataUri = undefined;
+          if (fileItem.type === 'video') {
+            try {
+              console.log(`Converting video file to data URI: ${fileItem.preview?.substring(0, 50)}...`);
+              videoDataUri = await blobToDataURL(fileItem.preview);
+              console.log(`Video file converted successfully`);
+            } catch (error) {
+              console.error("Failed to convert video file to data URI:", error);
+              toast.error(`Failed to process video ${fileItem.name}. Please try again.`);
+              continue; // Skip this file and continue with others
+            }
+          }
+          
+          const payload = {
+            text: filesToSend.length === 1 ? messageText : "", // Only add text to first file if single file
+            image: fileItem.type === 'image' ? fileItem.data : undefined,
+            video: videoDataUri,
+            file: fileItem.type === 'file' ? fileItem.data : undefined,
+            fileName: fileItem.name,
+            fileSize: fileItem.size,
+            fileType: fileItem.mimeType,
+          };
+          
+          await sendSingleMessage(payload);
+        }
+      }
+      
+      // Clear audio preview and refs after successful send
+      if (messageAudio) {
+        setAudioPreview(null);
+        audioChunksRef.current = [];
+        audioBase64Ref.current = null;
+        if (audioBlobUrlRef.current) {
+          URL.revokeObjectURL(audioBlobUrlRef.current);
+          audioBlobUrlRef.current = null;
+        }
+      }
+      
+      // Stop upload status after sending
+      if (hasMedia) {
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+        } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+        }
+      }
+      
+      if (isGroupChat && selectedGroup?._id) {
+        sendGroupTypingStatus(selectedGroup._id, false);
+      } else if (selectedUser?._id) {
+        sendTypingStatus(selectedUser._id, false);
+      }
+    } catch (error) {
+      console.error("Failed to send message:", error);
+      toast.error("Failed to send message");
+      
+      // Restore audio preview on error
+      if (messageAudio) {
+        setAudioPreview(audioPreviewUrl);
+      }
+      
+      // Stop upload status on error
+      if (hasMedia) {
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+        } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
+        }
+      }
+    } finally {
+      setIsSending(false);
     }
     
-    // Send message in background (no loading spinner)
-    if (isGroupChat) {
-      if (!selectedGroup?._id) {
-        toast.error("No group selected");
-        setIsSending(false);
-        // Stop upload status on error
-        if (hasMedia) {
-          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-        }
-        return;
+  };
+  
+  // Helper function to convert blob URL to data URL
+  const blobToDataURL = async (blobUrl) => {
+    if (!blobUrl) {
+      console.warn("blobToDataURL: No blob URL provided");
+      return undefined;
+    }
+    
+    // If it's already a data URI, return it as is
+    if (blobUrl.startsWith('data:')) {
+      console.log("blobToDataURL: Already a data URI, returning as is");
+      return blobUrl;
+    }
+    
+    // If it's not a blob URL, something is wrong
+    if (!blobUrl.startsWith('blob:')) {
+      console.error(`blobToDataURL: Expected blob URL but got: ${blobUrl.substring(0, 100)}`);
+      throw new Error(`Invalid blob URL: ${blobUrl.substring(0, 50)}`);
+    }
+    
+    try {
+      console.log(`blobToDataURL: Fetching blob from ${blobUrl.substring(0, 50)}...`);
+      const response = await fetch(blobUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch blob: ${response.status} ${response.statusText}`);
       }
-      sendGroupMessage(selectedGroup._id, messagePayload).catch((error) => {
-        console.error("Failed to send message:", error);
-        toast.error("Failed to send message");
-        // Stop upload status on error
-        if (hasMedia) {
-          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-        }
-        // Restore audio preview on error
-        if (messageAudio) {
-          setAudioPreview(audioPreviewUrl);
-        }
-      }).finally(() => {
-        setIsSending(false);
-        if (isGroupChat && selectedGroup?._id) {
-          sendGroupTypingStatus(selectedGroup._id, false);
-          // Always stop upload status after sending
-          if (hasMedia) {
-            sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-          }
-        }
-        // Clear audio preview and refs after successful send
-        if (messageAudio) {
-          setAudioPreview(null);
-          audioChunksRef.current = [];
-          audioBase64Ref.current = null;
-          if (audioBlobUrlRef.current) {
-            URL.revokeObjectURL(audioBlobUrlRef.current);
-            audioBlobUrlRef.current = null;
-          }
-        }
-      });
-    } else {
-      if (!selectedUser?._id) {
-        toast.error("No chat selected");
-        setIsSending(false);
-        // Stop upload status on error
-        if (hasMedia) {
-          sendUploadingPhotoStatus(selectedUser._id, false);
-        }
-        return;
+      
+      const blob = await response.blob();
+      console.log(`blobToDataURL: Blob fetched - size=${blob.size} bytes, type=${blob.type}`);
+      
+      if (blob.size === 0) {
+        throw new Error("Blob is empty");
       }
-      sendMessage(messagePayload).catch((error) => {
-        console.error("Failed to send message:", error);
-        toast.error("Failed to send message");
-        // Stop upload status on error
-        if (hasMedia) {
-          sendUploadingPhotoStatus(selectedUser._id, false);
-        }
-        // Restore audio preview on error
-        if (messageAudio) {
-          setAudioPreview(audioPreviewUrl);
-        }
-      }).finally(() => {
-        setIsSending(false);
-        if (selectedUser?._id) {
-          sendTypingStatus(selectedUser._id, false);
-          // Always stop upload status after sending
-          if (hasMedia) {
-            sendUploadingPhotoStatus(selectedUser._id, false);
+      
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        
+        reader.onloadend = () => {
+          const result = reader.result;
+          if (!result) {
+            reject(new Error("FileReader returned no result"));
+            return;
           }
-        }
-        // Clear audio preview and refs after successful send
-        if (messageAudio) {
-          setAudioPreview(null);
-          audioChunksRef.current = [];
-          audioBase64Ref.current = null;
-          if (audioBlobUrlRef.current) {
-            URL.revokeObjectURL(audioBlobUrlRef.current);
-            audioBlobUrlRef.current = null;
+          
+          if (!result.startsWith('data:')) {
+            reject(new Error(`FileReader result is not a data URI: ${result.substring(0, 50)}`));
+            return;
           }
-        }
+          
+          console.log(`blobToDataURL: Data URL created - length=${result.length}, type=${result.substring(5, 20)}`);
+          resolve(result);
+        };
+        
+        reader.onerror = (error) => {
+          console.error("blobToDataURL: FileReader error:", error);
+          reject(new Error(`FileReader error: ${error.message || 'Unknown error'}`));
+        };
+        
+        reader.onabort = () => {
+          reject(new Error("FileReader aborted"));
+        };
+        
+        reader.readAsDataURL(blob);
       });
+    } catch (error) {
+      console.error("blobToDataURL: Error converting blob to data URL:", error);
+      throw error; // Re-throw instead of returning blobUrl
     }
   };
 
@@ -678,6 +894,80 @@ const MessageInput = () => {
           >
             <FaTimes className="size-3.5 text-base-content" />
           </button>
+        </div>
+      )}
+
+      {/* Video Preview */}
+      {videoPreview && (
+        <div className="mb-3 relative w-fit rounded-xl overflow-hidden group shadow-sm bg-black">
+          <video
+            src={videoPreview}
+            controls
+            preload="metadata"
+            playsInline
+            className="w-64 h-48 object-contain rounded-xl"
+            onError={(e) => {
+              console.error("Video preview error:", e);
+              toast.error("Failed to load video preview");
+            }}
+          />
+          <button
+            type="button"
+            className="absolute top-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md z-10"
+            onClick={removeVideo}
+            title="Remove video"
+          >
+            <FaTimes className="size-3.5 text-base-content" />
+          </button>
+        </div>
+      )}
+
+      {/* Multiple Files Preview */}
+      {selectedFiles.length > 0 && (
+        <div className="mb-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {selectedFiles.map((fileItem, index) => (
+            <div key={index} className="relative rounded-xl overflow-hidden group shadow-sm">
+              {fileItem.type === 'image' && (
+                <img
+                  src={fileItem.data}
+                  alt={fileItem.name}
+                  className="w-full h-32 object-cover"
+                />
+              )}
+              {fileItem.type === 'video' && (
+                <video
+                  src={fileItem.preview}
+                  className="w-full h-32 object-cover bg-black"
+                  controls
+                  preload="metadata"
+                  playsInline
+                  onError={(e) => {
+                    console.error("Video preview error:", e);
+                  }}
+                />
+              )}
+              {fileItem.type === 'file' && (
+                <div className="w-full h-32 bg-base-200 flex items-center justify-center">
+                  <FaPaperclip className="size-8 text-base-content/50" />
+                </div>
+              )}
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all">
+                <button
+                  type="button"
+                  className="absolute top-2 right-2 size-6 rounded-full opacity-0 group-hover:opacity-100 transition-all bg-error text-error-content hover:bg-error/90 flex items-center justify-center shadow-md"
+                  onClick={() => removeSelectedFile(index)}
+                  title="Remove file"
+                >
+                  <FaTimes className="size-3" />
+                </button>
+              </div>
+              {fileItem.type === 'file' && (
+                <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-xs p-1 truncate">
+                  {fileItem.name}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
@@ -777,7 +1067,7 @@ const MessageInput = () => {
           ref={fileInputRef}
           onChange={handleFileChange}
           accept="*/*"
-          multiple={false}
+          multiple={true}
         />
 
         <button
@@ -817,12 +1107,12 @@ const MessageInput = () => {
         <button
           type="submit"
           className={`flex items-center justify-center size-7 rounded-lg transition-all duration-200 ${
-            (!text.trim() && !imagePreview && !audioPreview && !fileData)
+            (!text.trim() && !imagePreview && !videoPreview && !audioPreview && !fileData && selectedFiles.length === 0)
               ? 'opacity-40 cursor-not-allowed'
               : 'text-primary hover:bg-base-300/50 active:scale-95'
           }`}
           title="Send message"
-          disabled={(!text.trim() && !imagePreview && !audioPreview && !fileData)}
+          disabled={(!text.trim() && !imagePreview && !videoPreview && !audioPreview && !fileData && selectedFiles.length === 0)}
         >
           <FaPaperPlane className="size-4" />
         </button>

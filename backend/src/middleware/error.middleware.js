@@ -1,7 +1,15 @@
 // Centralized error handling middleware
+import logger from '../lib/logger.js';
 
 export const errorHandler = (err, req, res, next) => {
-  console.error('Error:', err);
+  logger.error('Error:', {
+    requestId: req.requestId,
+    message: err.message,
+    stack: err.stack,
+    url: req.originalUrl,
+    method: req.method,
+    userId: req.user?._id,
+  });
 
   // Default error
   let statusCode = err.statusCode || 500;

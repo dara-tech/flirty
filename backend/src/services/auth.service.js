@@ -34,6 +34,11 @@ export class AuthService {
     return !!user;
   }
 
+  // Find user by fullname
+  static async findUserByFullname(fullname) {
+    return await User.findOne({ fullname });
+  }
+
   // Create new user
   static async createUser(userData) {
     const { fullname, email, password } = userData;
@@ -76,11 +81,21 @@ export class AuthService {
       updateFields.fullname = updateData.fullname;
     }
 
-    return await User.findByIdAndUpdate(
-      userId,
-      updateFields,
-      { new: true, runValidators: true }
-    ).select("-password");
+    try {
+      return await User.findByIdAndUpdate(
+        userId,
+        updateFields,
+        { new: true, runValidators: true }
+      ).select("-password");
+    } catch (error) {
+      // Handle duplicate key error for fullname
+      if (error.code === 11000 && error.keyPattern?.fullname) {
+        const duplicateError = new Error("Fullname already exists. Please try another name");
+        duplicateError.statusCode = 400;
+        throw duplicateError;
+      }
+      throw error;
+    }
   }
 
   // Update user password

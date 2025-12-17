@@ -25,9 +25,9 @@ const messageSchema = new mongoose.Schema({
   },
   text: {
     type: String,
-    // Only require text if there's no image, audio, file, or link
+    // Only require text if there's no image, audio, video, file, or link
     required: function() {
-      return !this.image && !this.audio && !this.file && !this.link;
+      return !this.image && !this.audio && !this.video && !this.file && !this.link;
     }
   },
   image: {
@@ -35,6 +35,9 @@ const messageSchema = new mongoose.Schema({
   },
   audio: {
     type: String,
+  },
+  video: {
+    type: String, // URL to the video
   },
   file: {
     type: String, // URL to the file
@@ -113,7 +116,70 @@ const messageSchema = new mongoose.Schema({
       },
     },
   ],
+  // Forward tracking
+  forwardedFrom: {
+    type: {
+      messageId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Message",
+      },
+      senderId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      senderName: String,
+      chatType: {
+        type: String,
+        enum: ["user", "group"],
+      },
+      chatId: mongoose.Schema.Types.ObjectId,
+      chatName: String,
+      forwardedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  },
+  // Listen tracking for voice messages
+  listenedBy: [
+    {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      listenedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
+  // Saved messages tracking
+  savedBy: [
+    {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      savedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
 }, { timestamps: true });
+
+// Indexes for query performance
+// Index for direct messages between two users (sorted by time)
+messageSchema.index({ senderId: 1, receiverId: 1, createdAt: -1 });
+// Index for group messages (sorted by time)
+messageSchema.index({ groupId: 1, createdAt: -1 });
+// Indexes for conversation list queries (used in $or queries with createdAt sort)
+messageSchema.index({ senderId: 1, createdAt: -1 });
+messageSchema.index({ receiverId: 1, createdAt: -1 });
+// Index for seenBy queries in group messages
+messageSchema.index({ "seenBy.userId": 1 });
+// Index for reactions queries
+messageSchema.index({ "reactions.userId": 1 });
 
 const Message = mongoose.model("Message", messageSchema);
 export default Message;

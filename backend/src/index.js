@@ -10,17 +10,85 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import { app, server, io } from './lib/socket.js';  // Use the app instance from socket.js
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
+import { validateEnv } from './lib/env.js';
+import logger from './lib/logger.js';
+import helmet from 'helmet';
+import compression from 'compression';
+import { requestIdMiddleware } from './middleware/requestId.js';
+import { sanitizeMiddleware } from './middleware/sanitize.js';
 
 dotenv.config();
+
+// Validate environment variables on startup
+validateEnv();
 
 const PORT = process.env.PORT || 5002;  // Fallback to 5002 (match your dev port)
 const KEEP_ALIVE_INTERVAL = parseInt(process.env.KEEP_ALIVE_INTERVAL) || 14 * 60 * 1000; // 14 minutes in milliseconds
 const KEEP_ALIVE_ENABLED = process.env.KEEP_ALIVE_ENABLED !== 'false'; // Enabled by default, set to 'false' to disable
+const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 30000; // 30 seconds default
+
+// Request ID middleware (should be early in the middleware chain)
+app.use(requestIdMiddleware);
+
+// Compression middleware (should be early, before routes)
+app.use(compression({
+  filter: (req, res) => {
+    // Don't compress if client doesn't support it
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    // Use compression for all other requests
+    return compression.filter(req, res);
+  },
+  level: 6, // Compression level (0-9, 6 is a good balance)
+  threshold: 1024, // Only compress responses > 1KB
+}));
+
+// Security headers with Helmet
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "ws:", "wss:"], // Allow WebSocket connections
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'", "https:"],
+      frameSrc: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Allow embedding for chat features
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow cross-origin resources
+}));
 
 // Middleware setup
 app.use(express.json({ limit: '500mb' })); // Increased for large video uploads
 app.use(express.urlencoded({ limit: '500mb', extended: true }));
 app.use(cookieParser());
+
+// Input sanitization (after body parsing, before routes)
+app.use(sanitizeMiddleware);
+
+// Request timeout middleware
+app.use((req, res, next) => {
+  req.setTimeout(REQUEST_TIMEOUT, () => {
+    logger.warn('Request timeout', {
+      requestId: req.requestId,
+      url: req.originalUrl,
+      method: req.method,
+      timeout: REQUEST_TIMEOUT,
+    });
+    if (!res.headersSent) {
+      res.status(408).json({
+        success: false,
+        message: 'Request timeout',
+      });
+    }
+  });
+  next();
+});
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -73,7 +141,7 @@ app.use(
         // Origin not allowed
         callback(new Error(`Origin ${origin} is not allowed by CORS policy`));
       } catch (error) {
-        console.error('CORS error:', error);
+        logger.error('CORS error:', error);
         // On error, deny access for security
         callback(new Error('CORS configuration error'));
       }
@@ -85,23 +153,29 @@ app.use(
   })
 );
 
-// Route setup
-app.use('/api/auth', authRoutes);
-app.use('/api/messages', messageRoute);
-app.use('/api/groups', groupRoute);
-app.use('/api/contacts', contactRoute);
-
-// Error handling middleware (must be after routes)
-app.use(notFoundHandler); // 404 handler
-app.use(errorHandler); // Global error handler
-
-// Health check endpoint for Render/monitoring
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'ok', 
+// Health check endpoint (before routes, so it's always accessible)
+app.get('/health', async (req, res) => {
+  const dbState = mongoose.connection.readyState;
+  const dbStatus = dbState === 1 ? 'connected' : dbState === 2 ? 'connecting' : 'disconnected';
+  
+  const health = {
+    status: dbStatus === 'connected' ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    database: {
+      status: dbStatus,
+      readyState: dbState
+    },
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB',
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + ' MB',
+      rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + ' MB'
+    }
+  };
+  
+  const statusCode = health.status === 'ok' ? 200 : 503;
+  res.status(statusCode).json(health);
 });
 
 // API documentation endpoint (optional)
@@ -118,6 +192,16 @@ app.get('/api', (req, res) => {
     }
   });
 });
+
+// Route setup
+app.use('/api/auth', authRoutes);
+app.use('/api/messages', messageRoute);
+app.use('/api/groups', groupRoute);
+app.use('/api/contacts', contactRoute);
+
+// Error handling middleware (must be after routes)
+app.use(notFoundHandler); // 404 handler
+app.use(errorHandler); // Global error handler
 
 // Note: Static file serving removed for separate hosting
 // Frontend is hosted on Netlify, backend only serves API endpoints
@@ -155,7 +239,7 @@ const gracefulShutdown = async (signal) => {
     
     process.exit(0);
   } catch (error) {
-    console.error('❌ Error during graceful shutdown:', error);
+    logger.error('Error during graceful shutdown:', error);
     process.exit(1);
   }
 };
@@ -169,12 +253,12 @@ let keepAliveTimer = null;
 
 const setupKeepAlive = () => {
   if (!KEEP_ALIVE_ENABLED) {
-    console.log('⏸️  Keep-alive mechanism is disabled');
+    logger.info('Keep-alive mechanism is disabled');
     return;
   }
   
   const intervalMinutes = KEEP_ALIVE_INTERVAL / (60 * 1000);
-  console.log(`🔄 Keep-alive enabled: pinging every ${intervalMinutes} minutes`);
+  logger.info(`Keep-alive enabled: pinging every ${intervalMinutes} minutes`);
   
   // Ping the health endpoint to keep the server awake
   const pingServer = async () => {
@@ -223,7 +307,7 @@ const setupKeepAlive = () => {
         }
       };
       
-      console.log(`📡 Keep-alive ping: ${pingUrl}`);
+      logger.debug(`Keep-alive ping: ${pingUrl}`);
       
       const req = http.request(options, (res) => {
         let data = '';
@@ -231,28 +315,25 @@ const setupKeepAlive = () => {
         res.on('end', () => {
           const timestamp = new Date().toISOString();
           if (res.statusCode === 200) {
-            console.log(`✅ Keep-alive ping successful (${res.statusCode}) at ${timestamp}`);
+            logger.debug(`Keep-alive ping successful (${res.statusCode}) at ${timestamp}`);
           } else {
-            console.warn(`⚠️  Keep-alive ping returned status ${res.statusCode} at ${timestamp}`);
+            logger.warn(`Keep-alive ping returned status ${res.statusCode} at ${timestamp}`);
           }
         });
       });
       
       req.on('error', (error) => {
-        console.error(`❌ Keep-alive ping failed: ${error.message}`);
-        console.error(`   Attempted URL: ${pingUrl}`);
+        logger.error(`Keep-alive ping failed: ${error.message}`, { url: pingUrl });
       });
       
       req.on('timeout', () => {
         req.destroy();
-        console.error(`⏱️  Keep-alive ping timeout after 10s`);
-        console.error(`   Attempted URL: ${pingUrl}`);
+        logger.error(`Keep-alive ping timeout after 10s`, { url: pingUrl });
       });
       
       req.end();
     } catch (error) {
-      console.error(`❌ Keep-alive ping error: ${error.message}`);
-      console.error(error.stack);
+      logger.error(`Keep-alive ping error: ${error.message}`, { stack: error.stack });
     }
   };
   
@@ -274,15 +355,15 @@ const startServer = async () => {
 
     // Start the socket server
     server.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+      logger.info(`Server running on port ${PORT}`);
+      logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
       
       // Setup keep-alive ping after server starts
       setupKeepAlive();
     });
 
   } catch (error) {
-    console.error('Failed to connect to the database', error);
+    logger.error('Failed to connect to the database', error);
     process.exit(1); // Exit the process with failure
   }
 };

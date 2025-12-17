@@ -6,7 +6,8 @@ export const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({
-      message: 'Validation failed',
+      success: false,
+      message: errors.array()[0].msg || 'Validation failed',
       errors: errors.array().map(err => ({
         field: err.path,
         message: err.msg
@@ -58,7 +59,7 @@ export const validateUpdateProfile = [
     .optional()
     .trim()
     .isLength({ min: 2, max: 50 }).withMessage('Fullname must be between 2 and 50 characters')
-    .matches(/^[a-zA-Z\s]+$/).withMessage('Fullname can only contain letters and spaces'),
+    .matches(/^[a-zA-Z\s'-]+$/).withMessage('Fullname can only contain letters, spaces, hyphens, and apostrophes'),
   
   body('profilePic')
     .optional()

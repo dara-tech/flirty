@@ -1,4 +1,4 @@
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/useAuthStore";
 import { useNotificationStore } from "../store/useNotificationStore";
 import { useChatStore } from "../store/useChatStore";
@@ -20,6 +20,7 @@ const NotificationIcon = ({ count }) => (
 const Navbar = () => {
   const { logout, authUser } = useAuthStore();
   const location = useLocation();
+  const navigate = useNavigate();
   const { 
     notifications, 
     unreadCount, 
@@ -28,7 +29,7 @@ const Navbar = () => {
     markAsRead, 
     markAllAsRead 
   } = useNotificationStore();
-  const { unreadMessages, pendingRequests, selectedUser, selectedGroup } = useChatStore();
+  const { setSelectedGroup, setSelectedUser, groups, users, unreadMessages, pendingRequests, selectedUser, selectedGroup, getGroups, getUsers } = useChatStore();
   const [showNotifications, setShowNotifications] = useState(false);
   const notificationRef = useRef(null);
   
@@ -202,32 +203,95 @@ const Navbar = () => {
                       </div>
                     ) : (
                       <div className="divide-y divide-base-200">
-                        {notifications.map((n) => (
-                          <div
-                            key={n.id}
-                            className="group relative p-4 hover:bg-base-200/50 transition-colors"
-                          >
-                            <div className="flex items-start gap-3">
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm text-base-content/80 leading-relaxed">
-                                  {n.message}
-                                </p>
-                                <p className="text-xs text-base-content/50 mt-1.5">
-                                  {new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                </p>
+                        {notifications.map((n) => {
+                          const handleNotificationClick = async () => {
+                            // Mark as read
+                            markAsRead(n.id);
+                            
+                            // Handle group message notifications
+                            if (n.type === 'group_message_received' && n.data?.groupId) {
+                              // Ensure groups are loaded
+                              if (!groups || groups.length === 0) {
+                                await getGroups();
+                              }
+                              
+                              // Try to find group in current list or wait a bit for it to load
+                              let group = groups?.find(g => g._id === n.data.groupId);
+                              if (!group && groups && groups.length > 0) {
+                                // Wait a moment for groups to load if they were just fetched
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                                group = groups.find(g => g._id === n.data.groupId);
+                              }
+                              
+                              if (group) {
+                                setSelectedGroup(group);
+                                setSelectedUser(null);
+                                setShowNotifications(false);
+                                navigate('/chat');
+                              } else {
+                                // If group not found, still navigate to chat and let it load
+                                setShowNotifications(false);
+                                navigate('/chat');
+                              }
+                            }
+                            // Handle direct message notifications
+                            else if (n.type === 'message_received' && n.data?.senderId) {
+                              // Ensure users are loaded
+                              if (!users || users.length === 0) {
+                                await getUsers();
+                              }
+                              
+                              let user = users?.find(u => u._id === n.data.senderId);
+                              if (!user && users && users.length > 0) {
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                                user = users.find(u => u._id === n.data.senderId);
+                              }
+                              
+                              if (user) {
+                                setSelectedUser(user);
+                                setSelectedGroup(null);
+                                setShowNotifications(false);
+                                navigate('/chat');
+                              } else {
+                                setShowNotifications(false);
+                                navigate('/chat');
+                              }
+                            }
+                            // Handle contact request notifications
+                            else if (n.type === 'contact_request_received') {
+                              setShowNotifications(false);
+                              navigate('/contacts');
+                            }
+                          };
+
+                          return (
+                            <div
+                              key={n.id}
+                              className="group relative p-4 hover:bg-base-200/50 transition-colors cursor-pointer"
+                              onClick={handleNotificationClick}
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-base-content/80 leading-relaxed">
+                                    {n.message}
+                                  </p>
+                                  <p className="text-xs text-base-content/50 mt-1.5">
+                                    {new Date(n.timestamp || n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </p>
+                                </div>
+                                <button
+                                  className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-base-300 rounded-lg"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeNotification(n.id);
+                                  }}
+                                >
+                                  <FaTimes className="size-4 text-base-content/50" />
+                                </button>
                               </div>
-                              <button
-                                className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-base-300 rounded-lg"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeNotification(n.id);
-                                }}
-                              >
-                                <FaTimes className="size-4 text-base-content/50" />
-                              </button>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>

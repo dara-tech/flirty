@@ -104,8 +104,29 @@ export const updateProfile = asyncHandler(async (req, res) => {
   const { profilePic, fullname } = req.body;
   const userId = req.user._id;
 
+  // Get current user to check if fullname is actually changing
+  const currentUser = await AuthService.findUserById(userId);
+  if (!currentUser) {
+    return res.status(404).json({ 
+      success: false,
+      message: "User not found" 
+    });
+  }
+
+  // Check if fullname is being updated to a different value
+  if (fullname && fullname.trim() !== currentUser.fullname) {
+    const existingUser = await AuthService.findUserByFullname(fullname.trim());
+    // If fullname exists and it's not the current user, return error
+    if (existingUser && existingUser._id.toString() !== userId.toString()) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Fullname already exists. Please try another name" 
+      });
+    }
+  }
+
   // Update user profile
-  const updatedUser = await AuthService.updateUserProfile(userId, { profilePic, fullname });
+  const updatedUser = await AuthService.updateUserProfile(userId, { profilePic, fullname: fullname?.trim() });
 
   if (!updatedUser) {
     return res.status(404).json({ 

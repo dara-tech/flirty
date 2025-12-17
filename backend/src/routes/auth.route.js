@@ -16,18 +16,19 @@ import {
   validateChangePassword,
   validateGoogleAuth
 } from "../middleware/validation.middleware.js";
+import { authLimiter, strictLimiter } from "../middleware/rateLimiter.js";
 
 const router = express.Router();
 
-// Public routes
-router.post('/signup', validateSignup, signup);
-router.post('/login', validateLogin, login);
+// Public routes with rate limiting
+router.post('/signup', authLimiter, validateSignup, signup);
+router.post('/login', authLimiter, validateLogin, login);
 router.post('/logout', logout);
-router.post('/google', validateGoogleAuth, googleAuth);
+router.post('/google', authLimiter, validateGoogleAuth, googleAuth);
 
 // Protected routes
 router.get('/me', optionalAuth, getMe); // Use optionalAuth to avoid 401 errors when not logged in
 router.put('/update-profile', protectRoute, validateUpdateProfile, updateProfile);
-router.put('/change-password', protectRoute, validateChangePassword, changePassword);
+router.put('/change-password', strictLimiter, protectRoute, validateChangePassword, changePassword);
 
 export default router;

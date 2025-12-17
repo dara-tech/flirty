@@ -1,4 +1,4 @@
-import { FaTimes, FaBars, FaAngleLeft, FaInfoCircle } from "react-icons/fa";
+import { FaTimes, FaBars, FaAngleLeft, FaInfoCircle, FaCheckSquare } from "react-icons/fa";
 import { useAuthStore } from "../store/useAuthStore";
 import { useChatStore } from "../store/useChatStore";
 import { useState, useEffect } from "react";
@@ -7,7 +7,7 @@ import CallButton from "./CallButton";
 import GroupCallButton from "./GroupCallButton";
 import ProfileImage from "./ProfileImage";
 
-const ChatHeader = () => {
+const ChatHeader = ({ onToggleSelectionMode, isSelectionMode }) => {
   const { selectedUser, selectedGroup, setSelectedUser, setSelectedGroup } = useChatStore();
   const { onlineUsers } = useAuthStore();
   const [isMobile, setIsMobile] = useState(false);
@@ -84,11 +84,21 @@ const ChatHeader = () => {
 
       {/* Action buttons */}
       <div className="flex items-center gap-2">
+        {/* Selection Mode Toggle */}
+        {onToggleSelectionMode && (
+          <button
+            onClick={onToggleSelectionMode}
+            className={`btn btn-ghost btn-sm btn-circle hover:bg-base-200 transition-colors ${isSelectionMode ? 'bg-primary/20 text-primary' : ''}`}
+            title={isSelectionMode ? "Exit selection mode" : "Select messages"}
+          >
+            <FaCheckSquare className="size-5" />
+          </button>
+        )}
         {/* Call buttons */}
-        {!isGroup && selectedUser && (
+        {!isGroup && selectedUser && !isSelectionMode && (
           <CallButton userId={selectedUser._id} variant="compact" />
         )}
-        {isGroup && selectedGroup && (
+        {isGroup && selectedGroup && !isSelectionMode && (
           <GroupCallButton groupId={selectedGroup._id} variant="compact" />
         )}
         {!isGroup && selectedUser && (

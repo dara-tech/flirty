@@ -3,6 +3,27 @@ import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axois";
 import { useAuthStore } from "./useAuthStore";
 import { getAuthToken } from "../lib/safariUtils";
+import { normalizeId } from "../lib/utils";
+
+// Track recently added message IDs to prevent duplicates (race condition between API and socket)
+const recentMessageIds = new Set();
+const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
+
+// Helper to check and track message IDs
+const isDuplicateMessage = (messageId) => {
+  if (!messageId) return false;
+  const idStr = String(messageId);
+  if (recentMessageIds.has(idStr)) {
+    return true; // Duplicate detected
+  }
+  // Add to tracking set
+  recentMessageIds.add(idStr);
+  // Clean up after timeout
+  setTimeout(() => {
+    recentMessageIds.delete(idStr);
+  }, MESSAGE_DEDUP_TIMEOUT);
+  return false; // Not a duplicate
+};
 
 export const useChatStore = create((set, get) => ({
   messages: [],
@@ -35,6 +56,8 @@ export const useChatStore = create((set, get) => ({
   lastMessages: {},
   groupLastMessages: {},
   unreadMessages: {}, // { userId: count } or { groupId: count }
+  conversationPagination: { page: 1, limit: 50, total: 0, totalPages: 0, hasMore: false }, // Pagination for conversations (Telegram-style)
+  isLoadingMoreConversations: false, // Track loading state for loading more conversations
   setTypingUsers: (users) => set({ typingUsers: users }),
 
   getUsers: async () => {
@@ -62,9 +85,10 @@ export const useChatStore = create((set, get) => ({
     }, 12000);
     
     try {
+      // Load first page of conversations and users (Telegram-style: page=1&limit=50)
       const [usersRes, lastMessagesRes] = await Promise.all([
-        axiosInstance.get("/messages/users"),
-        axiosInstance.get("/messages/last-messages")
+        axiosInstance.get("/messages/users?page=1&limit=100"), // Load first 100 users
+        axiosInstance.get("/messages/last-messages?page=1&limit=50") // Load first 50 conversations
       ]);
 
       // Handle 401 errors gracefully
@@ -74,29 +98,34 @@ export const useChatStore = create((set, get) => ({
         return;
       }
 
-      // Ensure data is an array
-      const usersData = Array.isArray(usersRes.data) ? usersRes.data : (usersRes.data?.users || []);
-      const lastMessagesData = Array.isArray(lastMessagesRes.data) ? lastMessagesRes.data : [];
+      // Handle paginated users response or fallback to array
+      const usersData = usersRes.data?.users || (Array.isArray(usersRes.data) ? usersRes.data : []);
+      
+      // Handle new paginated response format or fallback to old format
+      let lastMessagesData = [];
+      let pagination = { skip: 0, limit: 50, total: 0, hasMore: false };
+      
+      if (lastMessagesRes.data && typeof lastMessagesRes.data === 'object') {
+        // New format: { lastMessages: [...], pagination: {...} }
+        if (lastMessagesRes.data.lastMessages && Array.isArray(lastMessagesRes.data.lastMessages)) {
+          lastMessagesData = lastMessagesRes.data.lastMessages;
+          pagination = lastMessagesRes.data.pagination || pagination;
+        } else if (Array.isArray(lastMessagesRes.data)) {
+          // Old format: array directly
+          lastMessagesData = lastMessagesRes.data;
+        }
+      }
 
       const lastMessagesMap = {};
       if (!authUser || !authUser._id) {
-        set({ users: [], lastMessages: {}, isUsersLoading: false });
+        set({ users: [], lastMessages: {}, isUsersLoading: false, conversationPagination: pagination });
         return;
       }
-      
-      // Define normalizeId function at the top level so it's accessible throughout this function
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
       
       const authUserIdNormalized = normalizeId(authUser._id);
       
       if (lastMessagesData && Array.isArray(lastMessagesData)) {
-        
-        lastMessagesRes.data.forEach(msg => {
+        lastMessagesData.forEach(msg => {
           // Get sender and receiver IDs, handling both object and string formats
           const senderIdRaw = msg.senderId;
           const receiverIdRaw = msg.receiverId;
@@ -164,7 +193,8 @@ export const useChatStore = create((set, get) => ({
       // If messages were deleted from DB, they won't be in this response
       set({ 
         users: uniqueUsers,
-        lastMessages: lastMessagesMap
+        lastMessages: lastMessagesMap,
+        conversationPagination: pagination
       });
     } catch (error) {
       // Only log non-401 errors (401 is expected when not authenticated)
@@ -182,6 +212,118 @@ export const useChatStore = create((set, get) => ({
     } finally {
       clearTimeout(safetyTimeout);
       set({ isUsersLoading: false });
+    }
+  },
+
+  // Load more conversations (pagination - Telegram-style: page-based)
+  loadMoreConversations: async () => {
+    const state = get();
+    const authUser = useAuthStore.getState().authUser;
+    
+    // Don't load if already loading or no more to load
+    if (state.isLoadingMoreConversations || !state.conversationPagination.hasMore || !authUser) {
+      return;
+    }
+    
+    set({ isLoadingMoreConversations: true });
+    
+    try {
+      const { page, limit } = state.conversationPagination;
+      const nextPage = page + 1; // Load next page
+      
+      const lastMessagesRes = await axiosInstance.get(`/messages/last-messages?page=${nextPage}&limit=${limit}`);
+      
+      // Handle 401 errors gracefully
+      if (lastMessagesRes.status === 401) {
+        useAuthStore.getState().logout();
+        set({ isLoadingMoreConversations: false });
+        return;
+      }
+      
+      // Handle new paginated response format or fallback to old format
+      let lastMessagesData = [];
+      let pagination = state.conversationPagination;
+      
+      if (lastMessagesRes.data && typeof lastMessagesRes.data === 'object') {
+        if (lastMessagesRes.data.lastMessages && Array.isArray(lastMessagesRes.data.lastMessages)) {
+          lastMessagesData = lastMessagesRes.data.lastMessages;
+          pagination = lastMessagesRes.data.pagination || pagination;
+        } else if (Array.isArray(lastMessagesRes.data)) {
+          lastMessagesData = lastMessagesRes.data;
+        }
+      }
+      
+      if (!authUser || !authUser._id) {
+        set({ isLoadingMoreConversations: false });
+        return;
+      }
+      
+      const authUserIdNormalized = normalizeId(authUser._id);
+      const newLastMessagesMap = { ...state.lastMessages };
+      
+      // Merge new messages into existing map
+      if (lastMessagesData && Array.isArray(lastMessagesData)) {
+        lastMessagesData.forEach(msg => {
+          const senderIdRaw = msg.senderId;
+          const receiverIdRaw = msg.receiverId;
+          const senderId = normalizeId(senderIdRaw);
+          const receiverId = normalizeId(receiverIdRaw);
+          
+          if (!senderId || !receiverId) return;
+          
+          const targetIdRaw = senderId === authUserIdNormalized ? receiverIdRaw : senderIdRaw;
+          const targetIdStr = normalizeId(targetIdRaw);
+          
+          if (!targetIdStr) return;
+          
+          // Only add if not already present (to avoid duplicates)
+          if (!newLastMessagesMap[targetIdStr]) {
+            newLastMessagesMap[targetIdStr] = msg;
+            if (targetIdRaw && typeof targetIdRaw !== 'string') {
+              newLastMessagesMap[targetIdRaw] = msg;
+            }
+          }
+        });
+      }
+      
+      // Also update users array with any new users from messages
+      const uniqueUsers = [...state.users];
+      const seenIds = new Set(state.users.map(u => normalizeId(u._id)));
+      
+      if (lastMessagesData && Array.isArray(lastMessagesData)) {
+        lastMessagesData.forEach(msg => {
+          const senderIdRaw = msg.senderId;
+          const receiverIdRaw = msg.receiverId;
+          
+          [senderIdRaw, receiverIdRaw].forEach(userData => {
+            if (userData && typeof userData === 'object' && userData._id && userData.fullname) {
+              const userId = normalizeId(userData._id);
+              if (userId && !seenIds.has(userId) && userId !== authUserIdNormalized) {
+                seenIds.add(userId);
+                uniqueUsers.push({
+                  _id: userData._id,
+                  fullname: userData.fullname || 'Unknown',
+                  profilePic: userData.profilePic || null,
+                  email: userData.email || null
+                });
+              }
+            }
+          });
+        });
+      }
+      
+      set({
+        users: uniqueUsers,
+        lastMessages: newLastMessagesMap,
+        conversationPagination: pagination,
+        isLoadingMoreConversations: false
+      });
+    } catch (error) {
+      if (error.response?.status !== 401) {
+        console.error("Error loading more conversations:", error);
+        toast.error(error.response?.data?.message || error.response?.data?.error || "Failed to load more conversations");
+      }
+      set({ isLoadingMoreConversations: false });
     }
   },
 
@@ -217,12 +359,6 @@ export const useChatStore = create((set, get) => ({
       }));
       
       // Normalize IDs for comparison
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
       
       // Only mark messages as seen if we actually loaded messages (not empty array)
       // This prevents marking messages as seen if the conversation was deleted
@@ -311,10 +447,25 @@ export const useChatStore = create((set, get) => ({
       return Promise.reject(new Error("No chat selected"));
     }
 
+    return get().sendMessageToUser(selectedUser._id, messageData);
+  },
+
+  sendMessageToUser: async (userId, messageData) => {
+    const authUser = useAuthStore.getState().authUser;
+    if (!authUser) {
+      toast.error("Not authenticated");
+      return Promise.reject(new Error("Not authenticated"));
+    }
+
+    if (!userId) {
+      toast.error("No user ID provided");
+      return Promise.reject(new Error("No user ID provided"));
+    }
+
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const baseURL = axiosInstance.defaults.baseURL || import.meta.env.VITE_BACKEND_URL || '';
-      const url = `${baseURL}/messages/send/${selectedUser._id}`;
+      const url = `${baseURL}/messages/send/${userId}`;
       
       // Reset progress and determine upload type
       const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
@@ -407,13 +558,6 @@ export const useChatStore = create((set, get) => ({
           };
         } else {
           // Direct message - update lastMessages
-          const normalizeId = (id) => {
-            if (!id) return null;
-            if (typeof id === 'string') return id;
-            if (typeof id === 'object' && id._id) return id._id.toString();
-            return id.toString();
-          };
-          
           const authUserId = normalizeId(authUser._id);
           const senderId = normalizeId(editedMessage.senderId);
           const receiverId = normalizeId(editedMessage.receiverId);
@@ -464,13 +608,6 @@ export const useChatStore = create((set, get) => ({
       // Optimistically remove message from UI for immediate feedback
       if (deleteType === "forEveryone") {
         set((state) => {
-          const normalizeId = (id) => {
-            if (!id) return null;
-            if (typeof id === 'string') return id;
-            if (typeof id === 'object' && id._id) return id._id.toString();
-            return id.toString();
-          };
-          
           const targetId = normalizeId(messageId);
           const updatedMessages = state.messages.filter((msg) => {
             const msgId = normalizeId(msg._id);
@@ -552,12 +689,6 @@ export const useChatStore = create((set, get) => ({
 
     // Optimistic UI update - update immediately before server confirms
       set((state) => {
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
 
       const authUserId = normalizeId(authUser._id);
       
@@ -627,13 +758,6 @@ export const useChatStore = create((set, get) => ({
       return;
     }
 
-    const normalizeId = (id) => {
-      if (!id) return null;
-      if (typeof id === 'string') return id;
-      if (typeof id === 'object' && id._id) return id._id.toString();
-      return id.toString();
-    };
-
     const authUserId = normalizeId(authUser._id);
     const userReaction = message.reactions.find(
       r => normalizeId(r.userId?._id || r.userId) === authUserId
@@ -692,13 +816,6 @@ export const useChatStore = create((set, get) => ({
           };
         } else {
           // Direct message - update lastMessages
-          const normalizeId = (id) => {
-            if (!id) return null;
-            if (typeof id === 'string') return id;
-            if (typeof id === 'object' && id._id) return id._id.toString();
-            return id.toString();
-          };
-          
           const authUserId = normalizeId(authUser._id);
           const senderId = normalizeId(updatedMessage.senderId);
           
@@ -765,14 +882,6 @@ export const useChatStore = create((set, get) => ({
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id) return state;
         
-        // Normalize IDs for comparison
-        const normalizeId = (id) => {
-          if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
-          return id.toString();
-        };
-        
         // Get sender and receiver IDs, handling both object and string formats
         const senderIdRaw = newMessage.senderId;
         const receiverIdRaw = newMessage.receiverId;
@@ -787,8 +896,23 @@ export const useChatStore = create((set, get) => ({
         const targetId = senderId === authUserId ? receiverId : senderId;
         const targetIdStr = targetId;
         
-        // Check if message already exists to prevent duplicates
-        const messageExists = state.messages.some(msg => msg._id === newMessage._id);
+        // Check if message already exists to prevent duplicates (multiple checks)
+        const messageId = newMessage._id;
+        const messageExistsInState = state.messages.some(msg => msg._id === messageId);
+        const isDuplicate = isDuplicateMessage(messageId);
+        
+        // Skip if duplicate or already in state
+        if (isDuplicate || messageExistsInState) {
+          // Still update lastMessages even if duplicate (in case it's a newer version)
+          const updatedLastMessages = {
+            ...state.lastMessages,
+            [targetIdStr]: newMessage,
+          };
+          return {
+            ...state,
+            lastMessages: updatedLastMessages,
+          };
+        }
         
         // Update messages array only if from selected user and message doesn't exist
         const currentSelectedUser = state.selectedUser;
@@ -815,7 +939,7 @@ export const useChatStore = create((set, get) => ({
         }
         
         // Always add message if it's for the selected chat (whether sender or receiver)
-        const updatedMessages = isSelectedChat && !messageExists
+        const updatedMessages = isSelectedChat
           ? [...state.messages, newMessage]
           : state.messages;
 
@@ -917,13 +1041,6 @@ export const useChatStore = create((set, get) => ({
         }
         
         // Normalize IDs for consistent comparison
-        const normalizeId = (id) => {
-          if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
-          return id.toString();
-        };
-        
         const editedMessageId = normalizeId(editedMessage._id);
         if (!editedMessageId) {
           return state;
@@ -1672,12 +1789,6 @@ export const useChatStore = create((set, get) => ({
       ]);
 
       const groupLastMessagesMap = {};
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id?.toString();
-      };
       
       lastMessagesRes.data.forEach(msg => {
         const groupId = normalizeId(msg.groupId);
@@ -1919,18 +2030,28 @@ export const useChatStore = create((set, get) => ({
         // Only process if this message is for the current user
         if (memberIdStr !== authUserId) return state;
         
+        // Check for duplicates using the same deduplication mechanism
+        const messageId = message._id;
+        const messageExistsInState = state.messages.some(msg => msg._id === messageId);
+        const isDuplicate = isDuplicateMessage(messageId);
+        
         // Always update groupLastMessages for the group list (this is the global handler)
         const updatedGroupLastMessages = {
           ...state.groupLastMessages,
           [groupIdStr]: message
         };
         
-        // Check if message already exists to prevent duplicates
-        const messageExists = state.messages.some(msg => msg._id === message._id);
+        // Skip adding to messages if duplicate
+        if (isDuplicate || messageExistsInState) {
+          return {
+            ...state,
+            groupLastMessages: updatedGroupLastMessages,
+          };
+        }
         
         // Update messages array if viewing this group
         let updatedMessages = state.messages;
-        if (isViewingThisGroup && !messageExists) {
+        if (isViewingThisGroup) {
           updatedMessages = [...state.messages, message];
         }
         
@@ -2219,13 +2340,7 @@ export const useChatStore = create((set, get) => ({
       const res = await axiosInstance.delete(`/groups/${groupId}/members/${memberId}`);
       set(state => ({
         groups: state.groups.map(g => {
-          const normalizeId = (id) => {
-            if (!id) return null;
-            if (typeof id === 'string') return id;
-            if (typeof id === 'object' && id._id) return id._id.toString();
-            return id.toString();
-          };
-          const gId = normalizeId(g._id);
+const gId = normalizeId(g._id);
           const groupIdStr = normalizeId(groupId);
           return gId === groupIdStr ? res.data : g;
         }),
@@ -2245,13 +2360,7 @@ export const useChatStore = create((set, get) => ({
       const res = await axiosInstance.put(`/groups/${groupId}/info`, groupData);
       set(state => ({
         groups: state.groups.map(g => {
-          const normalizeId = (id) => {
-            if (!id) return null;
-            if (typeof id === 'string') return id;
-            if (typeof id === 'object' && id._id) return id._id.toString();
-            return id.toString();
-          };
-          const gId = normalizeId(g._id);
+const gId = normalizeId(g._id);
           const groupIdStr = normalizeId(groupId);
           return gId === groupIdStr ? res.data : g;
         }),
@@ -2628,12 +2737,6 @@ export const useChatStore = create((set, get) => ({
 
     // Group typing indicators
     socket.on("groupTyping", ({ groupId, senderId, senderName }) => {
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
       
       if (groupId !== selectedGroup._id || normalizeId(senderId) === normalizeId(authUser._id)) return;
       
@@ -2654,12 +2757,6 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("groupStopTyping", ({ groupId, senderId }) => {
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
       
       if (groupId !== selectedGroup._id) return;
       
@@ -2676,12 +2773,6 @@ export const useChatStore = create((set, get) => ({
 
     // Group editing indicator
     socket.on("groupEditing", ({ groupId, senderId }) => {
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
       
       if (groupId !== selectedGroup._id || normalizeId(senderId) === normalizeId(authUser._id)) return;
       
@@ -2715,12 +2806,6 @@ export const useChatStore = create((set, get) => ({
 
     // Group deleting indicator
     socket.on("groupDeleting", ({ groupId, senderId }) => {
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
       
       if (groupId !== selectedGroup._id || normalizeId(senderId) === normalizeId(authUser._id)) return;
       
@@ -2754,12 +2839,6 @@ export const useChatStore = create((set, get) => ({
 
     // Group uploading photo indicator
     socket.on("groupUploadingPhoto", ({ groupId, senderId }) => {
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
       
       if (groupId !== selectedGroup._id || normalizeId(senderId) === normalizeId(authUser._id)) return;
       
@@ -2796,12 +2875,6 @@ export const useChatStore = create((set, get) => ({
       if (groupId !== selectedGroup._id) return;
       
       // Deduplicate seenBy array on frontend
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
       
       const deduplicatedSeenBy = [];
       if (Array.isArray(seenBy)) {
@@ -3112,5 +3185,69 @@ export const useChatStore = create((set, get) => ({
       get().getUsers();
       throw error; // Re-throw so caller can handle if needed
     });
+  },
+
+  // Delete individual media from message
+  deleteMessageMedia: async (messageId, mediaType) => {
+    try {
+      const res = await axiosInstance.delete(`/messages/media/${messageId}`, {
+        data: { mediaType }
+      });
+      return res.data;
+    } catch (error) {
+      console.error("Error deleting message media:", error);
+      toast.error(error.response?.data?.error || "Failed to delete media");
+      throw error;
+    }
+  },
+
+  // Mark voice message as listened
+  markVoiceAsListened: async (messageId) => {
+    try {
+      const res = await axiosInstance.put(`/messages/listen/${messageId}`);
+      return res.data;
+    } catch (error) {
+      console.error("Error marking voice as listened:", error);
+      throw error;
+    }
+  },
+
+  // Save message
+  saveMessage: async (messageId) => {
+    try {
+      const res = await axiosInstance.put(`/messages/save/${messageId}`);
+      toast.success("Message saved");
+      return res.data;
+    } catch (error) {
+      console.error("Error saving message:", error);
+      toast.error(error.response?.data?.error || "Failed to save message");
+      throw error;
+    }
+  },
+
+  // Unsave message
+  unsaveMessage: async (messageId) => {
+    try {
+      const res = await axiosInstance.delete(`/messages/save/${messageId}`);
+      toast.success("Message unsaved");
+      return res.data;
+    } catch (error) {
+      console.error("Error unsaving message:", error);
+      toast.error(error.response?.data?.error || "Failed to unsave message");
+      throw error;
+    }
+  },
+
+  // Get saved messages
+  getSavedMessages: async (page = 1, limit = 50) => {
+    try {
+      const res = await axiosInstance.get(`/messages/saved/all`, {
+        params: { page, limit }
+      });
+      return res.data;
+    } catch (error) {
+      console.error("Error getting saved messages:", error);
+      throw error;
+    }
   },
 }));

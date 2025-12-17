@@ -38,6 +38,11 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for query performance
+// email already has unique index (automatic from unique: true)
+// Index for Google OAuth queries
+userSchema.index({ googleId: 1 }, { sparse: true }); // sparse: only index documents with googleId
+
 const User = mongoose.model("User", userSchema);
 
 export default User;

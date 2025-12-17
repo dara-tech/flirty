@@ -117,7 +117,8 @@ export const getMyGroups = async (req, res) => {
     })
       .populate("admin", "fullname profilePic")
       .populate("members", "fullname profilePic")
-      .sort({ updatedAt: -1 });
+      .sort({ updatedAt: -1 })
+      .lean(); // Use lean() for read-only queries (faster)
 
     res.status(200).json(groups);
   } catch (error) {
@@ -303,7 +304,8 @@ export const getGroupMessagesByType = async (req, res) => {
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
       .sort({ createdAt: -1 })
-      .limit(100); // Limit to 100 most recent
+      .limit(100) // Limit to 100 most recent
+      .lean(); // Use lean() for read-only queries (faster)
 
     res.status(200).json(messages);
   } catch (error) {
@@ -357,7 +359,8 @@ export const getGroupMessages = async (req, res) => {
       .populate("seenBy.userId", "fullname profilePic")
       .populate("reactions.userId", "fullname profilePic")
       .sort({ createdAt: -1 }) // Newest first (Telegram-style)
-      .limit(limit);
+      .limit(limit)
+      .lean(); // Use lean() for read-only queries (faster)
 
     // Check if there are more messages before reversing
     const hasMore = messages.length === limit;
@@ -387,20 +390,21 @@ const extractUrl = (text) => {
 // Send message to group
 export const sendGroupMessage = async (req, res) => {
   try {
-    const { text, image, audio, file, fileName, fileSize, fileType } = req.body;
+    const { text, image, audio, video, file, fileName, fileSize, fileType, forwardedFrom } = req.body;
     const { id: groupId } = req.params;
     const senderId = req.user._id;
 
-    // Validate that at least one of text, image, audio, or file is provided
+    // Validate that at least one of text, image, audio, video, or file is provided
     // Note: Links are extracted from text, so text can contain links
     // Check if text has content (not just empty string)
     const hasText = text && typeof text === 'string' && text.trim().length > 0;
     const hasImage = image && typeof image === 'string' && image.length > 0;
     const hasAudio = audio && typeof audio === 'string' && audio.length > 0;
+    const hasVideo = video && typeof video === 'string' && video.length > 0;
     const hasFile = file && typeof file === 'string' && file.length > 0;
     
-    if (!hasText && !hasImage && !hasAudio && !hasFile) {
-      return res.status(400).json({ error: "Message must contain either text, image, audio, or file" });
+    if (!hasText && !hasImage && !hasAudio && !hasVideo && !hasFile) {
+      return res.status(400).json({ error: "Message must contain either text, image, audio, video, or file" });
     }
 
     // Check if user is a member of the group
@@ -419,105 +423,250 @@ export const sendGroupMessage = async (req, res) => {
 
     let imageUrl;
     if (image) {
-      try {
-        const uploadResponse = await cloudinary.uploader.upload(image, {
-          quality: 'auto:best', // Use best quality with automatic format optimization
-          fetch_format: 'auto', // Automatically choose best format (WebP, AVIF, etc.)
-          flags: 'immutable_cache', // Cache optimization
-        });
-        imageUrl = uploadResponse.secure_url;
-      } catch (uploadError) {
-        console.error("Error uploading image to Cloudinary:", uploadError);
-        return res.status(500).json({ error: "Failed to upload image. Please try again." });
+      // Check if it's already a URL (from Cloudinary) or base64 data
+      if (image.startsWith('http://') || image.startsWith('https://')) {
+        // Already a URL, use it directly (for forwarded messages)
+        imageUrl = image;
+      } else {
+        // It's base64 data, upload it
+        try {
+          const uploadResponse = await cloudinary.uploader.upload(image, {
+            quality: 'auto:best', // Use best quality with automatic format optimization
+            fetch_format: 'auto', // Automatically choose best format (WebP, AVIF, etc.)
+            flags: 'immutable_cache', // Cache optimization
+          });
+          imageUrl = uploadResponse.secure_url;
+        } catch (uploadError) {
+          console.error("Error uploading image to Cloudinary:", uploadError);
+          return res.status(500).json({ error: "Failed to upload image. Please try again." });
+        }
       }
     }
 
     let audioUrl;
     if (audio) {
-      try {
-        // Cloudinary doesn't accept data URIs directly for video/audio
-        // Need to convert base64 data URI to buffer
-        let audioBuffer;
-        let audioFormat = 'webm'; // Default format
-        
-        if (audio.startsWith('data:')) {
-          // Extract base64 data from data URI
-          // Format can be: 
-          // - data:audio/webm;codecs=opus;base64,<base64data>
-          // - data:audio/webm;base64,<base64data>
-          // - data:audio/webm,<base64data>
+      // Check if it's already a URL (from Cloudinary) or base64 data
+      if (audio.startsWith('http://') || audio.startsWith('https://')) {
+        // Already a URL, use it directly (for forwarded messages)
+        audioUrl = audio;
+      } else {
+        try {
+          // Cloudinary doesn't accept data URIs directly for video/audio
+          // Need to convert base64 data URI to buffer
+          let audioBuffer;
+          let audioFormat = 'webm'; // Default format
           
-          // Try to match format with codecs parameter first
-          let matches = audio.match(/^data:audio\/([^;]+)(?:;[^;]+)*;base64,(.+)$/);
-          if (matches) {
-            audioFormat = matches[1]; // Extract format (webm, mp3, etc.)
-            const base64Data = matches[2];
-            audioBuffer = Buffer.from(base64Data, 'base64');
-          } else {
-            // Try format without codecs: data:audio/webm;base64,<data>
-            matches = audio.match(/^data:audio\/([^;]+);base64,(.+)$/);
+          if (audio.startsWith('data:')) {
+            // Extract base64 data from data URI
+            // Format can be: 
+            // - data:audio/webm;codecs=opus;base64,<base64data>
+            // - data:audio/webm;base64,<base64data>
+            // - data:audio/webm,<base64data>
+            
+            // Try to match format with codecs parameter first
+            let matches = audio.match(/^data:audio\/([^;]+)(?:;[^;]+)*;base64,(.+)$/);
             if (matches) {
-              audioFormat = matches[1];
-              audioBuffer = Buffer.from(matches[2], 'base64');
+              audioFormat = matches[1]; // Extract format (webm, mp3, etc.)
+              const base64Data = matches[2];
+              audioBuffer = Buffer.from(base64Data, 'base64');
             } else {
-              // Try generic format: data:audio/webm,<data> or data:audio/webm;base64,<data>
-              matches = audio.match(/^data:audio\/([^,;]+)[,;](.+)$/);
+              // Try format without codecs: data:audio/webm;base64,<data>
+              matches = audio.match(/^data:audio\/([^;]+);base64,(.+)$/);
               if (matches) {
                 audioFormat = matches[1];
-                // Remove 'base64,' prefix if present
-                const dataPart = matches[2].replace(/^base64,/, '');
-                audioBuffer = Buffer.from(dataPart, 'base64');
+                audioBuffer = Buffer.from(matches[2], 'base64');
               } else {
-                throw new Error('Invalid audio data URI format');
+                // Try generic format: data:audio/webm,<data> or data:audio/webm;base64,<data>
+                matches = audio.match(/^data:audio\/([^,;]+)[,;](.+)$/);
+                if (matches) {
+                  audioFormat = matches[1];
+                  // Remove 'base64,' prefix if present
+                  const dataPart = matches[2].replace(/^base64,/, '');
+                  audioBuffer = Buffer.from(dataPart, 'base64');
+                } else {
+                  throw new Error('Invalid audio data URI format');
+                }
               }
             }
+          } else {
+            // If it's already base64 (without data URI prefix), convert directly
+            audioBuffer = Buffer.from(audio, 'base64');
           }
-        } else {
-          // If it's already base64 (without data URI prefix), convert directly
-          audioBuffer = Buffer.from(audio, 'base64');
+          
+          // Upload audio buffer to Cloudinary
+          // Use upload_stream for better handling of binary data
+          const uploadResponse = await new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+              {
+                resource_type: 'video', // Cloudinary uses 'video' for audio/video files
+                folder: 'voice-messages', // Organize voice messages in a folder
+                format: audioFormat, // Preserve original format
+              },
+              (error, result) => {
+                if (error) reject(error);
+                else resolve(result);
+              }
+            );
+            uploadStream.end(audioBuffer);
+          });
+          
+          audioUrl = uploadResponse.secure_url;
+        } catch (uploadError) {
+          console.error("Error uploading audio to Cloudinary:", uploadError);
+          console.error("Upload error details:", {
+            message: uploadError.message,
+            http_code: uploadError.http_code,
+            name: uploadError.name,
+            error: uploadError.error
+          });
+          return res.status(500).json({ error: "Failed to upload voice message. Please try again." });
         }
-        
-        // Upload audio buffer to Cloudinary
-        // Use upload_stream for better handling of binary data
-        const uploadResponse = await new Promise((resolve, reject) => {
-          const uploadStream = cloudinary.uploader.upload_stream(
-            {
-          resource_type: 'video', // Cloudinary uses 'video' for audio/video files
-              folder: 'voice-messages', // Organize voice messages in a folder
-              format: audioFormat, // Preserve original format
-            },
-            (error, result) => {
-              if (error) reject(error);
-              else resolve(result);
+      }
+    }
+
+    let videoUrl;
+    if (video) {
+      // Check if it's already a URL (from Cloudinary) or base64 data
+      if (video.startsWith('http://') || video.startsWith('https://')) {
+        // Already a URL, use it directly (for forwarded messages)
+        videoUrl = video;
+      } else {
+        try {
+          // Extract base64 data from data URI and convert to buffer
+          let videoBuffer;
+          let detectedFormat = null;
+          
+          if (video.startsWith('data:')) {
+            // Extract format and base64 data from data URI
+            // Format: data:video/mp4;base64,<data> or data:video/webm;base64,<data>
+            const formatMatch = video.match(/^data:video\/([^;,\s]+)/);
+            if (formatMatch) {
+              detectedFormat = formatMatch[1];
             }
-          );
-          uploadStream.end(audioBuffer);
-        });
-        
-        audioUrl = uploadResponse.secure_url;
-      } catch (uploadError) {
-        console.error("Error uploading audio to Cloudinary:", uploadError);
-        console.error("Upload error details:", {
-          message: uploadError.message,
-          http_code: uploadError.http_code,
-          name: uploadError.name,
-          error: uploadError.error
-        });
-        return res.status(500).json({ error: "Failed to upload voice message. Please try again." });
+            
+            // Try to find the comma that separates the header from the data
+            const commaIndex = video.indexOf(',');
+            if (commaIndex === -1) {
+              throw new Error('Invalid video data URI format: no comma found');
+            }
+            
+            // Extract everything after the comma as base64 data
+            const base64Data = video.substring(commaIndex + 1);
+            
+            if (!base64Data || base64Data.length === 0) {
+              throw new Error('Invalid video data URI format: no base64 data found');
+            }
+            
+            // Remove any whitespace that might have been added
+            const cleanBase64 = base64Data.replace(/\s/g, '');
+            
+            videoBuffer = Buffer.from(cleanBase64, 'base64');
+            
+            console.log(`Video data URI info: format=${detectedFormat}, data length=${base64Data.length}, buffer length=${videoBuffer.length}`);
+          } else {
+            // If it's already base64 (without data URI prefix), convert directly
+            videoBuffer = Buffer.from(video, 'base64');
+          }
+          
+          if (!videoBuffer || videoBuffer.length === 0) {
+            throw new Error('Empty video buffer');
+          }
+          
+          if (videoBuffer.length < 100) {
+            console.warn(`Warning: Video buffer is very small (${videoBuffer.length} bytes). This might indicate an extraction error.`);
+          }
+          
+          console.log(`Uploading video: ${videoBuffer.length} bytes, detected format: ${detectedFormat || 'unknown'}`);
+          
+          // For large videos (>100MB), use upload_large, otherwise use upload_stream
+          let uploadResponse;
+          const videoSizeMB = videoBuffer.length / (1024 * 1024);
+          
+          if (videoSizeMB > 100) {
+            // Use upload_large for large files
+            console.log(`Using upload_large for large video (${videoSizeMB.toFixed(2)} MB)`);
+            uploadResponse = await cloudinary.uploader.upload_large(videoBuffer, {
+              resource_type: 'video',
+              folder: 'videos',
+              chunk_size: 6000000, // 6MB chunks
+            });
+          } else {
+            // Use upload_stream for regular videos
+            console.log(`Using upload_stream for video (${videoSizeMB.toFixed(2)} MB)`);
+            uploadResponse = await new Promise((resolve, reject) => {
+              const uploadStream = cloudinary.uploader.upload_stream(
+                {
+                  resource_type: 'video',
+                  folder: 'videos',
+                  // Let Cloudinary auto-detect format
+                },
+                (error, result) => {
+                  if (error) {
+                    console.error("Cloudinary upload_stream error:", error);
+                    reject(error);
+                  } else {
+                    resolve(result);
+                  }
+                }
+              );
+              
+              // Write buffer to stream in chunks to avoid memory issues
+              const chunkSize = 1024 * 1024; // 1MB chunks
+              let offset = 0;
+              
+              const writeChunk = () => {
+                if (offset >= videoBuffer.length) {
+                  uploadStream.end();
+                  return;
+                }
+                
+                const chunk = videoBuffer.slice(offset, offset + chunkSize);
+                const canContinue = uploadStream.write(chunk);
+                offset += chunk.length;
+                
+                if (!canContinue) {
+                  uploadStream.once('drain', writeChunk);
+                } else {
+                  setImmediate(writeChunk);
+                }
+              };
+              
+              writeChunk();
+            });
+          }
+          
+          videoUrl = uploadResponse.secure_url;
+          console.log(`Video uploaded successfully: ${videoUrl}`);
+        } catch (uploadError) {
+          console.error("Error uploading video to Cloudinary:", uploadError);
+          console.error("Upload error details:", {
+            message: uploadError.message,
+            http_code: uploadError.http_code,
+            name: uploadError.name,
+            error: uploadError.error
+          });
+          return res.status(500).json({ error: "Failed to upload video. Please try again." });
+        }
       }
     }
 
     let fileUrl;
     if (file) {
-      try {
-        // Upload file to Cloudinary as raw file
-        const uploadResponse = await cloudinary.uploader.upload(file, {
-          resource_type: 'raw', // For general files (PDFs, docs, etc.)
-        });
-        fileUrl = uploadResponse.secure_url;
-      } catch (uploadError) {
-        console.error("Error uploading file to Cloudinary:", uploadError);
-        return res.status(500).json({ error: "Failed to upload file. Please try again." });
+      // Check if it's already a URL (from Cloudinary) or base64 data
+      if (file.startsWith('http://') || file.startsWith('https://')) {
+        // Already a URL, use it directly (for forwarded messages)
+        fileUrl = file;
+      } else {
+        try {
+          // Upload file to Cloudinary as raw file
+          const uploadResponse = await cloudinary.uploader.upload(file, {
+            resource_type: 'raw', // For general files (PDFs, docs, etc.)
+          });
+          fileUrl = uploadResponse.secure_url;
+        } catch (uploadError) {
+          console.error("Error uploading file to Cloudinary:", uploadError);
+          return res.status(500).json({ error: "Failed to upload file. Please try again." });
+        }
       }
     }
 
@@ -536,29 +685,71 @@ export const sendGroupMessage = async (req, res) => {
       }
     }
 
+    // Handle forwarded message tracking
+    let forwardedFromData = null;
+    if (forwardedFrom) {
+      const originalMessage = await Message.findById(forwardedFrom.messageId)
+        .populate("senderId", "fullname")
+        .populate("receiverId", "fullname");
+      
+      if (originalMessage) {
+        const Group = (await import("../model/group.model.js")).default;
+        let chatName = null;
+        let chatType = null;
+        let chatId = null;
+        
+        if (originalMessage.groupId) {
+          const group = await Group.findById(originalMessage.groupId);
+          chatName = group?.name || "Group";
+          chatType = "group";
+          chatId = originalMessage.groupId;
+        } else if (originalMessage.receiverId) {
+          const receiver = originalMessage.receiverId;
+          chatName = receiver.fullname || "User";
+          chatType = "user";
+          chatId = originalMessage.receiverId._id || originalMessage.receiverId;
+        }
+        
+        forwardedFromData = {
+          messageId: originalMessage._id,
+          senderId: originalMessage.senderId._id || originalMessage.senderId,
+          senderName: originalMessage.senderId.fullname || "Unknown",
+          chatType: chatType,
+          chatId: chatId,
+          chatName: chatName,
+          forwardedAt: new Date(),
+        };
+      }
+    }
+
     const newMessage = new Message({
       senderId,
       groupId,
       text: text || "",
       image: imageUrl,
       audio: audioUrl,
+      video: videoUrl,
       file: fileUrl,
       fileName: fileName || null,
       fileSize: fileSize || null,
       fileType: fileType || null,
       link: linkUrl,
       linkPreview: linkPreview,
+      forwardedFrom: forwardedFromData,
     });
 
     await newMessage.save();
     await newMessage.populate("senderId", "fullname profilePic");
     await newMessage.populate("seenBy.userId", "fullname profilePic");
 
+    // Convert Mongoose document to plain object for socket emit
+    const messageObj = newMessage.toObject ? newMessage.toObject() : newMessage;
+
     // Emit to all group members
     const allMembers = [group.admin, ...group.members];
     allMembers.forEach((memberId) => {
       io.emit("newGroupMessage", {
-        message: newMessage,
+        message: messageObj,
         groupId,
         memberId: memberId.toString(),
       });

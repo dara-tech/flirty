@@ -296,21 +296,47 @@ export const useAuthStore = create((set, get) => ({
   // ✅ Update Profile
   updateProfile: async (data) => {
     set({ isUpdatingProfile: true });
+    let errorShown = false; // Track if we've already shown the error toast
     try {
       const res = await axiosInstance.put("/auth/update-profile", data);
-      // Handle new response format: { success: true, data: {...} }
-      const userData = res.data?.data || res.data;
-      set({ authUser: userData });
-      toast.success("Profile updated successfully");
-    } catch (error) {
-      const errorData = error.response?.data;
-      // Handle validation errors
-      if (errorData?.errors && Array.isArray(errorData.errors)) {
-        const errorMessages = errorData.errors.map(e => e.message).join(', ');
-        toast.error(errorMessages || errorData.message || "Update failed");
-      } else {
-        toast.error(errorData?.message || "Update failed");
+      
+      // Check response status - axios validateStatus allows 400, so we need to check manually
+      if (res.status >= 400 || res.data?.success === false) {
+        const errorData = res.data;
+        // Handle validation errors
+        if (errorData?.errors && Array.isArray(errorData.errors)) {
+          const errorMessages = errorData.errors.map(e => e.message).join(', ');
+          toast.error(errorMessages || errorData.message || "Update failed");
+        } else {
+          toast.error(errorData?.message || "Update failed");
+        }
+        errorShown = true; // Mark that we've shown the error
+        throw new Error(errorData?.message || "Update failed");
       }
+      
+      // Handle successful response: { success: true, data: {...} }
+      const userData = res.data?.data || res.data;
+      if (userData && userData._id) {
+        set({ authUser: userData });
+        toast.success("Profile updated successfully");
+      } else {
+        toast.error("Invalid response from server");
+        errorShown = true; // Mark that we've shown the error
+        throw new Error("Invalid response from server");
+      }
+    } catch (error) {
+      // Only show error if we haven't already shown it above
+      if (!errorShown) {
+        const errorData = error.response?.data;
+        // Handle validation errors
+        if (errorData?.errors && Array.isArray(errorData.errors)) {
+          const errorMessages = errorData.errors.map(e => e.message).join(', ');
+          toast.error(errorMessages || errorData.message || "Update failed");
+        } else {
+          toast.error(errorData?.message || error.message || "Update failed");
+        }
+      }
+      throw error;
     } finally {
       set({ isUpdatingProfile: false });
     }

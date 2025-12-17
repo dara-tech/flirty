@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit, FaMicrophone } from "react-icons/fa";
+import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit, FaMicrophone, FaBookmark } from "react-icons/fa";
+import SavedMessages from "../component/SavedMessages";
 import CreateGroupModal from "../component/CreateGroupModal";
 import DeleteConversationModal from "../component/DeleteConversationModal";
 import DeleteGroupModal from "../component/DeleteGroupModal";
@@ -36,7 +37,10 @@ const ConversationsListPage = () => {
     groupUploadingPhotoUsers,
     unreadMessages,
     deleteConversation,
-    deleteGroup
+    deleteGroup,
+    conversationPagination,
+    loadMoreConversations,
+    isLoadingMoreConversations
   } = useChatStore();
   const { onlineUsers, authUser } = useAuthStore();
   const [searchQuery, setSearchQuery] = useState("");
@@ -325,6 +329,18 @@ const ConversationsListPage = () => {
             >
               Groups
             </button>
+            <button
+              onClick={() => setActiveTab("saved")}
+              className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-all flex items-center justify-center gap-1.5 ${
+                activeTab === "saved" 
+                  ? "bg-primary text-white" 
+                  : "text-base-content/60 hover:text-base-content hover:bg-base-200"
+              }`}
+              title="Saved Messages"
+            >
+              <FaBookmark className="size-3.5" />
+              <span className="hidden sm:inline">Saved</span>
+            </button>
           </div>
 
           {/* Search Bar */}
@@ -482,8 +498,33 @@ const ConversationsListPage = () => {
                   );
                 })
               ) : null}
+              
+              {/* Load More Conversations Button (Telegram-style pagination) */}
+              {!searchQuery && conversationPagination?.hasMore && (
+                <div className="px-4 py-3 border-t border-base-300">
+                  <button
+                    onClick={loadMoreConversations}
+                    disabled={isLoadingMoreConversations}
+                    className="w-full px-4 py-2 bg-base-200 hover:bg-base-300 text-base-content rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isLoadingMoreConversations ? (
+                      <>
+                        <span className="loading loading-spinner loading-sm"></span>
+                        <span>Loading page {conversationPagination.page + 1}...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Load More Conversations</span>
+                        <span className="text-xs text-base-content/60">
+                          (Page {conversationPagination.page + 1} of {conversationPagination.totalPages} • {conversationPagination.total - filteredConversations.length} more)
+                        </span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
             </>
-          ) : (
+          ) : activeTab === "groups" ? (
             <>
               {filteredGroups.length === 0 ? (
                 <div className="text-center py-12 px-4">
@@ -627,9 +668,9 @@ const ConversationsListPage = () => {
                                         <span>{lastMsg.text || "Message"}</span>
                                       )}
                                     </div>
-                              {' • '}
+                                    <span>{' • '}</span>
                                     {formatDistanceToNow(new Date(lastMsg.createdAt), { addSuffix: true })}
-                            </>
+                                  </>
                                 );
                               } else {
                                 return `${group.members?.length || 0} members`;
@@ -644,7 +685,9 @@ const ConversationsListPage = () => {
                 })
               )}
             </>
-          )}
+          ) : activeTab === "saved" ? (
+            <SavedMessages />
+          ) : null}
         </div>
 
       {/* Create Group Modal */}

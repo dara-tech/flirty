@@ -22,8 +22,9 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
   const styles = getStyles(colors, spacing, typography, commonStyles);
   const [text, setText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedImages, setSelectedImages] = useState([]);
+  const [selectedVideos, setSelectedVideos] = useState([]);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [recordedAudioUri, setRecordedAudioUri] = useState(null);
@@ -41,8 +42,9 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
       setText(editingMessage.text || '');
     } else {
       setText('');
-      setSelectedImage(null);
-      setSelectedFile(null);
+      setSelectedImages([]);
+      setSelectedVideos([]);
+      setSelectedFiles([]);
       setRecordedAudioUri(null);
     }
   }, [editingMessage]);
@@ -119,7 +121,8 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
   }, []);
 
   const handleSend = async () => {
-    if ((text.trim() || selectedImage || selectedFile || recordedAudioUri) && onSend) {
+    const hasMedia = selectedImages.length > 0 || selectedVideos.length > 0 || selectedFiles.length > 0 || recordedAudioUri;
+    if ((text.trim() || hasMedia) && onSend) {
       // Stop typing indicator
       if (socket && socket.connected) {
         if (isGroup && groupId) {
@@ -133,19 +136,20 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
       }
       
       // Check if sending voice message
-      const isVoiceMessage = !!recordedAudioUri && !text.trim() && !selectedImage && !selectedFile;
+      const isVoiceMessage = !!recordedAudioUri && !text.trim() && selectedImages.length === 0 && selectedVideos.length === 0 && selectedFiles.length === 0;
       
       if (isVoiceMessage) {
         setIsSendingVoice(true);
       }
       
       try {
-        await onSend(text.trim(), selectedImage, selectedFile, recordedAudioUri);
+        await onSend(text.trim(), selectedImages, selectedVideos, selectedFiles, recordedAudioUri);
         
         // Clear inputs after successful send
       setText('');
-      setSelectedImage(null);
-      setSelectedFile(null);
+      setSelectedImages([]);
+      setSelectedVideos([]);
+      setSelectedFiles([]);
       setRecordedAudioUri(null);
       setShowEmojiPicker(false);
       } catch (error) {
@@ -153,8 +157,9 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
         // Don't clear audio preview on error so user can retry
         if (!isVoiceMessage) {
           setText('');
-          setSelectedImage(null);
-          setSelectedFile(null);
+          setSelectedImages([]);
+          setSelectedVideos([]);
+          setSelectedFiles([]);
         }
       } finally {
         setIsSendingVoice(false);
@@ -330,18 +335,90 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
 
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [4, 3],
+        allowsMultipleSelection: true,
+        allowsEditing: false,
         quality: 0.8,
+        selectionLimit: 0, // 0 means no limit
       });
 
-      if (!result.canceled && result.assets[0]) {
-        setSelectedImage(result.assets[0].uri);
-        setSelectedFile(null); // Clear file if image selected
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const newImages = result.assets.map(asset => asset.uri);
+        setSelectedImages(prev => [...prev, ...newImages]);
+        if (__DEV__) {
+          console.log(`✅ Selected ${newImages.length} image(s), total: ${selectedImages.length + newImages.length}`);
+        }
       }
     } catch (error) {
       console.error('Error picking image:', error);
       Alert.alert('Error', 'Failed to pick image.');
+    }
+  };
+
+  const handlePickVideo = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'We need camera roll permissions to upload videos.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        allowsMultipleSelection: true,
+        allowsEditing: false,
+        quality: 0.8,
+        videoMaxDuration: 60, // 60 seconds max
+        selectionLimit: 0, // 0 means no limit (unlimited selection)
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const newVideos = result.assets.map(asset => ({
+          uri: asset.uri,
+          duration: asset.duration,
+          width: asset.width,
+          height: asset.height,
+        }));
+        setSelectedVideos(prev => [...prev, ...newVideos]);
+        if (__DEV__) {
+          console.log(`✅ Selected ${newVideos.length} video(s), total: ${selectedVideos.length + newVideos.length}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error picking video:', error);
+      Alert.alert('Error', 'Failed to pick video.');
+    }
+  };
+
+  const handleRecordVideo = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'We need camera permissions to record videos.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        allowsEditing: false,
+        quality: 0.8,
+        videoMaxDuration: 60, // 60 seconds max
+        allowsMultipleSelection: false, // Camera can only record one video at a time
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        setSelectedVideos(prev => [...prev, {
+          uri: result.assets[0].uri,
+          duration: result.assets[0].duration,
+          width: result.assets[0].width,
+          height: result.assets[0].height,
+        }]);
+        if (__DEV__) {
+          console.log(`✅ Added video, total: ${selectedVideos.length + 1}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error recording video:', error);
+      Alert.alert('Error', 'Failed to record video.');
     }
   };
 
@@ -354,14 +431,16 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
       }
 
       const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        aspect: [4, 3],
+        allowsEditing: false,
         quality: 0.8,
+        allowsMultipleSelection: false, // Camera can only take one photo at a time
       });
 
-      if (!result.canceled && result.assets[0]) {
-        setSelectedImage(result.assets[0].uri);
-        setSelectedFile(null);
+      if (!result.canceled && result.assets && result.assets[0]) {
+        setSelectedImages(prev => [...prev, result.assets[0].uri]);
+        if (__DEV__) {
+          console.log(`✅ Added photo, total: ${selectedImages.length + 1}`);
+        }
       }
     } catch (error) {
       console.error('Error taking photo:', error);
@@ -371,29 +450,42 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
 
   const handlePickFile = async () => {
     try {
+      // Use getDocumentAsync with multiple: true for multiple file selection
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
         copyToCacheDirectory: true,
+        multiple: true, // Enable multiple selection
       });
 
-      if (!result.canceled && result.assets[0]) {
-        setSelectedFile({
-          uri: result.assets[0].uri,
-          name: result.assets[0].name,
-          size: result.assets[0].size,
-          mimeType: result.assets[0].mimeType,
-        });
-        setSelectedImage(null); // Clear image if file selected
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const newFiles = result.assets.map(file => ({
+          uri: file.uri,
+          name: file.name,
+          size: file.size,
+          mimeType: file.mimeType,
+        }));
+        setSelectedFiles(prev => [...prev, ...newFiles]);
+        if (__DEV__) {
+          console.log(`✅ Selected ${newFiles.length} file(s), total: ${selectedFiles.length + newFiles.length}`);
+        }
       }
     } catch (error) {
-      console.error('Error picking file:', error);
-      Alert.alert('Error', 'Failed to pick file.');
+      // User cancelled or error occurred
+      if (DocumentPicker.isCancel && DocumentPicker.isCancel(error)) {
+        // User cancelled, do nothing
+        if (__DEV__) {
+          console.log('User cancelled file picker');
+        }
+      } else {
+        console.error('Error picking file:', error);
+        Alert.alert('Error', 'Failed to pick file.');
+      }
     }
   };
 
   const handleAttachmentPress = () => {
-    const options = ['Photo Library', 'Take Photo', 'Document', 'Cancel'];
-    const cancelButtonIndex = 3;
+    const options = ['Photo Library', 'Take Photo', 'Video Library', 'Record Video', 'Document', 'Cancel'];
+    const cancelButtonIndex = 5;
 
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
@@ -404,7 +496,9 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
         (buttonIndex) => {
           if (buttonIndex === 0) handlePickImage();
           else if (buttonIndex === 1) handleTakePhoto();
-          else if (buttonIndex === 2) handlePickFile();
+          else if (buttonIndex === 2) handlePickVideo();
+          else if (buttonIndex === 3) handleRecordVideo();
+          else if (buttonIndex === 4) handlePickFile();
         }
       );
     } else {
@@ -414,6 +508,8 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
         [
           { text: 'Photo Library', onPress: handlePickImage },
           { text: 'Take Photo', onPress: handleTakePhoto },
+          { text: 'Video Library', onPress: handlePickVideo },
+          { text: 'Record Video', onPress: handleRecordVideo },
           { text: 'Document', onPress: handlePickFile },
           { text: 'Cancel', style: 'cancel' },
         ]
@@ -441,39 +537,80 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
         </View>
       )}
 
-      {/* Selected Image Preview */}
-      {selectedImage && (
+      {/* Selected Images Preview */}
+      {selectedImages.length > 0 && (
         <View style={styles.previewContainer}>
-          <Image source={{ uri: selectedImage }} style={styles.previewImage} />
-          <TouchableOpacity
-            style={styles.removePreviewButton}
-            onPress={() => setSelectedImage(null)}
-          >
-            <Ionicons name="close-circle" size={24} color={colors.primary} />
-          </TouchableOpacity>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.previewScrollView}>
+            {selectedImages.map((imageUri, index) => (
+              <View key={index} style={styles.previewItem}>
+                <Image source={{ uri: imageUri }} style={styles.previewImage} />
+                <TouchableOpacity
+                  style={styles.removePreviewButton}
+                  onPress={() => setSelectedImages(prev => prev.filter((_, i) => i !== index))}
+                >
+                  <Ionicons name="close-circle" size={24} color={colors.primary} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
         </View>
       )}
 
-      {/* Selected File Preview */}
-      {selectedFile && (
+      {/* Selected Videos Preview */}
+      {selectedVideos.length > 0 && (
         <View style={styles.previewContainer}>
-          <View style={styles.filePreview}>
-            <Ionicons name="document" size={32} color={colors.primary} />
-            <View style={styles.filePreviewInfo}>
-              <Text style={styles.filePreviewName} numberOfLines={1}>
-                {selectedFile.name}
-              </Text>
-              <Text style={styles.filePreviewSize}>
-                {(selectedFile.size / 1024).toFixed(2)} KB
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.removePreviewButton}
-              onPress={() => setSelectedFile(null)}
-            >
-              <Ionicons name="close-circle" size={24} color={colors.primary} />
-            </TouchableOpacity>
-          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.previewScrollView}>
+            {selectedVideos.map((video, index) => (
+              <View key={index} style={styles.previewItem}>
+                <View style={styles.videoPreview}>
+                  <Ionicons name="videocam" size={32} color={colors.primary} />
+                  <View style={styles.videoPreviewInfo}>
+                    <Text style={styles.videoPreviewText}>Video</Text>
+                    {video.duration && (
+                      <Text style={styles.videoPreviewDuration}>
+                        {Math.floor(video.duration)}s
+                      </Text>
+                    )}
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.removePreviewButton}
+                  onPress={() => setSelectedVideos(prev => prev.filter((_, i) => i !== index))}
+                >
+                  <Ionicons name="close-circle" size={24} color={colors.primary} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Selected Files Preview */}
+      {selectedFiles.length > 0 && (
+        <View style={styles.previewContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.previewScrollView}>
+            {selectedFiles.map((file, index) => (
+              <View key={index} style={styles.previewItem}>
+                <View style={styles.filePreview}>
+                  <Ionicons name="document" size={32} color={colors.primary} />
+                  <View style={styles.filePreviewInfo}>
+                    <Text style={styles.filePreviewName} numberOfLines={1}>
+                      {file.name}
+                    </Text>
+                    <Text style={styles.filePreviewSize}>
+                      {(file.size / 1024).toFixed(2)} KB
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.removePreviewButton}
+                  onPress={() => setSelectedFiles(prev => prev.filter((_, i) => i !== index))}
+                >
+                  <Ionicons name="close-circle" size={24} color={colors.primary} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
         </View>
       )}
 
@@ -584,7 +721,7 @@ export default function MessageInput({ onSend, disabled = false, receiverId, gro
                 />
               </Animated.View>
             </TouchableOpacity>
-          ) : (text.trim() || selectedImage || selectedFile || recordedAudioUri) ? (
+          ) : (text.trim() || selectedImages.length > 0 || selectedVideos.length > 0 || selectedFiles.length > 0 || recordedAudioUri) ? (
             <TouchableOpacity
               style={styles.sendButton}
               onPress={handleSend}
@@ -864,11 +1001,17 @@ const getStyles = (colors, spacing, typography, commonStyles) => StyleSheet.crea
     backgroundColor: colors.primary + '15',
     borderBottomColor: colors.primary + '30',
   },
+  previewScrollView: {
+    flexDirection: 'row',
+  },
+  previewItem: {
+    marginRight: spacing.sm,
+    position: 'relative',
+  },
   previewImage: {
     width: 100,
     height: 100,
     borderRadius: 8,
-    marginBottom: spacing.xs,
   },
   filePreview: {
     flexDirection: 'row',
@@ -964,5 +1107,26 @@ const getStyles = (colors, spacing, typography, commonStyles) => StyleSheet.crea
   voiceButtonRecording: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
+  },
+  videoPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.sm,
+    backgroundColor: commonStyles.backgroundPrimary,
+    borderRadius: 8,
+  },
+  videoPreviewInfo: {
+    flex: 1,
+  },
+  videoPreviewText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: commonStyles.textPrimary,
+    marginBottom: 2,
+  },
+  videoPreviewDuration: {
+    fontSize: 12,
+    color: commonStyles.textSecondary,
   },
 });

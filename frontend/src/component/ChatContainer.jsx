@@ -2,15 +2,17 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaEdit, FaTrash, FaImage, FaSpinner, FaEllipsisV, FaCopy, FaShare, FaThumbtack, FaMicrophone, FaFile, FaLink, FaDownload, FaTimes, FaSave, FaTimesCircle, FaSmile } from "react-icons/fa";
+import { FaEdit, FaTrash, FaImage, FaSpinner, FaEllipsisV, FaCopy, FaShare, FaThumbtack, FaMicrophone, FaFile, FaLink, FaDownload, FaTimes, FaSave, FaTimesCircle, FaSmile, FaVideo } from "react-icons/fa";
 import ChatHeader from "./ChatHeader";
 import MessageInput from "./MessageInput";
 import MessageSkeleton from "./skeletons/MessageSkeleton";
 import EditMessageModal from "./EditMessageModal";
 import DeleteMessageModal from "./DeleteMessageModal";
+import ForwardMessageModal from "./ForwardMessageModal";
+import ForwardMultipleMessagesModal from "./ForwardMultipleMessagesModal";
 import ProfileImage from "./ProfileImage";
 import AudioPlayer from "./AudioPlayer";
-import { formatMessageTime } from "../lib/utils";
+import { formatMessageTime, normalizeId } from "../lib/utils";
 import toast from "react-hot-toast";
 
 // Helper function to enhance Cloudinary image URLs with quality parameters
@@ -94,6 +96,10 @@ const ChatContainer = () => {
     unsubscribeFromGroupMessages,
     editMessage,
     deleteMessage,
+    deleteMessageMedia,
+    markVoiceAsListened,
+    saveMessage,
+    unsaveMessage,
     pinMessage,
     unpinMessage,
     addReaction,
@@ -134,6 +140,10 @@ const ChatContainer = () => {
   const filePickerOpenedRef = useRef(false);
   const [openMenuMessageId, setOpenMenuMessageId] = useState(null);
   const [pinningMessage, setPinningMessage] = useState(null);
+  const [forwardingMessage, setForwardingMessage] = useState(null);
+  const [forwardingMessages, setForwardingMessages] = useState(null); // For multiple messages
+  const [selectedMessages, setSelectedMessages] = useState([]); // For message selection mode
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [viewingMedia, setViewingMedia] = useState(null); // { type: 'image' | 'file', url: string, fileName?: string }
   const [reactionPickerMessageId, setReactionPickerMessageId] = useState(null);
   const menuRefs = useRef({});
@@ -214,13 +224,7 @@ const ChatContainer = () => {
     };
   }, [reactionPickerMessageId]);
 
-  // Normalize ID helper - memoized to avoid recreating on every render
-  const normalizeId = useCallback((id) => {
-    if (!id) return null;
-    if (typeof id === 'string') return id;
-    if (typeof id === 'object' && id._id) return id._id.toString();
-    return id.toString();
-  }, []);
+  // Normalize ID helper - using centralized utility function
 
   // Mark messages as seen when viewing chat (separate effect to handle ID normalization)
   useEffect(() => {
@@ -433,10 +437,54 @@ const ChatContainer = () => {
     }, 2000);
   };
 
-  const handleCopyMessage = (text) => {
-    navigator.clipboard.writeText(text);
-    toast.success("Message copied to clipboard");
-    setOpenMenuMessageId(null);
+  const handleCopyMessage = async (message) => {
+    try {
+      let textToCopy = '';
+      
+      // Handle different message types
+      if (message.text && message.text.trim()) {
+        textToCopy = message.text;
+      } else if (message.image) {
+        textToCopy = 'Image';
+      } else if (message.audio) {
+        textToCopy = 'Voice message';
+      } else if (message.video) {
+        textToCopy = 'Video';
+      } else if (message.file) {
+        textToCopy = message.fileName || 'File';
+      } else if (message.link) {
+        textToCopy = message.link;
+      } else {
+        textToCopy = '';
+      }
+      
+      if (!textToCopy) {
+        toast.error("Nothing to copy");
+        return;
+      }
+      
+      // Use modern clipboard API with fallback
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(textToCopy);
+        toast.success("Message copied to clipboard");
+      } else {
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = textToCopy;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        toast.success("Message copied to clipboard");
+      }
+      
+      setOpenMenuMessageId(null);
+    } catch (error) {
+      console.error('Failed to copy message:', error);
+      toast.error("Failed to copy message");
+    }
   };
 
   // Close menu when clicking outside
@@ -1065,9 +1113,57 @@ const ChatContainer = () => {
     );
   };
 
+  // Toggle selection mode
+  const toggleSelectionMode = () => {
+    setIsSelectionMode(!isSelectionMode);
+    if (isSelectionMode) {
+      setSelectedMessages([]);
+    }
+  };
+
+  // Handle forward multiple messages
+  const handleForwardMultiple = () => {
+    if (selectedMessages.length > 0) {
+      setForwardingMessages(selectedMessages);
+      setIsSelectionMode(false);
+      setSelectedMessages([]);
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-base-100 h-full relative">
-      <ChatHeader />
+      <ChatHeader 
+        onToggleSelectionMode={toggleSelectionMode}
+        isSelectionMode={isSelectionMode}
+      />
+      
+      {/* Selection Mode Toolbar */}
+      {isSelectionMode && (
+        <div className="px-4 py-3 bg-primary/10 border-b border-primary/20 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={toggleSelectionMode}
+              className="p-2 rounded-full hover:bg-base-200 transition-colors"
+            >
+              <FaTimes className="w-4 h-4 text-base-content" />
+            </button>
+            <span className="text-sm font-medium text-base-content">
+              {selectedMessages.length} message(s) selected
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {selectedMessages.length > 0 && (
+              <button
+                onClick={handleForwardMultiple}
+                className="px-4 py-2 bg-primary text-primary-content rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2 text-sm font-medium"
+              >
+                <FaShare className="w-4 h-4" />
+                <span>Forward</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       
       {/* Pinned Message Section - Below Header (Show only last pinned) */}
       {(() => {
@@ -1240,6 +1336,23 @@ const ChatContainer = () => {
               {/* Spacer for consecutive messages */}
               {isConsecutive && !isMyMessage && <div className="w-8 flex-shrink-0" />}
               
+              {/* Selection Checkbox */}
+              {isSelectionMode && (
+                <input
+                  type="checkbox"
+                  checked={selectedMessages.some(m => normalizeId(m._id) === normalizeId(message._id))}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    if (e.target.checked) {
+                      setSelectedMessages(prev => [...prev, message]);
+                    } else {
+                      setSelectedMessages(prev => prev.filter(m => normalizeId(m._id) !== normalizeId(message._id)));
+                    }
+                  }}
+                  className="mr-2 w-5 h-5 rounded border-base-300 text-primary focus:ring-primary"
+                />
+              )}
+
               {/* Message Bubble */}
               {message.image ? (
                 /* Image Message - Enhanced styling */
@@ -1251,7 +1364,7 @@ const ChatContainer = () => {
                   } overflow-hidden`}
                 >
                   {/* Image */}
-                  <div className="relative cursor-pointer" onClick={() => setViewingMedia({ type: 'image', url: message.image })}>
+                  <div className="relative cursor-pointer group/image" onClick={() => setViewingMedia({ type: 'image', url: message.image })}>
                     <img
                       src={getHighQualityImageUrl(message.image, true)}
                       alt="Attachment"
@@ -1259,6 +1372,26 @@ const ChatContainer = () => {
                       style={{ imageRendering: 'auto' }}
                       loading="lazy"
                     />
+                    {/* Delete image button - only for sender */}
+                    {isMyMessage && message.image && (
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (confirm('Delete this image?')) {
+                            try {
+                              await deleteMessageMedia(message._id, 'image');
+                              toast.success('Image deleted');
+                            } catch (error) {
+                              console.error('Failed to delete image:', error);
+                            }
+                          }
+                        }}
+                        className="absolute top-2 right-2 opacity-0 group-hover/image:opacity-100 transition-opacity bg-error text-error-content rounded-full p-1.5 hover:bg-error/90 shadow-lg z-10"
+                        title="Delete image"
+                      >
+                        <FaTimes className="w-3 h-3" />
+                      </button>
+                    )}
                     {/* Enhanced gradient overlay for better text readability */}
                     <div className={`absolute inset-0 bg-gradient-to-t ${
                       isMyMessage 
@@ -1320,7 +1453,20 @@ const ChatContainer = () => {
                   }`}
                 >
                   {/* Custom Audio Player */}
-                  <AudioPlayer src={message.audio} isMyMessage={isMyMessage} />
+                  <AudioPlayer 
+                    src={message.audio} 
+                    isMyMessage={isMyMessage}
+                    messageId={message._id}
+                    onPlay={async (msgId) => {
+                      if (!isMyMessage) {
+                        try {
+                          await markVoiceAsListened(msgId);
+                        } catch (error) {
+                          console.error('Failed to mark voice as listened:', error);
+                        }
+                      }
+                    }}
+                  />
                   
                   {/* Text with audio if exists */}
                   {message.text ? (
@@ -1512,6 +1658,21 @@ const ChatContainer = () => {
                 </div>
               )}
 
+              {/* Forwarded From Display - Below message bubble */}
+              {message.forwardedFrom && (
+                <div className={`mt-1.5 ${isMyMessage ? 'text-right' : 'text-left'}`}>
+                  <div className="inline-flex items-center gap-1.5 text-xs text-base-content/50">
+                    <FaShare className="w-3 h-3 flex-shrink-0" />
+                    <span>
+                      Forwarded from <span className="font-medium text-base-content/70">{message.forwardedFrom.senderName || 'Unknown'}</span>
+                      {message.forwardedFrom.chatName && (
+                        <> in <span className="font-medium text-base-content/70">{message.forwardedFrom.chatName}</span></>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {/* Reactions Display */}
               {message.reactions && message.reactions.length > 0 && (
                 <div className={`flex flex-wrap gap-1.5 mt-1.5 ${isMyMessage ? 'justify-end' : 'justify-start'}`}>
@@ -1530,9 +1691,11 @@ const ChatContainer = () => {
                     );
                     const reactionUsers = reactions.map(r => {
                       if (typeof r.userId === 'object' && r.userId.fullname) {
-                        return r.userId.fullname;
+                        const time = r.createdAt ? formatMessageTime(r.createdAt) : '';
+                        return `${r.userId.fullname}${time ? ` (${time})` : ''}`;
                       }
-                      return 'Someone';
+                      const time = r.createdAt ? formatMessageTime(r.createdAt) : '';
+                      return `Someone${time ? ` (${time})` : ''}`;
                     });
                     const tooltipText = reactionUsers.length > 0 
                       ? `${reactionUsers.join(', ')}${reactionUsers.length > 1 ? ` and ${reactions.length - reactionUsers.length} more` : ''}`
@@ -1626,7 +1789,66 @@ const ChatContainer = () => {
                     
                     {/* Dropdown Menu */}
                     {openMenuMessageId === message._id && (
-                      <div className={`absolute ${isMyMessage ? 'right-0' : 'left-0'} bottom-full mb-2 w-52 bg-base-100 rounded-xl shadow-2xl border border-base-300/50 z-50 overflow-hidden backdrop-blur-sm`}>
+                      <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className={`absolute ${isMyMessage ? 'right-0' : 'left-0'} bottom-full mb-2 w-64 bg-base-100 rounded-xl shadow-2xl border border-base-300/50 z-50 overflow-hidden backdrop-blur-sm`}>
+                        {/* Message Preview */}
+                        <div className="p-3 border-b border-base-200 bg-base-200/30">
+                          <p className="text-xs font-medium text-base-content/60 mb-2">Message:</p>
+                          <div className="bg-base-100 rounded-lg p-2.5 border border-base-300 max-h-32 overflow-y-auto">
+                            {message.audio ? (
+                              <div className="flex items-center gap-2">
+                                <FaMicrophone className="size-3.5 text-primary flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <AudioPlayer 
+                                    src={message.audio} 
+                                    isMyMessage={false}
+                                    messageId={message._id}
+                                  />
+                                  {message.text && (
+                                    <p className="text-xs text-base-content/70 mt-1.5 line-clamp-2">{message.text}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : message.image ? (
+                              <div className="flex items-center gap-2">
+                                <FaImage className="size-3.5 text-primary flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-base-content">Photo</p>
+                                  {message.text && (
+                                    <p className="text-xs text-base-content/70 mt-1 line-clamp-2">{message.text}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : message.video ? (
+                              <div className="flex items-center gap-2">
+                                <FaVideo className="size-3.5 text-primary flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-base-content">Video</p>
+                                  {message.text && (
+                                    <p className="text-xs text-base-content/70 mt-1 line-clamp-2">{message.text}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : message.file ? (
+                              <div className="flex items-center gap-2">
+                                <FaFile className="size-3.5 text-primary flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-base-content truncate">
+                                    {message.fileName || "File"}
+                                  </p>
+                                  {message.text && (
+                                    <p className="text-xs text-base-content/70 mt-1 line-clamp-2">{message.text}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : message.text ? (
+                              <p className="text-xs text-base-content line-clamp-4">{message.text}</p>
+                            ) : (
+                              <p className="text-xs text-base-content/60 italic">Empty message</p>
+                            )}
+                          </div>
+                        </div>
                         {message.image ? (
                           <>
                             <button
@@ -1664,8 +1886,7 @@ const ChatContainer = () => {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleCopyMessage(message.text || 'Image');
-                                setOpenMenuMessageId(null);
+                                handleCopyMessage(message);
                               }}
                               className="w-full px-4 py-2.5 text-left text-sm text-base-content hover:bg-base-200 transition-colors flex items-center gap-3"
                             >
@@ -1675,7 +1896,7 @@ const ChatContainer = () => {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                toast.info("Forward feature coming soon");
+                                setForwardingMessage(message);
                                 setOpenMenuMessageId(null);
                               }}
                               className="w-full px-4 py-2.5 text-left text-sm text-base-content hover:bg-base-200 transition-colors flex items-center gap-3"
@@ -1683,6 +1904,52 @@ const ChatContainer = () => {
                               <FaShare className="w-4 h-4" />
                               <span>Forward</span>
                             </button>
+                            {/* Save/Unsave Message */}
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  const isSaved = message.savedBy?.some(s => normalizeId(s.userId?._id || s.userId) === normalizeId(authUser?._id));
+                                  if (isSaved) {
+                                    await unsaveMessage(message._id);
+                                  } else {
+                                    await saveMessage(message._id);
+                                  }
+                                  setOpenMenuMessageId(null);
+                                } catch (error) {
+                                  console.error('Failed to save/unsave message:', error);
+                                }
+                              }}
+                              className="w-full px-4 py-2.5 text-left text-sm text-base-content hover:bg-base-200 transition-colors flex items-center gap-3"
+                            >
+                              <FaSave className="w-4 h-4" />
+                              <span>{message.savedBy?.some(s => normalizeId(s.userId?._id || s.userId) === normalizeId(authUser?._id)) ? "Unsave" : "Save"}</span>
+                            </button>
+                            {/* Delete Individual Media */}
+                            {message.image && (
+                              <>
+                                <div className="border-t border-base-200 my-1"></div>
+                                <div className="px-4 py-2 text-xs font-medium text-base-content/60">Delete Media</div>
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (confirm('Delete this image?')) {
+                                      try {
+                                        await deleteMessageMedia(message._id, 'image');
+                                        toast.success('Image deleted');
+                                        setOpenMenuMessageId(null);
+                                      } catch (error) {
+                                        console.error('Failed to delete image:', error);
+                                      }
+                                    }
+                                  }}
+                                  className="w-full px-4 py-2.5 text-left text-sm text-error hover:bg-error/10 transition-colors flex items-center gap-3"
+                                >
+                                  <FaImage className="w-4 h-4" />
+                                  <span>Delete image</span>
+                                </button>
+                              </>
+                            )}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1753,8 +2020,7 @@ const ChatContainer = () => {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleCopyMessage(message.text);
-                                setOpenMenuMessageId(null);
+                                handleCopyMessage(message);
                               }}
                               className="w-full px-4 py-2.5 text-left text-sm text-base-content hover:bg-base-200 transition-colors flex items-center gap-3"
                             >
@@ -1764,7 +2030,7 @@ const ChatContainer = () => {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                toast.info("Forward feature coming soon");
+                                setForwardingMessage(message);
                                 setOpenMenuMessageId(null);
                               }}
                               className="w-full px-4 py-2.5 text-left text-sm text-base-content hover:bg-base-200 transition-colors flex items-center gap-3"
@@ -1772,6 +2038,94 @@ const ChatContainer = () => {
                               <FaShare className="w-4 h-4" />
                               <span>Forward</span>
                             </button>
+                            {/* Save/Unsave Message */}
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  const isSaved = message.savedBy?.some(s => normalizeId(s.userId?._id || s.userId) === normalizeId(authUser?._id));
+                                  if (isSaved) {
+                                    await unsaveMessage(message._id);
+                                  } else {
+                                    await saveMessage(message._id);
+                                  }
+                                  setOpenMenuMessageId(null);
+                                } catch (error) {
+                                  console.error('Failed to save/unsave message:', error);
+                                }
+                              }}
+                              className="w-full px-4 py-2.5 text-left text-sm text-base-content hover:bg-base-200 transition-colors flex items-center gap-3"
+                            >
+                              <FaSave className="w-4 h-4" />
+                              <span>{message.savedBy?.some(s => normalizeId(s.userId?._id || s.userId) === normalizeId(authUser?._id)) ? "Unsave" : "Save"}</span>
+                            </button>
+                            {/* Delete Individual Media for text messages */}
+                            {(message.video || message.audio || message.file) && (
+                              <>
+                                <div className="border-t border-base-200 my-1"></div>
+                                <div className="px-4 py-2 text-xs font-medium text-base-content/60">Delete Media</div>
+                                {message.video && (
+                                  <button
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      if (confirm('Delete this video?')) {
+                                        try {
+                                          await deleteMessageMedia(message._id, 'video');
+                                          toast.success('Video deleted');
+                                          setOpenMenuMessageId(null);
+                                        } catch (error) {
+                                          console.error('Failed to delete video:', error);
+                                        }
+                                      }
+                                    }}
+                                    className="w-full px-4 py-2.5 text-left text-sm text-error hover:bg-error/10 transition-colors flex items-center gap-3"
+                                  >
+                                    <FaFile className="w-4 h-4" />
+                                    <span>Delete video</span>
+                                  </button>
+                                )}
+                                {message.audio && (
+                                  <button
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      if (confirm('Delete this audio?')) {
+                                        try {
+                                          await deleteMessageMedia(message._id, 'audio');
+                                          toast.success('Audio deleted');
+                                          setOpenMenuMessageId(null);
+                                        } catch (error) {
+                                          console.error('Failed to delete audio:', error);
+                                        }
+                                      }
+                                    }}
+                                    className="w-full px-4 py-2.5 text-left text-sm text-error hover:bg-error/10 transition-colors flex items-center gap-3"
+                                  >
+                                    <FaMicrophone className="w-4 h-4" />
+                                    <span>Delete audio</span>
+                                  </button>
+                                )}
+                                {message.file && (
+                                  <button
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      if (confirm('Delete this file?')) {
+                                        try {
+                                          await deleteMessageMedia(message._id, 'file');
+                                          toast.success('File deleted');
+                                          setOpenMenuMessageId(null);
+                                        } catch (error) {
+                                          console.error('Failed to delete file:', error);
+                                        }
+                                      }
+                                    }}
+                                    className="w-full px-4 py-2.5 text-left text-sm text-error hover:bg-error/10 transition-colors flex items-center gap-3"
+                                  >
+                                    <FaFile className="w-4 h-4" />
+                                    <span>Delete file</span>
+                                  </button>
+                                )}
+                              </>
+                            )}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1845,12 +2199,70 @@ const ChatContainer = () => {
                     
                     {/* Dropdown Menu for received messages */}
                     {openMenuMessageId === message._id && (
-                      <div className={`absolute ${isMyMessage ? 'right-0' : 'left-0'} bottom-full mb-2 w-52 bg-base-100 rounded-xl shadow-2xl border border-base-300/50 z-50 overflow-hidden backdrop-blur-sm`}>
+                      <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className={`absolute ${isMyMessage ? 'right-0' : 'left-0'} bottom-full mb-2 w-64 bg-base-100 rounded-xl shadow-2xl border border-base-300/50 z-50 overflow-hidden backdrop-blur-sm`}>
+                        {/* Message Preview */}
+                        <div className="p-3 border-b border-base-200 bg-base-200/30">
+                          <p className="text-xs font-medium text-base-content/60 mb-2">Message:</p>
+                          <div className="bg-base-100 rounded-lg p-2.5 border border-base-300 max-h-32 overflow-y-auto">
+                            {message.audio ? (
+                              <div className="flex items-center gap-2">
+                                <FaMicrophone className="size-3.5 text-primary flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <AudioPlayer 
+                                    src={message.audio} 
+                                    isMyMessage={false}
+                                    messageId={message._id}
+                                  />
+                                  {message.text && (
+                                    <p className="text-xs text-base-content/70 mt-1.5 line-clamp-2">{message.text}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : message.image ? (
+                              <div className="flex items-center gap-2">
+                                <FaImage className="size-3.5 text-primary flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-base-content">Photo</p>
+                                  {message.text && (
+                                    <p className="text-xs text-base-content/70 mt-1 line-clamp-2">{message.text}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : message.video ? (
+                              <div className="flex items-center gap-2">
+                                <FaVideo className="size-3.5 text-primary flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-base-content">Video</p>
+                                  {message.text && (
+                                    <p className="text-xs text-base-content/70 mt-1 line-clamp-2">{message.text}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : message.file ? (
+                              <div className="flex items-center gap-2">
+                                <FaFile className="size-3.5 text-primary flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-base-content truncate">
+                                    {message.fileName || "File"}
+                                  </p>
+                                  {message.text && (
+                                    <p className="text-xs text-base-content/70 mt-1 line-clamp-2">{message.text}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ) : message.text ? (
+                              <p className="text-xs text-base-content line-clamp-4">{message.text}</p>
+                            ) : (
+                              <p className="text-xs text-base-content/60 italic">Empty message</p>
+                            )}
+                          </div>
+                        </div>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleCopyMessage(message.text || message.image ? 'Image' : '');
-                            setOpenMenuMessageId(null);
+                            handleCopyMessage(message);
                           }}
                           className="w-full px-4 py-2.5 text-left text-sm text-base-content hover:bg-base-200 transition-colors flex items-center gap-3"
                         >
@@ -1860,7 +2272,7 @@ const ChatContainer = () => {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            toast.info("Forward feature coming soon");
+                            setForwardingMessage(message);
                             setOpenMenuMessageId(null);
                           }}
                           className="w-full px-4 py-2.5 text-left text-sm text-base-content hover:bg-base-200 transition-colors flex items-center gap-3"
@@ -2282,6 +2694,22 @@ const ChatContainer = () => {
           reader.readAsDataURL(file);
         }}
       />
+
+      {/* Forward Message Modal */}
+      {forwardingMessage && (
+        <ForwardMessageModal
+          message={forwardingMessage}
+          onClose={() => setForwardingMessage(null)}
+        />
+      )}
+
+      {/* Forward Multiple Messages Modal */}
+      {forwardingMessages && forwardingMessages.length > 0 && (
+        <ForwardMultipleMessagesModal
+          messages={forwardingMessages}
+          onClose={() => setForwardingMessages(null)}
+        />
+      )}
     </div>
   );
 };

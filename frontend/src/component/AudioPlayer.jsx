@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import { FaPlay, FaPause } from "react-icons/fa";
 
-const AudioPlayer = ({ src, isMyMessage = false }) => {
+const AudioPlayer = ({ src, isMyMessage = false, onPlay, messageId }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [hasListened, setHasListened] = useState(false);
   const audioRef = useRef(null);
 
   // Generate waveform bars (simulated - in production, you'd analyze the audio file)
@@ -44,6 +45,11 @@ const AudioPlayer = ({ src, isMyMessage = false }) => {
       audio.pause();
     } else {
       audio.play();
+      // Mark as listened when starting to play (only once)
+      if (!hasListened && onPlay && messageId) {
+        setHasListened(true);
+        onPlay(messageId);
+      }
     }
     setIsPlaying(!isPlaying);
   };
@@ -59,36 +65,36 @@ const AudioPlayer = ({ src, isMyMessage = false }) => {
   const visibleBars = Math.floor(waveform.length * progress);
 
   return (
-    <div className="flex items-center gap-3">
-      {/* Large Circular Play Button */}
+    <div className="flex items-center gap-3.5">
+      {/* Professional Circular Play Button */}
       <button
         onClick={togglePlay}
-        className={`flex-shrink-0 size-12 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-105 active:scale-95 ${
+        className={`flex-shrink-0 size-11 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 shadow-md ${
           isMyMessage
-            ? "bg-primary-content/25 hover:bg-primary-content/35"
-            : "bg-primary hover:bg-primary/90"
+            ? "bg-primary-content/20 hover:bg-primary-content/30 backdrop-blur-sm border border-primary-content/10"
+            : "bg-primary hover:bg-primary/90 shadow-primary/20"
         }`}
       >
         {isPlaying ? (
-          <FaPause className={`size-5 ${isMyMessage ? "text-primary-content" : "text-white"}`} />
+          <FaPause className={`w-5 h-5 ${isMyMessage ? "text-primary-content" : "text-white"}`} />
         ) : (
           <FaPlay
-            className={`size-5 ml-0.5 ${isMyMessage ? "text-primary-content" : "text-white"}`}
+            className={`w-5 h-5 ml-0.5 ${isMyMessage ? "text-primary-content" : "text-white"}`}
           />
         )}
       </button>
 
-      {/* Waveform Visualization */}
-      <div className="flex-1 flex items-center gap-0.5 h-8 relative">
-        {/* Dashed line background */}
+      {/* Enhanced Waveform Visualization */}
+      <div className="flex-1 flex items-center gap-1 h-9 relative min-w-0">
+        {/* Subtle dashed line background */}
         <div
           className={`absolute inset-0 flex items-center ${
-            isMyMessage ? "border-t border-dashed border-primary-content/20" : "border-t border-dashed border-base-content/20"
+            isMyMessage ? "border-t border-dashed border-primary-content/15" : "border-t border-dashed border-base-content/15"
           }`}
         />
         
-        {/* Waveform bars */}
-        <div className="flex items-end gap-0.5 h-full w-full">
+        {/* Professional waveform bars */}
+        <div className="flex items-end gap-0.5 h-full w-full px-0.5">
           {waveform.map((height, index) => {
             const barHeight = height * 100;
             const isActive = index < visibleBars;
@@ -96,18 +102,18 @@ const AudioPlayer = ({ src, isMyMessage = false }) => {
             return (
               <div
                 key={index}
-                className={`flex-1 rounded-sm transition-all duration-150 ${
+                className={`w-0.5 rounded-full transition-all duration-200 ${
                   isActive
                     ? isMyMessage
-                      ? "bg-primary-content/90"
-                      : "bg-primary"
+                      ? "bg-primary-content/95 shadow-sm"
+                      : "bg-primary shadow-sm shadow-primary/30"
                     : isMyMessage
-                    ? "bg-primary-content/30"
-                    : "bg-base-content/30"
+                    ? "bg-primary-content/25"
+                    : "bg-base-content/25"
                 }`}
                 style={{
-                  height: `${barHeight}%`,
-                  minHeight: "2px",
+                  height: `${Math.max(barHeight, 8)}%`,
+                  minHeight: "3px",
                 }}
               />
             );
@@ -115,13 +121,13 @@ const AudioPlayer = ({ src, isMyMessage = false }) => {
         </div>
       </div>
 
-      {/* Timestamp */}
+      {/* Professional Timestamp */}
       <div
-        className={`flex-shrink-0 text-xs font-medium ${
-          isMyMessage ? "text-primary-content/80" : "text-base-content/60"
+        className={`flex-shrink-0 text-xs font-semibold tabular-nums ${
+          isMyMessage ? "text-primary-content/85" : "text-base-content/65"
         }`}
       >
-        {formatTime(currentTime)}
+        {isPlaying ? formatTime(currentTime) : formatTime(duration || currentTime)}
       </div>
 
       {/* Hidden audio element */}

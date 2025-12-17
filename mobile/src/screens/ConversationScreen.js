@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, FlatList, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, Image, Alert, ActionSheetIOS, Modal, Dimensions, Linking, Pressable, Clipboard, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Audio } from 'expo-av';
+import { Audio, Video } from 'expo-av';
 import { useChatStore } from '../store/useChatStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { useCallStore } from '../store/useCallStore';
 import { useTheme } from '../theme';
 import MessageInput from '../component/MessageInput';
 import { formatDistanceToNow, format, isToday, isYesterday } from 'date-fns';
+import { normalizeId, normalizeMessageId } from '../utils/normalizeId';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const MAX_IMAGE_WIDTH = SCREEN_WIDTH * 0.7;
@@ -53,22 +54,25 @@ export default function ConversationScreen({ route, navigation }) {
     
     if (isGroup && groupId) {
       // Group messages - filter by groupId
-      const groupIdStr = groupId.toString();
+      const groupIdStr = normalizeId(groupId);
+      if (!groupIdStr) return [];
+      
       return allMessages.filter(msg => {
-        const msgGroupId = msg.groupId?._id?.toString() || 
-                          (typeof msg.groupId === 'object' ? msg.groupId._id?.toString() : msg.groupId?.toString());
+        const msgGroupId = normalizeMessageId(msg, 'groupId');
         return msgGroupId === groupIdStr;
       });
     } else if (userId) {
       // Direct messages - filter by userId
-      const authUserId = authUser._id.toString();
-      const targetUserId = userId.toString();
+      const authUserId = normalizeId(authUser._id);
+      const targetUserId = normalizeId(userId);
+      
+      if (!authUserId || !targetUserId) return [];
       
       return allMessages.filter(msg => {
-        const senderId = msg.sender?._id?.toString() || 
-                        (typeof msg.senderId === 'object' ? msg.senderId._id?.toString() : msg.senderId?.toString());
-        const receiverId = msg.receiver?._id?.toString() || 
-                          (typeof msg.receiverId === 'object' ? msg.receiverId._id?.toString() : msg.receiverId?.toString());
+        const senderId = normalizeMessageId(msg, 'senderId');
+        const receiverId = normalizeMessageId(msg, 'receiverId');
+        
+        if (!senderId || !receiverId) return false;
         
         // Message belongs to this conversation if:
         // - sender is current user and receiver is target user, OR
@@ -408,8 +412,15 @@ export default function ConversationScreen({ route, navigation }) {
     }
   }, [userId, groupId, isGroup, users, groups]);
 
+  // Track current conversation to prevent race conditions
+  const currentConversationRef = useRef(null);
+
   // Fetch messages and users/groups when screen loads
   useEffect(() => {
+    // Generate unique conversation ID for this conversation
+    const conversationId = isGroup ? `group-${groupId}` : `user-${userId}`;
+    currentConversationRef.current = conversationId;
+    
     // Reset loading state when params change
     setHasStartedLoading(false);
     
@@ -421,10 +432,24 @@ export default function ConversationScreen({ route, navigation }) {
       // Group chat - fetch group messages
       setHasStartedLoading(true);
       // getGroupMessages will set isMessagesLoading and handle messages
-      chatStore.getGroupMessages(groupId).catch((error) => {
-        // Ensure loading state is cleared even if promise rejects unexpectedly
-        console.error('Error in getGroupMessages:', error);
-        useChatStore.setState({ isMessagesLoading: false });
+      chatStore.getGroupMessages(groupId).then((messages) => {
+        // Only update if this is still the current conversation (prevent race condition)
+        if (currentConversationRef.current === conversationId) {
+          // Messages are already set in store, just verify
+          if (__DEV__) {
+            console.log(`✅ Group messages loaded for conversation: ${conversationId}`);
+          }
+        } else {
+          if (__DEV__) {
+            console.log(`⚠️ Ignored stale group messages for old conversation`);
+          }
+        }
+      }).catch((error) => {
+        // Only handle error if this is still the current conversation
+        if (currentConversationRef.current === conversationId) {
+          console.error('Error in getGroupMessages:', error);
+          useChatStore.setState({ isMessagesLoading: false });
+        }
       });
       if (groups.length === 0) {
         chatStore.getGroups();
@@ -433,10 +458,24 @@ export default function ConversationScreen({ route, navigation }) {
       // Direct chat - fetch user messages
       setHasStartedLoading(true);
       // getMessages will set isMessagesLoading and handle messages
-      chatStore.getMessages(userId).catch((error) => {
-        // Ensure loading state is cleared even if promise rejects unexpectedly
-        console.error('Error in getMessages:', error);
-        useChatStore.setState({ isMessagesLoading: false });
+      chatStore.getMessages(userId).then((messages) => {
+        // Only update if this is still the current conversation (prevent race condition)
+        if (currentConversationRef.current === conversationId) {
+          // Messages are already set in store, just verify
+          if (__DEV__) {
+            console.log(`✅ User messages loaded for conversation: ${conversationId}`);
+          }
+        } else {
+          if (__DEV__) {
+            console.log(`⚠️ Ignored stale user messages for old conversation`);
+          }
+        }
+      }).catch((error) => {
+        // Only handle error if this is still the current conversation
+        if (currentConversationRef.current === conversationId) {
+          console.error('Error in getMessages:', error);
+          useChatStore.setState({ isMessagesLoading: false });
+        }
       });
       if (users.length === 0) {
         chatStore.getUsers();
@@ -449,10 +488,13 @@ export default function ConversationScreen({ route, navigation }) {
     // Safety timeout: Clear loading state after 8 seconds if still loading (more aggressive)
     // The store has a 12-second timeout, so this provides an additional layer
     const safetyTimeout = setTimeout(() => {
-      const currentLoading = useChatStore.getState().isMessagesLoading;
-      if (currentLoading) {
-        console.warn('⚠️ ConversationScreen: Loading timeout - force clearing loading state');
-        useChatStore.setState({ isMessagesLoading: false });
+      // Only clear if this is still the current conversation
+      if (currentConversationRef.current === conversationId) {
+        const currentLoading = useChatStore.getState().isMessagesLoading;
+        if (currentLoading) {
+          console.warn('⚠️ ConversationScreen: Loading timeout - force clearing loading state');
+          useChatStore.setState({ isMessagesLoading: false });
+        }
       }
     }, 8000);
     
@@ -461,6 +503,8 @@ export default function ConversationScreen({ route, navigation }) {
     return () => {
       clearTimeout(safetyTimeout);
       setHasStartedLoading(false);
+      // Mark conversation as stale
+      currentConversationRef.current = null;
       // Also clear loading state when leaving screen to prevent stuck state
       useChatStore.setState({ isMessagesLoading: false });
     };
@@ -583,74 +627,45 @@ export default function ConversationScreen({ route, navigation }) {
     }
   }, [messages, userId, groupId, isGroup, authStore?.socket, authUser]);
 
-  // Subscribe to socket events for real-time messages
+  // Mark new messages as seen when they arrive (for direct messages)
+  // Note: newMessage is handled globally in App.js subscribeToMessages
+  // This effect only handles marking messages as seen
   useEffect(() => {
     const socket = authStore?.socket;
-    if (!socket || !userId) return;
+    if (!socket || !authUser || !userId || isGroup) return;
 
-    const handleNewMessage = (message) => {
-      const currentUserId = authUser?._id?.toString();
-      
-      if (isGroup && groupId) {
-        // Group message - check if it's for this group
-        const msgGroupId = message.groupId?._id?.toString() || 
-                          (typeof message.groupId === 'object' ? message.groupId._id?.toString() : message.groupId?.toString());
-        if (msgGroupId === groupId?.toString()) {
-          chatStore.addMessage(message);
-          // Scroll to bottom when new message arrives
-          setTimeout(() => {
-            flatListRef.current?.scrollToEnd({ animated: true });
-          }, 100);
-        }
-      } else if (userId) {
-        // Direct message - only add if it's for this conversation
-        const senderId = message.sender?._id?.toString() || message.senderId?.toString();
-        const receiverId = message.receiver?._id?.toString() || message.receiverId?.toString();
-        
-        if ((senderId === userId || receiverId === userId) && 
-            (senderId === currentUserId || receiverId === currentUserId)) {
-          // Add message using store's addMessage (which handles duplicates)
-          chatStore.addMessage(message);
-          
-          if (__DEV__) {
-            console.log('✅ ConversationScreen: Added message to conversation:', {
-              messageId: message._id,
-              senderId,
-              receiverId,
-              userId,
-              currentUserId,
+    // Find unread messages from the other user
+    const currentUserId = authUser._id?.toString();
+    const targetUserId = userId?.toString();
+    
+    const unreadMessages = messages.filter(msg => {
+      const senderId = msg.sender?._id?.toString() || 
+                      (typeof msg.senderId === 'object' ? msg.senderId._id?.toString() : msg.senderId?.toString());
+      return senderId === targetUserId && senderId !== currentUserId && !msg.seen;
+    });
+
+    // Mark as seen with a small delay to ensure message is saved
+    if (unreadMessages.length > 0) {
+      const markAsSeenTimeout = setTimeout(() => {
+        if (socket && socket.connected) {
+          unreadMessages.forEach(msg => {
+            socket.emit('messageSeen', {
+              messageId: msg._id,
+              senderId: targetUserId,
             });
-          }
-          
-          // Mark as seen if it's from the other user
-          if (senderId === userId && senderId !== currentUserId && !message.seen) {
-            setTimeout(() => {
-              if (socket && socket.connected) {
-                socket.emit('messageSeen', {
-                  messageId: message._id,
-                  senderId: userId,
-                });
-              }
-            }, 500); // Small delay to ensure message is saved
-          }
-          
-          // Scroll to bottom when new message arrives
-          setTimeout(() => {
-            flatListRef.current?.scrollToEnd({ animated: true });
-          }, 100);
-        } else {
-          if (__DEV__) {
-            console.log('⚠️ ConversationScreen: Message not for this conversation:', {
-              messageId: message._id,
-              senderId,
-              receiverId,
-              userId,
-              currentUserId,
-            });
-          }
+          });
         }
-      }
-    };
+      }, 500);
+
+      return () => clearTimeout(markAsSeenTimeout);
+    }
+  }, [messages, userId, isGroup, authStore?.socket, authUser]);
+
+  // Subscribe to socket events for typing and seen updates only
+  // Note: newMessage is handled globally in App.js subscribeToMessages
+  useEffect(() => {
+    const socket = authStore?.socket;
+    if (!socket || (!userId && !groupId)) return;
 
     const handleTyping = (data) => {
       if (isGroup && groupId) {
@@ -740,9 +755,8 @@ export default function ConversationScreen({ route, navigation }) {
     };
 
     // Note: newMessage is handled globally in App.js subscribeToMessages
-    // But we also need local handler for this conversation to add to messages array
-    // The global handler updates lastMessages, this one adds to messages if for this conversation
-    socket.on('newMessage', handleNewMessage);
+    // The global handler already adds messages to the messages array if they match selectedUser/selectedGroup
+    // We only need to handle typing and seen updates here
     socket.on('typing', handleTyping);
     socket.on('stopTyping', handleStopTyping);
     socket.on('groupTyping', handleGroupTyping);
@@ -752,7 +766,6 @@ export default function ConversationScreen({ route, navigation }) {
 
     // Cleanup
     return () => {
-      socket.off('newMessage', handleNewMessage);
       socket.off('typing', handleTyping);
       socket.off('stopTyping', handleStopTyping);
       socket.off('groupTyping', handleGroupTyping);
@@ -909,18 +922,16 @@ export default function ConversationScreen({ route, navigation }) {
 
   const renderMessage = ({ item, index }) => {
     // Get sender ID (handle both object and string formats)
-    const senderId = item.sender?._id?.toString() || 
-                    (typeof item.senderId === 'object' ? item.senderId._id?.toString() : item.senderId?.toString());
+    const senderId = normalizeMessageId(item, 'senderId');
     
     // Find sender from users array
-    const messageSender = item.sender || users.find(u => u._id?.toString() === senderId);
+    const messageSender = item.sender || users.find(u => normalizeId(u._id) === senderId);
     
-    const isOwnMessage = senderId === authUser?._id?.toString();
+    const isOwnMessage = senderId === normalizeId(authUser?._id);
     
     const prevMessage = index > 0 ? messages[index - 1] : null;
-    const prevSenderId = prevMessage?.sender?._id?.toString() || 
-                        (typeof prevMessage?.senderId === 'object' ? prevMessage.senderId._id?.toString() : prevMessage?.senderId?.toString());
-    const prevIsOwn = prevSenderId === authUser?._id?.toString();
+    const prevSenderId = prevMessage ? normalizeMessageId(prevMessage, 'senderId') : null;
+    const prevIsOwn = prevSenderId === normalizeId(authUser?._id);
     const isConsecutive = prevIsOwn === isOwnMessage && prevMessage && prevSenderId === senderId;
     const showSenderName = !isOwnMessage && !isConsecutive;
     
@@ -976,6 +987,49 @@ export default function ConversationScreen({ route, navigation }) {
               {item.text && (
                 <View style={styles.imageTextOverlay}>
                   <Text style={styles.imageText}>
+                    {isCallMessage(item.text) ? item.text.replace(/📞\s*/g, '').trim() : item.text}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            {isOwnMessage && (
+              isGroup ? (
+                <GroupSeenBy message={item} isOwnMessage={isOwnMessage} />
+              ) : (
+                <ReadReceipt message={item} isOwnMessage={isOwnMessage} />
+              )
+            )}
+          </View>
+        ) : item.video ? (
+          <View>
+            <TouchableOpacity
+              style={[
+                styles.videoMessageContainer,
+                isOwnMessage ? styles.ownVideoContainer : styles.otherVideoContainer,
+              ]}
+              onPress={() => setViewingMedia({ type: 'video', url: item.video })}
+              activeOpacity={0.9}
+            >
+              <Video
+                source={{ uri: item.video }}
+                style={styles.messageVideo}
+                useNativeControls={false}
+                resizeMode="cover"
+                shouldPlay={false}
+              />
+              <View style={styles.videoPlayButton}>
+                <Ionicons name="play" size={40} color={colors.textWhite} />
+              </View>
+              {item.videoDuration && (
+                <View style={styles.videoDurationBadge}>
+                  <Text style={styles.videoDurationText}>
+                    {Math.floor(item.videoDuration)}s
+                  </Text>
+                </View>
+              )}
+              {item.text && (
+                <View style={styles.videoTextOverlay}>
+                  <Text style={styles.videoText}>
                     {isCallMessage(item.text) ? item.text.replace(/📞\s*/g, '').trim() : item.text}
                   </Text>
                 </View>
@@ -1203,21 +1257,26 @@ export default function ConversationScreen({ route, navigation }) {
     );
   };
 
-  const handleSendMessage = async (text, imageUri = null, fileUri = null, audioUri = null) => {
-    if ((!text?.trim() && !imageUri && !fileUri && !audioUri)) return;
+  const handleSendMessage = async (text, imageUris = [], videoUris = [], fileUris = [], audioUri = null) => {
+    // Normalize to arrays for backward compatibility
+    const images = Array.isArray(imageUris) ? imageUris : (imageUris ? [imageUris] : []);
+    const videos = Array.isArray(videoUris) ? videoUris : (videoUris ? [videoUris] : []);
+    const files = Array.isArray(fileUris) ? fileUris : (fileUris ? [fileUris] : []);
+    
+    if ((!text?.trim() && images.length === 0 && videos.length === 0 && files.length === 0 && !audioUri)) return;
     if (!userId && !groupId) return;
     
     try {
       if (editingMessage) {
-        // Edit existing message
+        // Edit existing message (only text can be edited)
         await chatStore.editMessage(editingMessage._id, text);
         setEditingMessage(null);
       } else {
-        // Send new message
+        // Send new message(s)
         if (isGroup && groupId) {
-          await chatStore.sendGroupMessage(groupId, text, imageUri, fileUri, audioUri);
+          await chatStore.sendGroupMessage(groupId, text, images, videos, files, audioUri);
         } else if (userId) {
-          await chatStore.sendMessage(userId, text, imageUri, fileUri, audioUri);
+          await chatStore.sendMessage(userId, text, images, videos, files, audioUri);
         }
       }
     } catch (error) {
@@ -1229,6 +1288,12 @@ export default function ConversationScreen({ route, navigation }) {
         Alert.alert(
           'Voice Message Error',
           errorMessage + '\n\nPlease try recording again.',
+          [{ text: 'OK' }]
+        );
+      } else if (errorMessage.includes('video') || errorMessage.includes('Video')) {
+        Alert.alert(
+          'Video Error',
+          errorMessage + '\n\nPlease try selecting another video.',
           [{ text: 'OK' }]
         );
       } else {
@@ -2205,6 +2270,70 @@ const getStyles = (colors, spacing, typography, commonStyles) => StyleSheet.crea
   fullScreenImage: {
     width: SCREEN_WIDTH,
     height: '100%',
+  },
+  fullScreenVideo: {
+    width: SCREEN_WIDTH,
+    height: '100%',
+  },
+  videoMessageContainer: {
+    maxWidth: MAX_IMAGE_WIDTH,
+    borderRadius: 18,
+    overflow: 'hidden',
+    marginBottom: spacing.xs,
+    position: 'relative',
+  },
+  ownVideoContainer: {
+    alignSelf: 'flex-end',
+  },
+  otherVideoContainer: {
+    alignSelf: 'flex-start',
+  },
+  messageVideo: {
+    width: MAX_IMAGE_WIDTH,
+    height: MAX_IMAGE_WIDTH * 0.75,
+    borderRadius: 18,
+    backgroundColor: '#000',
+  },
+  videoPlayButton: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: [{ translateX: -20 }, { translateY: -20 }],
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  videoDurationBadge: {
+    position: 'absolute',
+    bottom: spacing.sm,
+    right: spacing.sm,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: 4,
+  },
+  videoDurationText: {
+    color: colors.textWhite,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  videoTextOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    padding: spacing.sm,
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 18,
+  },
+  videoText: {
+    color: colors.textWhite,
+    fontSize: 14,
+    fontWeight: '500',
   },
   audioBubble: {
     padding: spacing.md,
