@@ -8,35 +8,35 @@ import jwt from 'jsonwebtoken';
  * @returns {string} - JWT token
  */
 export const generateToken = (userId, res) => {
-  const token = jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: '7d'
-  });
-  
-  // Cookie settings - optimized for cross-origin
-  const isDevelopment = process.env.NODE_ENV !== 'production';
-  
-  const cookieOptions = {
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    httpOnly: true, // Prevents JavaScript access for security
-    path: '/', // Ensure cookie is available for all paths
-  };
-  
-  if (isDevelopment) {
-    // Development settings - for localhost with different ports
+    const token = jwt.sign({ userId }, process.env.JWT_SECRET, {
+        expiresIn: '7d'
+    });
+    
+    // Cookie settings - optimized for cross-origin
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    
+    const cookieOptions = {
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        httpOnly: true, // Prevents JavaScript access for security
+        path: '/', // Ensure cookie is available for all paths
+    };
+    
+    if (isDevelopment) {
+        // Development settings - for localhost with different ports
     // 'lax' works for same-domain different ports (localhost:5173 -> localhost:5002)
-    cookieOptions.sameSite = 'lax';
-    cookieOptions.secure = false; // HTTP is fine for localhost
-  } else {
-    // Production settings - for cross-origin (separate frontend/backend hosting)
-    // Use 'none' for cross-origin cookies (frontend on Netlify, backend on Render)
-    cookieOptions.sameSite = 'none';
+        cookieOptions.sameSite = 'lax';
+        cookieOptions.secure = false; // HTTP is fine for localhost
+    } else {
+        // Production settings - for cross-origin (separate frontend/backend hosting)
+        // Use 'none' for cross-origin cookies (frontend on Netlify, backend on Render)
+        cookieOptions.sameSite = 'none';
     cookieOptions.secure = true; // Required when sameSite is 'none'
-  }
-  
-  // Set cookie with explicit options
-  res.cookie("jwt", token, cookieOptions);
-  
-  return token;
+    }
+    
+    // Set cookie with explicit options
+    res.cookie("jwt", token, cookieOptions);
+    
+    return token;
 };
 
 /**
@@ -44,14 +44,14 @@ export const generateToken = (userId, res) => {
  * @returns {Object} - Cookie options
  */
 export const getCookieOptions = () => {
-  const isDevelopment = process.env.NODE_ENV !== 'production';
-  
-  return {
-    httpOnly: true,
-    path: '/',
-    sameSite: isDevelopment ? 'lax' : 'none',
-    secure: !isDevelopment,
-  };
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    
+    return {
+        httpOnly: true,
+        path: '/',
+        sameSite: isDevelopment ? 'lax' : 'none',
+        secure: !isDevelopment,
+    };
 };
 
 /**

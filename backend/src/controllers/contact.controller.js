@@ -304,7 +304,12 @@ export const getContacts = async (req, res) => {
       return isSender ? contact.receiverId : contact.senderId;
     });
 
-    res.status(200).json(contactUsers);
+    // Use standardized response
+    res.status(200).json({
+      success: true,
+      message: 'Contacts retrieved successfully',
+      data: contactUsers
+    });
   } catch (error) {
     res.status(500).json({ message: "Internal server error" });
   }

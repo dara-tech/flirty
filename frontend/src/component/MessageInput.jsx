@@ -15,6 +15,7 @@ const MessageInput = () => {
   const [selectedFiles, setSelectedFiles] = useState([]); // Array of { file, preview, type, data }
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false); // Only for media uploads
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isRecordingSupported, setIsRecordingSupported] = useState(false);
@@ -667,16 +668,23 @@ const MessageInput = () => {
       clearTimeout(typingTimeoutRef.current);
     }
     
-    setIsSending(true);
-    
-    // Emit uploading status if sending media
+    // Check if sending media (image, video, audio, file)
     const hasMedia = messageImage || messageVideo || messageFile || messageAudio || filesToSend.length > 0;
+    
+    // Only show loading for media uploads, not text messages
     if (hasMedia) {
+      setIsUploadingMedia(true);
+      setIsSending(true);
+      
+      // Emit uploading status if sending media
       if (isGroupChat && selectedGroup?._id) {
         sendGroupUploadingPhotoStatus(selectedGroup._id, true);
       } else if (selectedUser?._id) {
         sendUploadingPhotoStatus(selectedUser._id, true);
       }
+    } else {
+      // Text-only message - no loading state, send immediately
+      setIsSending(false);
     }
     
     // Function to send a single message
@@ -734,7 +742,32 @@ const MessageInput = () => {
       
       // Send multiple files as separate messages
       if (filesToSend.length > 0) {
-        for (const fileItem of filesToSend) {
+        // Set upload state once for all files (only show one indicator)
+        const firstImageFile = filesToSend.find(f => f.type === 'image');
+        if (firstImageFile) {
+          useChatStore.setState({ 
+            isCurrentUserUploading: true,
+            uploadingImagePreview: firstImageFile.data,
+            uploadType: 'image'
+          });
+        } else {
+          // For non-image files, still show upload state
+          useChatStore.setState({ 
+            isCurrentUserUploading: true,
+            uploadType: 'file'
+          });
+        }
+        
+        // Emit uploading status
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, true);
+        } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, true);
+        }
+        
+        // Send files sequentially to avoid overwhelming the server
+        for (let i = 0; i < filesToSend.length; i++) {
+          const fileItem = filesToSend[i];
           let videoDataUri = undefined;
           if (fileItem.type === 'video') {
             try {
@@ -749,7 +782,7 @@ const MessageInput = () => {
           }
           
           const payload = {
-            text: filesToSend.length === 1 ? messageText : "", // Only add text to first file if single file
+            text: i === 0 ? messageText : "", // Only add text to first file
             image: fileItem.type === 'image' ? fileItem.data : undefined,
             video: videoDataUri,
             file: fileItem.type === 'file' ? fileItem.data : undefined,
@@ -759,6 +792,20 @@ const MessageInput = () => {
           };
           
           await sendSingleMessage(payload);
+        }
+        
+        // Clear upload state after all files are sent
+        useChatStore.setState({ 
+          isCurrentUserUploading: false, 
+          uploadingImagePreview: null,
+          uploadType: null,
+          uploadProgress: 0
+        });
+        
+        if (isGroupChat && selectedGroup?._id) {
+          sendGroupUploadingPhotoStatus(selectedGroup._id, false);
+        } else if (selectedUser?._id) {
+          sendUploadingPhotoStatus(selectedUser._id, false);
         }
       }
       
@@ -773,8 +820,16 @@ const MessageInput = () => {
         }
       }
       
-      // Stop upload status after sending
-      if (hasMedia) {
+      // Clear upload state after all messages are sent
+      useChatStore.setState({ 
+        isCurrentUserUploading: false, 
+        uploadingImagePreview: null,
+        uploadType: null,
+        uploadProgress: 0
+      });
+      
+      // Stop upload status after sending (only if not already cleared by files loop)
+      if (hasMedia && filesToSend.length === 0) {
         if (isGroupChat && selectedGroup?._id) {
           sendGroupUploadingPhotoStatus(selectedGroup._id, false);
         } else if (selectedUser?._id) {
@@ -806,6 +861,7 @@ const MessageInput = () => {
       }
     } finally {
       setIsSending(false);
+      setIsUploadingMedia(false);
     }
     
   };
@@ -997,10 +1053,10 @@ const MessageInput = () => {
       {/* Audio Preview */}
       {audioPreview && !isRecording && (
         <div className={`mb-3 relative px-4 py-3 rounded-xl group shadow-sm ${
-          isSending ? 'bg-primary/10 border border-primary/30' : 'bg-base-200'
+          isUploadingMedia ? 'bg-primary/10 border border-primary/30' : 'bg-base-200'
         }`}>
           <div className="flex items-center gap-3">
-            {isSending ? (
+            {isUploadingMedia ? (
               <>
                 <div className="loading loading-spinner loading-sm text-primary"></div>
                 <div className="flex-1">
@@ -1022,7 +1078,7 @@ const MessageInput = () => {
               className="size-7 rounded-full hover:bg-base-300 flex items-center justify-center transition-all flex-shrink-0"
               onClick={removeAudio}
               title="Remove audio"
-                  disabled={isSending}
+                  disabled={isUploadingMedia}
             >
               <FaTimes className="size-3.5 text-base-content" />
             </button>
@@ -1067,7 +1123,7 @@ const MessageInput = () => {
               fileInputRef.current.click();
             }
           }}
-          disabled={isUploading || isSending}
+          disabled={isUploading || isUploadingMedia}
         >
           {isUploading ? (
             <div className="loading loading-spinner loading-xs"></div>
@@ -1105,7 +1161,7 @@ const MessageInput = () => {
               e.stopPropagation();
               setShowEmojiPicker(!showEmojiPicker);
             }}
-            disabled={isSending || isUploading}
+            disabled={isUploadingMedia || isUploading}
           >
             <FaSmile className="size-4" />
           </button>

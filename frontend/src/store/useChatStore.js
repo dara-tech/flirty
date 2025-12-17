@@ -4,6 +4,7 @@ import { axiosInstance } from "../lib/axois";
 import { useAuthStore } from "./useAuthStore";
 import { getAuthToken } from "../lib/safariUtils";
 import { normalizeId } from "../lib/utils";
+import { useNotificationStore } from "./useNotificationStore";
 
 // Track recently added message IDs to prevent duplicates (race condition between API and socket)
 const recentMessageIds = new Set();
@@ -98,20 +99,59 @@ export const useChatStore = create((set, get) => ({
         return;
       }
 
-      // Handle paginated users response or fallback to array
-      const usersData = usersRes.data?.users || (Array.isArray(usersRes.data) ? usersRes.data : []);
+      // Handle standardized response format: { success: true, data: [...], pagination: {...} }
+      // Also supports old formats for backward compatibility
+      let usersData = [];
+      if (usersRes.data) {
+        // New standardized format: { success: true, data: [...] }
+        if (usersRes.data.data && Array.isArray(usersRes.data.data)) {
+          usersData = usersRes.data.data;
+        }
+        // Old format: { users: [...] }
+        else if (usersRes.data.users && Array.isArray(usersRes.data.users)) {
+          usersData = usersRes.data.users;
+        }
+        // Direct array format
+        else if (Array.isArray(usersRes.data)) {
+          usersData = usersRes.data;
+        }
+      }
       
-      // Handle new paginated response format or fallback to old format
+      // Handle standardized response format for last messages
       let lastMessagesData = [];
-      let pagination = { skip: 0, limit: 50, total: 0, hasMore: false };
+      let pagination = { skip: 0, limit: 50, total: 0, totalPages: 0, hasMore: false };
       
       if (lastMessagesRes.data && typeof lastMessagesRes.data === 'object') {
-        // New format: { lastMessages: [...], pagination: {...} }
-        if (lastMessagesRes.data.lastMessages && Array.isArray(lastMessagesRes.data.lastMessages)) {
+        // New standardized format: { success: true, data: [...], pagination: {...} }
+        if (lastMessagesRes.data.data && Array.isArray(lastMessagesRes.data.data)) {
+          lastMessagesData = lastMessagesRes.data.data;
+          pagination = {
+            ...pagination,
+            ...(lastMessagesRes.data.pagination || {}),
+            page: lastMessagesRes.data.pagination?.page || 1,
+            limit: lastMessagesRes.data.pagination?.limit || 50,
+            total: lastMessagesRes.data.pagination?.total || 0,
+            totalPages: lastMessagesRes.data.pagination?.totalPages || 0,
+            hasMore: lastMessagesRes.data.pagination?.hasMore || false,
+            skip: lastMessagesRes.data.pagination?.skip || 0,
+          };
+        }
+        // Old format: { lastMessages: [...], pagination: {...} }
+        else if (lastMessagesRes.data.lastMessages && Array.isArray(lastMessagesRes.data.lastMessages)) {
           lastMessagesData = lastMessagesRes.data.lastMessages;
-          pagination = lastMessagesRes.data.pagination || pagination;
-        } else if (Array.isArray(lastMessagesRes.data)) {
-          // Old format: array directly
+          pagination = {
+            ...pagination,
+            ...(lastMessagesRes.data.pagination || {}),
+            page: lastMessagesRes.data.pagination?.page || 1,
+            limit: lastMessagesRes.data.pagination?.limit || 50,
+            total: lastMessagesRes.data.pagination?.total || 0,
+            totalPages: lastMessagesRes.data.pagination?.totalPages || 0,
+            hasMore: lastMessagesRes.data.pagination?.hasMore || false,
+            skip: lastMessagesRes.data.pagination?.skip || 0,
+          };
+        }
+        // Direct array format
+        else if (Array.isArray(lastMessagesRes.data)) {
           lastMessagesData = lastMessagesRes.data;
         }
       }
@@ -240,15 +280,42 @@ export const useChatStore = create((set, get) => ({
         return;
       }
       
-      // Handle new paginated response format or fallback to old format
+      // Handle standardized response format: { success: true, data: [...], pagination: {...} }
+      // Also supports old formats for backward compatibility
       let lastMessagesData = [];
       let pagination = state.conversationPagination;
       
       if (lastMessagesRes.data && typeof lastMessagesRes.data === 'object') {
-        if (lastMessagesRes.data.lastMessages && Array.isArray(lastMessagesRes.data.lastMessages)) {
+        // New standardized format: { success: true, data: [...], pagination: {...} }
+        if (lastMessagesRes.data.data && Array.isArray(lastMessagesRes.data.data)) {
+          lastMessagesData = lastMessagesRes.data.data;
+          pagination = {
+            ...pagination,
+            ...(lastMessagesRes.data.pagination || {}),
+            page: lastMessagesRes.data.pagination?.page || nextPage,
+            limit: lastMessagesRes.data.pagination?.limit || limit,
+            total: lastMessagesRes.data.pagination?.total || 0,
+            totalPages: lastMessagesRes.data.pagination?.totalPages || 0,
+            hasMore: lastMessagesRes.data.pagination?.hasMore || false,
+            skip: lastMessagesRes.data.pagination?.skip || 0,
+          };
+        }
+        // Old format: { lastMessages: [...], pagination: {...} }
+        else if (lastMessagesRes.data.lastMessages && Array.isArray(lastMessagesRes.data.lastMessages)) {
           lastMessagesData = lastMessagesRes.data.lastMessages;
-          pagination = lastMessagesRes.data.pagination || pagination;
-        } else if (Array.isArray(lastMessagesRes.data)) {
+          pagination = {
+            ...pagination,
+            ...(lastMessagesRes.data.pagination || {}),
+            page: lastMessagesRes.data.pagination?.page || nextPage,
+            limit: lastMessagesRes.data.pagination?.limit || limit,
+            total: lastMessagesRes.data.pagination?.total || 0,
+            totalPages: lastMessagesRes.data.pagination?.totalPages || 0,
+            hasMore: lastMessagesRes.data.pagination?.hasMore || false,
+            skip: lastMessagesRes.data.pagination?.skip || 0,
+          };
+        }
+        // Direct array format
+        else if (Array.isArray(lastMessagesRes.data)) {
           lastMessagesData = lastMessagesRes.data;
         }
       }
@@ -468,13 +535,22 @@ export const useChatStore = create((set, get) => ({
       const url = `${baseURL}/messages/send/${userId}`;
       
       // Reset progress and determine upload type
+      // Only set upload state if not already uploading (for multiple files, state is set once)
+      const currentState = get();
       const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
-      set({ 
-        uploadProgress: 0, 
-        uploadType, 
-        isCurrentUserUploading: true,
-        uploadingImagePreview: messageData.image || null
-      });
+      
+      // Only set upload state if not already set (prevents duplicate indicators for multiple files)
+      if (!currentState.isCurrentUserUploading) {
+        set({ 
+          uploadProgress: 0, 
+          uploadType, 
+          isCurrentUserUploading: true,
+          uploadingImagePreview: messageData.image || null
+        });
+      } else {
+        // Just update progress, keep existing upload state
+        set({ uploadProgress: 0 });
+      }
       
       // Track upload progress
       xhr.upload.addEventListener('progress', (e) => {
@@ -2068,7 +2144,6 @@ export const useChatStore = create((set, get) => ({
         if (isIncomingMessage && !isViewingThisGroup) {
           setTimeout(() => {
             try {
-              const { useNotificationStore } = require("../store/useNotificationStore");
               const senderName = message.senderId?.fullname || "Someone";
               const groupName = state.groups.find(g => normalizeId(g._id) === groupIdStr)?.name || "Group";
               
@@ -2527,13 +2602,22 @@ const gId = normalizeId(g._id);
       const url = `${baseURL}/groups/${groupId}/send`;
       
       // Reset progress and determine upload type
+      // Only set upload state if not already uploading (for multiple files, state is set once)
+      const currentState = get();
       const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
-      set({ 
-        uploadProgress: 0, 
-        uploadType, 
-        isCurrentUserUploading: true,
-        uploadingImagePreview: messageData.image || null
-      });
+      
+      // Only set upload state if not already set (prevents duplicate indicators for multiple files)
+      if (!currentState.isCurrentUserUploading) {
+        set({ 
+          uploadProgress: 0, 
+          uploadType, 
+          isCurrentUserUploading: true,
+          uploadingImagePreview: messageData.image || null
+        });
+      } else {
+        // Just update progress, keep existing upload state
+        set({ uploadProgress: 0 });
+      }
       
       // Track upload progress
       xhr.upload.addEventListener('progress', (e) => {
@@ -2546,9 +2630,10 @@ const gId = normalizeId(g._id);
       xhr.addEventListener('load', () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           set({ uploadProgress: 100 });
-          // Reset progress after a short delay
+          // Don't clear upload state here - let the caller manage it for multiple files
+          // Only reset progress
           setTimeout(() => {
-            set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
+            set({ uploadProgress: 0 });
           }, 300);
           resolve(JSON.parse(xhr.responseText));
         } else {
@@ -2942,7 +3027,10 @@ const gId = normalizeId(g._id);
     set({ isContactsLoading: true });
     try {
       const res = await axiosInstance.get("/contacts");
-      set({ contacts: res.data });
+      // Handle standardized response format: { success: true, data: [...] }
+      // Also supports old format (direct array) for backward compatibility
+      const contactsData = res.data?.data || (Array.isArray(res.data) ? res.data : []);
+      set({ contacts: contactsData });
     } catch (error) {
       if (error.response?.status !== 401) {
         console.error("Error loading contacts:", error);

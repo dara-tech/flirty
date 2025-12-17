@@ -36,6 +36,7 @@ const DesktopBottomToolbar = () => {
   const [imagePreview, setImagePreview] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false); // Only for media uploads
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const fileInputRef = useRef(null);
   const resizerRef = useRef(null);
@@ -208,12 +209,20 @@ const DesktopBottomToolbar = () => {
     if (!text.trim() && !imagePreview) return;
     if (isSending) return; // Prevent double submission
     
-    setIsSending(true);
+    // Only show loading for media uploads (image), not text messages
+    const hasMedia = !!imagePreview;
+    if (hasMedia) {
+      setIsUploadingMedia(true);
+      setIsSending(true);
+    } else {
+      setIsSending(false); // Text-only - no loading
+    }
     
     if (isGroupChat) {
       if (!selectedGroup?._id) {
         toast.error("No group selected");
         setIsSending(false);
+        setIsUploadingMedia(false);
         return;
       }
       try {
@@ -229,11 +238,13 @@ const DesktopBottomToolbar = () => {
         toast.error("Failed to send message");
       } finally {
         setIsSending(false);
+        setIsUploadingMedia(false);
       }
     } else {
       if (!selectedUser?._id) {
         toast.error("No chat selected");
         setIsSending(false);
+        setIsUploadingMedia(false);
         return;
       }
       try {
@@ -249,6 +260,7 @@ const DesktopBottomToolbar = () => {
         toast.error("Failed to send message");
       } finally {
         setIsSending(false);
+        setIsUploadingMedia(false);
       }
     }
   };
@@ -393,7 +405,7 @@ const DesktopBottomToolbar = () => {
                   className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Attach file"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading || isSending}
+                  disabled={isUploading || isUploadingMedia}
                 >
                   {isUploading ? (
                     <div className="loading loading-spinner loading-xs"></div>
@@ -404,11 +416,11 @@ const DesktopBottomToolbar = () => {
 
                 <input
                   type="text"
-                  placeholder={isSending ? "Sending..." : "Write a message..."}
+                  placeholder={isUploadingMedia ? "Sending..." : "Write a message..."}
                   className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 disabled:opacity-60 disabled:cursor-not-allowed"
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  disabled={isSending}
+                  disabled={isUploadingMedia}
                 />
 
                 <input
@@ -426,7 +438,7 @@ const DesktopBottomToolbar = () => {
                       showEmojiPicker ? 'bg-primary/20 text-primary' : 'text-primary'
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                     title="Emoji"
-                    disabled={isSending}
+                    disabled={isUploadingMedia}
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -471,14 +483,14 @@ const DesktopBottomToolbar = () => {
                 <button
                   type="submit"
                   className={`flex items-center justify-center size-7 rounded-lg transition-all duration-200 ${
-                    (!text.trim() && !imagePreview) || isSending
+                    (!text.trim() && !imagePreview) || isUploadingMedia
                       ? 'opacity-40 cursor-not-allowed'
                       : 'text-primary hover:bg-base-300/50 active:scale-95'
                   }`}
-                  title={isSending ? "Sending..." : "Send message"}
-                  disabled={(!text.trim() && !imagePreview) || isSending}
+                  title={isUploadingMedia ? "Sending..." : "Send message"}
+                  disabled={(!text.trim() && !imagePreview) || isUploadingMedia}
                 >
-                  {isSending ? (
+                  {isUploadingMedia ? (
                     <FaSpinner className="size-4 animate-spin" />
                   ) : (
                     <FaPaperPlane className="size-4" />

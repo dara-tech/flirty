@@ -4,6 +4,7 @@ import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
 import { toPlainObject } from "../lib/utils.js";
 import logger from "../lib/logger.js";
+import { paginatedResponse } from "../lib/apiResponse.js";
 
 import mongoose from 'mongoose';
 
@@ -137,18 +138,20 @@ export const getLastMessages = async (req, res) => {
     const totalPages = Math.ceil(total / limit);
     const hasMore = page < totalPages;
 
-    res.status(200).json({
+    // Use standardized paginated response
+    paginatedResponse(
+      res,
       lastMessages,
-      pagination: {
+      {
         page,
         limit,
         total,
         totalPages,
         hasMore,
-        // Keep skip for backward compatibility if needed
         skip
-      }
-    });
+      },
+      'Messages retrieved successfully'
+    );
   } catch (error) {
     logger.error("Error in getLastMessages", {
       requestId: req?.requestId,
@@ -255,16 +258,19 @@ export const getUsersForSidebar = async (req, res) => {
       const totalPages = Math.ceil(total / limit);
       const hasMore = page < totalPages;
   
-      res.status(200).json({
-        users: usersWithConversations,
-        pagination: {
+      // Use standardized paginated response
+      paginatedResponse(
+        res,
+        usersWithConversations,
+        {
           page,
           limit,
           total,
           totalPages,
           hasMore
-        }
-      });
+        },
+        'Users retrieved successfully'
+      );
     } catch (error) {
       logger.error("Error in getUsersForSidebar", {
         requestId: req?.requestId,
