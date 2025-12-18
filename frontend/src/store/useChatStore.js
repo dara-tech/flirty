@@ -529,6 +529,37 @@ export const useChatStore = create((set, get) => ({
       return Promise.reject(new Error("No user ID provided"));
     }
 
+    // === OPTIMISTIC UPDATE: Show message immediately for text-only messages ===
+    const isTextOnly = messageData.text && !messageData.image && !messageData.audio && !messageData.video && !messageData.file;
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    if (isTextOnly) {
+      const optimisticMessage = {
+        _id: tempId,
+        tempId: tempId, // Mark as temporary
+        senderId: {
+          _id: authUser._id,
+          fullname: authUser.fullname,
+          profilePic: authUser.profilePic,
+        },
+        receiverId: {
+          _id: userId,
+        },
+        text: messageData.text,
+        createdAt: new Date().toISOString(),
+        pending: true, // Mark as pending
+      };
+      
+      // Add optimistic message to UI immediately
+      set((state) => ({
+        messages: [...state.messages, optimisticMessage],
+        lastMessages: {
+          ...state.lastMessages,
+          [userId]: optimisticMessage,
+        },
+      }));
+    }
+
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const baseURL = axiosInstance.defaults.baseURL || import.meta.env.VITE_BACKEND_URL || '';
@@ -540,14 +571,14 @@ export const useChatStore = create((set, get) => ({
       const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
       
       // Only set upload state if not already set (prevents duplicate indicators for multiple files)
-      if (!currentState.isCurrentUserUploading) {
+      if (!currentState.isCurrentUserUploading && !isTextOnly) {
         set({ 
           uploadProgress: 0, 
           uploadType, 
           isCurrentUserUploading: true,
           uploadingImagePreview: messageData.image || null
         });
-      } else {
+      } else if (!isTextOnly) {
         // Just update progress, keep existing upload state
         set({ uploadProgress: 0 });
       }
@@ -562,13 +593,36 @@ export const useChatStore = create((set, get) => ({
       
       xhr.addEventListener('load', () => {
         if (xhr.status >= 200 && xhr.status < 300) {
+          const serverMessage = JSON.parse(xhr.responseText);
+          
+          // Replace optimistic message with server response
+          if (isTextOnly) {
+            set((state) => ({
+              messages: state.messages.map((msg) =>
+                msg._id === tempId ? { ...serverMessage, pending: false } : msg
+              ),
+              lastMessages: {
+                ...state.lastMessages,
+                [userId]: serverMessage,
+              },
+            }));
+            // Track this message ID to prevent duplicate from socket
+            isDuplicateMessage(serverMessage._id);
+          }
+          
           set({ uploadProgress: 100 });
           // Reset progress after a short delay
           setTimeout(() => {
             set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
           }, 300);
-          resolve(JSON.parse(xhr.responseText));
+          resolve(serverMessage);
         } else {
+          // Remove optimistic message on error
+          if (isTextOnly) {
+            set((state) => ({
+              messages: state.messages.filter((msg) => msg._id !== tempId),
+            }));
+          }
           set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
           const error = new Error(`HTTP ${xhr.status}`);
           error.response = { status: xhr.status, data: JSON.parse(xhr.responseText || '{}') };
@@ -577,11 +631,23 @@ export const useChatStore = create((set, get) => ({
       });
       
       xhr.addEventListener('error', () => {
+        // Remove optimistic message on error
+        if (isTextOnly) {
+          set((state) => ({
+            messages: state.messages.filter((msg) => msg._id !== tempId),
+          }));
+        }
         set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
         reject(new Error('Network error'));
       });
       
       xhr.addEventListener('abort', () => {
+        // Remove optimistic message on abort
+        if (isTextOnly) {
+          set((state) => ({
+            messages: state.messages.filter((msg) => msg._id !== tempId),
+          }));
+        }
         set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
         reject(new Error('Upload aborted'));
       });
@@ -976,6 +1042,28 @@ export const useChatStore = create((set, get) => ({
         const messageId = newMessage._id;
         const messageExistsInState = state.messages.some(msg => msg._id === messageId);
         const isDuplicate = isDuplicateMessage(messageId);
+        
+        // If I'm the sender, skip adding via socket (we already added via optimistic update or API response)
+        // This prevents duplicate messages when sending
+        const iAmSender = senderId === authUserId;
+        if (iAmSender) {
+          // Just update lastMessages, don't add to messages array (already handled by sendMessage)
+          const updatedLastMessages = {
+            ...state.lastMessages,
+            [targetIdStr]: newMessage,
+          };
+          // Also replace any temp message with the real one
+          const updatedMessages = state.messages.map(msg => 
+            (msg.tempId && msg.pending && normalizeId(msg.receiverId?._id || msg.receiverId) === receiverId) 
+              ? newMessage 
+              : msg
+          );
+          return {
+            ...state,
+            messages: updatedMessages,
+            lastMessages: updatedLastMessages,
+          };
+        }
         
         // Skip if duplicate or already in state
         if (isDuplicate || messageExistsInState) {
@@ -2596,6 +2684,35 @@ const gId = normalizeId(g._id);
       return;
     }
 
+    // === OPTIMISTIC UPDATE: Show message immediately for text-only messages ===
+    const isTextOnly = messageData.text && !messageData.image && !messageData.audio && !messageData.video && !messageData.file;
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    if (isTextOnly) {
+      const optimisticMessage = {
+        _id: tempId,
+        tempId: tempId, // Mark as temporary
+        senderId: {
+          _id: authUser._id,
+          fullname: authUser.fullname,
+          profilePic: authUser.profilePic,
+        },
+        groupId: groupId,
+        text: messageData.text,
+        createdAt: new Date().toISOString(),
+        pending: true, // Mark as pending
+      };
+      
+      // Add optimistic message to UI immediately
+      set((state) => ({
+        messages: [...state.messages, optimisticMessage],
+        groupLastMessages: {
+          ...state.groupLastMessages,
+          [groupId]: optimisticMessage,
+        },
+      }));
+    }
+
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const baseURL = axiosInstance.defaults.baseURL || import.meta.env.VITE_BACKEND_URL || '';
@@ -2607,14 +2724,14 @@ const gId = normalizeId(g._id);
       const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
       
       // Only set upload state if not already set (prevents duplicate indicators for multiple files)
-      if (!currentState.isCurrentUserUploading) {
+      if (!currentState.isCurrentUserUploading && !isTextOnly) {
         set({ 
           uploadProgress: 0, 
           uploadType, 
           isCurrentUserUploading: true,
           uploadingImagePreview: messageData.image || null
         });
-      } else {
+      } else if (!isTextOnly) {
         // Just update progress, keep existing upload state
         set({ uploadProgress: 0 });
       }
@@ -2629,14 +2746,37 @@ const gId = normalizeId(g._id);
       
       xhr.addEventListener('load', () => {
         if (xhr.status >= 200 && xhr.status < 300) {
+          const serverMessage = JSON.parse(xhr.responseText);
+          
+          // Replace optimistic message with server response
+          if (isTextOnly) {
+            set((state) => ({
+              messages: state.messages.map((msg) =>
+                msg._id === tempId ? { ...serverMessage, pending: false } : msg
+              ),
+              groupLastMessages: {
+                ...state.groupLastMessages,
+                [groupId]: serverMessage,
+              },
+            }));
+            // Track this message ID to prevent duplicate from socket
+            isDuplicateMessage(serverMessage._id);
+          }
+          
           set({ uploadProgress: 100 });
           // Don't clear upload state here - let the caller manage it for multiple files
           // Only reset progress
           setTimeout(() => {
             set({ uploadProgress: 0 });
           }, 300);
-          resolve(JSON.parse(xhr.responseText));
+          resolve(serverMessage);
         } else {
+          // Remove optimistic message on error
+          if (isTextOnly) {
+            set((state) => ({
+              messages: state.messages.filter((msg) => msg._id !== tempId),
+            }));
+          }
           set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
           const error = new Error(`HTTP ${xhr.status}`);
           error.response = { status: xhr.status, data: JSON.parse(xhr.responseText || '{}') };
@@ -2645,11 +2785,23 @@ const gId = normalizeId(g._id);
       });
       
       xhr.addEventListener('error', () => {
+        // Remove optimistic message on error
+        if (isTextOnly) {
+          set((state) => ({
+            messages: state.messages.filter((msg) => msg._id !== tempId),
+          }));
+        }
         set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
         reject(new Error('Network error'));
       });
       
       xhr.addEventListener('abort', () => {
+        // Remove optimistic message on abort
+        if (isTextOnly) {
+          set((state) => ({
+            messages: state.messages.filter((msg) => msg._id !== tempId),
+          }));
+        }
         set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
         reject(new Error('Upload aborted'));
       });
