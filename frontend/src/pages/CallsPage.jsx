@@ -3,7 +3,7 @@ import { useAuthStore } from "../store/useAuthStore";
 import { useCallStore } from "../store/useCallStore";
 import { useChatStore } from "../store/useChatStore";
 import { useNavigate } from "react-router-dom";
-import { FaPhone, FaArrowUp, FaArrowDown, FaTrash, FaCheck, FaChartBar, FaVideo, FaMicrophone } from "react-icons/fa";
+import { FaPhone, FaArrowUp, FaArrowDown, FaTrash, FaCheck } from "react-icons/fa";
 import ProfileImage from "../component/ProfileImage";
 import ConfirmDialog from "../component/ConfirmDialog";
 import { format } from "date-fns";
@@ -20,8 +20,6 @@ const CallsPage = () => {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [calls, setCalls] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [callStats, setCallStats] = useState(null);
-  const [isLoadingStats, setIsLoadingStats] = useState(false);
 
   // Fetch call history from API
   useEffect(() => {
@@ -67,41 +65,6 @@ const CallsPage = () => {
     fetchCallHistory();
   }, [authUser, logout]);
 
-  // Fetch call statistics
-  useEffect(() => {
-    const fetchCallStats = async () => {
-      if (!authUser) {
-        return;
-      }
-
-      setIsLoadingStats(true);
-      try {
-        const res = await axiosInstance.get("/calls/stats");
-        
-        if (res.status === 401) {
-          logout();
-          return;
-        }
-
-        // Handle response format: { success: true, data: {...} }
-        const statsData = res.data?.data;
-        if (statsData) {
-          setCallStats(statsData);
-        }
-      } catch (error) {
-        console.error("Error fetching call statistics:", error);
-        if (error.response?.status === 401) {
-          logout();
-        }
-        // Don't show error toast for stats - it's optional
-      } finally {
-        setIsLoadingStats(false);
-      }
-    };
-
-    fetchCallStats();
-  }, [authUser, logout]);
-
   const formatCallDuration = (duration, status) => {
     if (status === "missed") return "Missed";
     if (duration === 0) return "0 sec";
@@ -126,17 +89,6 @@ const CallsPage = () => {
     if (diffDays === 1) return "Yesterday";
     if (diffDays < 7) return format(date, "EEE"); // Mon, Tue, etc.
     return format(date, "M/d/yy"); // 12/12/25
-  };
-
-  const formatTotalDuration = (seconds) => {
-    if (seconds === 0) return "0 sec";
-    if (seconds < 60) return `${seconds} sec`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes} min`;
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    if (remainingMinutes === 0) return `${hours} hr`;
-    return `${hours} hr ${remainingMinutes} min`;
   };
 
   const handleCreateCall = () => {
@@ -256,40 +208,6 @@ const CallsPage = () => {
     <div className="h-full flex flex-col overflow-hidden bg-base-100">
       {/* Header */}
       <div className="flex-shrink-0 border-b border-base-200/50 bg-base-100 px-4 py-3">
-        {/* Call Statistics */}
-        {callStats && !isLoadingStats && (
-          <div className="mb-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-base-200/50 rounded-lg p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <FaChartBar className="size-4 text-primary" />
-                <span className="text-xs text-base-content/60">Total Calls</span>
-              </div>
-              <p className="text-lg font-semibold text-base-content">{callStats.total}</p>
-            </div>
-            <div className="bg-base-200/50 rounded-lg p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <FaMicrophone className="size-4 text-green-500" />
-                <span className="text-xs text-base-content/60">Answered</span>
-              </div>
-              <p className="text-lg font-semibold text-base-content">{callStats.byStatus.answered}</p>
-            </div>
-            <div className="bg-base-200/50 rounded-lg p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <FaPhone className="size-4 text-red-500" />
-                <span className="text-xs text-base-content/60">Missed</span>
-              </div>
-              <p className="text-lg font-semibold text-base-content">{callStats.byStatus.missed}</p>
-            </div>
-            <div className="bg-base-200/50 rounded-lg p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <FaVideo className="size-4 text-blue-500" />
-                <span className="text-xs text-base-content/60">Total Duration</span>
-              </div>
-              <p className="text-lg font-semibold text-base-content">{formatTotalDuration(callStats.totalDuration)}</p>
-            </div>
-          </div>
-        )}
-        
         <div className="flex items-center justify-between mb-3">
           <h1 className="text-lg font-semibold text-base-content">Recent Calls</h1>
           <div className="flex items-center gap-3">
