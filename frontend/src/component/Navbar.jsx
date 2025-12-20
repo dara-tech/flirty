@@ -139,25 +139,6 @@ const Navbar = () => {
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-base-200/95 backdrop-blur-md border-t border-base-300/50" style={{ height: 'calc(4rem + env(safe-area-inset-bottom, 0px))', paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
       <div className="h-16 max-w-[1920px] mx-auto">
         <div className="flex items-center justify-around h-full px-2">
-          {/* Contacts */}
-          <Link
-            to="/?view=contacts"
-            className="flex items-center justify-center flex-1 h-full min-w-0 transition-all active:scale-95 relative"
-          >
-            <div className="relative">
-              <FaUserCircle className={`size-7 transition-all ${
-                location.search.includes('view=contacts')
-                  ? 'text-primary fill-primary'
-                  : 'text-base-content/50'
-              }`} />
-              {pendingRequestsCount > 0 && (
-                <span className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/2 size-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
-                  {pendingRequestsCount > 99 ? '99+' : pendingRequestsCount}
-                </span>
-              )}
-            </div>
-          </Link>
-
           {/* Calls */}
           <Link
             to="/?view=calls"

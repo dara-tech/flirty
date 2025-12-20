@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef } from "react";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit, FaMicrophone, FaBookmark } from "react-icons/fa";
+import { useCallStore } from "../store/useCallStore";
+import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit, FaMicrophone, FaBookmark, FaUsers, FaPhone, FaVideo } from "react-icons/fa";
 import CreateGroupModal from "../component/CreateGroupModal";
 import DeleteConversationModal from "../component/DeleteConversationModal";
 import DeleteGroupModal from "../component/DeleteGroupModal";
@@ -14,6 +16,9 @@ const ConversationsListPage = () => {
   const { 
     getUsers, 
     users,
+    getAllUsers,
+    allUsers,
+    isAllUsersLoading,
     getContacts,
     contacts,
     groups,
@@ -44,9 +49,22 @@ const ConversationsListPage = () => {
     isLoadingMoreConversations
   } = useChatStore();
   const { onlineUsers, authUser } = useAuthStore();
+  const { initiateCall, callState } = useCallStore();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
   const [showCreateGroup, setShowCreateGroup] = useState(false);
-  const [activeTab, setActiveTab] = useState("chats");
+  
+  // Determine active tab from URL or default to "chats"
+  const view = searchParams.get('view') || 'chats';
+  const activeTab = view === 'contacts' ? 'contacts' : (view === 'groups' ? 'groups' : 'chats');
+  
+  // Load all users when contacts tab is active
+  useEffect(() => {
+    if (activeTab === "contacts" && authUser) {
+      getAllUsers();
+    }
+  }, [activeTab, authUser, getAllUsers]);
   const longPressTimer = useRef(null);
   const longPressGroupTimer = useRef(null);
   const [conversationToDelete, setConversationToDelete] = useState(null);
@@ -293,7 +311,9 @@ const ConversationsListPage = () => {
             <button className="p-2 hover:bg-base-200/50 rounded-lg transition-colors">
               <FaTh className="size-5 text-base-content/70" />
             </button>
-            <h1 className="text-lg font-semibold text-base-content">Chats</h1>
+            <h1 className="text-lg font-semibold text-base-content">
+              {activeTab === "chats" ? "Chats" : activeTab === "groups" ? "Groups" : "Contacts"}
+            </h1>
             {activeTab === "groups" && (
               <button
                 onClick={() => setShowCreateGroup(true)}
@@ -303,7 +323,7 @@ const ConversationsListPage = () => {
                 <FaUserPlus className="size-5 text-base-content/70" />
               </button>
             )}
-            {activeTab === "chats" && (
+            {(activeTab === "chats" || activeTab === "contacts") && (
               <div className="w-9"></div>
             )}
           </div>
@@ -311,7 +331,7 @@ const ConversationsListPage = () => {
           {/* Tabs */}
           <div className="flex gap-2 p-1 bg-base-200/50 rounded-lg mb-3">
             <button
-              onClick={() => setActiveTab("chats")}
+              onClick={() => navigate('/?view=chats')}
               className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
                 activeTab === "chats" 
                   ? "bg-primary text-white" 
@@ -321,7 +341,7 @@ const ConversationsListPage = () => {
               Chats
             </button>
             <button
-              onClick={() => setActiveTab("groups")}
+              onClick={() => navigate('/?view=groups')}
               className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
                 activeTab === "groups" 
                   ? "bg-primary text-white" 
@@ -329,6 +349,16 @@ const ConversationsListPage = () => {
               }`}
             >
               Groups
+            </button>
+            <button
+              onClick={() => navigate('/?view=contacts')}
+              className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
+                activeTab === "contacts" 
+                  ? "bg-primary text-white" 
+                  : "text-base-content/60 hover:text-base-content hover:bg-base-200"
+              }`}
+            >
+              Contacts
             </button>
           </div>
 
@@ -681,6 +711,133 @@ const ConversationsListPage = () => {
                   );
                 })
               )}
+            </>
+          ) : activeTab === "contacts" ? (
+            <>
+              {/* Contacts List */}
+              {(() => {
+                const safeAllUsers = Array.isArray(allUsers) ? allUsers : [];
+                const filteredContacts = safeAllUsers.filter((user) => {
+                  // Exclude current user
+                  if (user._id === authUser?._id) return false;
+                  
+                  const matchesSearch = user.fullname?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                       user.email?.toLowerCase().includes(searchQuery.toLowerCase());
+                  return matchesSearch;
+                });
+
+                const getStatusText = (user) => {
+                  if (onlineUsers.includes(user._id)) {
+                    return "online";
+                  }
+                  return "last seen just now";
+                };
+
+                const handleContactSelect = (user) => {
+                  setSelectedUser(user);
+                };
+
+                const handleCall = async (userId, callType, e) => {
+                  if (e) {
+                    e.stopPropagation();
+                  }
+                  
+                  if (callState !== 'idle') {
+                    toast.error("You are already in a call");
+                    return;
+                  }
+
+                  try {
+                    await initiateCall(userId, callType);
+                  } catch (error) {
+                    toast.error(error.message || "Failed to start call");
+                  }
+                };
+
+                if (isAllUsersLoading) {
+                  return (
+                    <div className="text-center py-12 px-4">
+                      <div className="loading loading-spinner loading-lg text-primary"></div>
+                      <p className="text-sm text-base-content/60 mt-4">Loading contacts...</p>
+                    </div>
+                  );
+                }
+
+                if (filteredContacts.length === 0) {
+                  return (
+                    <div className="text-center py-12 px-4">
+                      <div className="size-16 rounded-full bg-base-200 flex items-center justify-center mx-auto mb-4">
+                        <FaUsers className="size-8 text-base-content/30" />
+                      </div>
+                      <p className="text-base-content/60 font-medium">
+                        {searchQuery ? "No users found" : "No users available"}
+                      </p>
+                      <p className="text-sm text-base-content/40 mt-1">
+                        {searchQuery 
+                          ? "Try adjusting your search" 
+                          : "No other users in the system"}
+                      </p>
+                    </div>
+                  );
+                }
+
+                return filteredContacts.map((user) => {
+                  const isOnline = onlineUsers.includes(user._id);
+                  const isInCall = callState !== 'idle';
+                  const isSelf = user._id === authUser?._id;
+                  
+                  return (
+                    <div
+                      key={user._id}
+                      className="w-full px-4 py-3 flex items-center gap-3 transition-all duration-200 hover:bg-base-200/50 border-l-4 border-transparent group"
+                    >
+                      <button
+                        onClick={() => handleContactSelect(user)}
+                        className="flex-1 flex items-center gap-3 min-w-0"
+                      >
+                        <div className="relative flex-shrink-0">
+                          <ProfileImage
+                            src={user.profilePic}
+                            alt={user.fullname}
+                            className="size-12 rounded-full object-cover"
+                          />
+                          {isOnline && (
+                            <span className="absolute bottom-0 right-0 size-3 bg-green-500 rounded-full ring-2 ring-base-100" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0 text-left">
+                          <div className="font-semibold text-base-content truncate">{user.fullname}</div>
+                          <div className="text-sm text-base-content/50 truncate capitalize">
+                            {getStatusText(user)}
+                          </div>
+                        </div>
+                      </button>
+                      
+                      {/* Call Buttons */}
+                      {!isSelf && (
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => handleCall(user._id, 'voice', e)}
+                            disabled={isInCall}
+                            className="p-2 hover:bg-base-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Voice call"
+                          >
+                            <FaPhone className="size-4 text-primary" />
+                          </button>
+                          <button
+                            onClick={(e) => handleCall(user._id, 'video', e)}
+                            disabled={isInCall}
+                            className="p-2 hover:bg-base-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Video call"
+                          >
+                            <FaVideo className="size-4 text-primary" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
             </>
           ) : null}
         </div>

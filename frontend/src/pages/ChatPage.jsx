@@ -3,7 +3,6 @@ import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import ChatContainer from "../component/ChatContainer";
 import ConversationsListPage from "./ConversationsListPage";
-import ContactsPage from "./ContactsPage";
 import SettingPage from "./SettingPage";
 import ThemePage from "./ThemePage";
 import GroupInfoContent from "../component/GroupInfoContent";
@@ -235,12 +234,14 @@ const ChatPage = () => {
     // Show settings if it's the settings view
     if (view === 'settings' || showSettings) {
       return <SettingPage />;
-    } else if (view === 'chats') {
+    } else if (view === 'chats' || view === 'contacts') {
+      // Contacts is now a tab within ConversationsListPage
       return <ConversationsListPage />;
     } else if (view === 'calls') {
       return <CallsPage />;
     } else {
-      return <ContactsPage />;
+      // Default to chats (which includes contacts tab)
+      return <ConversationsListPage />;
     }
   };
 

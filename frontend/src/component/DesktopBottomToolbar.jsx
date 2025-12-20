@@ -338,25 +338,6 @@ const DesktopBottomToolbar = () => {
         >
           <div className="h-20 flex items-center justify-around px-2">
             <Link
-              to="/?view=contacts"
-              className="flex items-center justify-center flex-1 h-full min-w-0 transition-all duration-200 hover:scale-110 active:scale-95 relative"
-              title="Contacts"
-            >
-              <div className="relative">
-                <FaUserCircle className={`size-7 transition-all ${
-                  location.search.includes('view=contacts')
-                    ? 'text-primary fill-primary'
-                    : 'text-base-content/50'
-                }`} />
-                {pendingRequestsCount > 0 && (
-                  <span className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/2 size-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
-                    {pendingRequestsCount > 99 ? '99+' : pendingRequestsCount}
-                  </span>
-                )}
-              </div>
-            </Link>
-
-            <Link
               to="/?view=calls"
               className="flex items-center justify-center flex-1 h-full min-w-0 transition-all duration-200 hover:scale-110 active:scale-95"
               title="Calls"
