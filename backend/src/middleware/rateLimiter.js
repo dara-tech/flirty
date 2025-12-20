@@ -3,7 +3,7 @@ import rateLimit from 'express-rate-limit';
 // Rate limiter for authentication endpoints
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 requests per window
+  max: process.env.NODE_ENV === 'development' ? 50 : 5, // More lenient in development (50 vs 5)
   message: {
     success: false,
     message: 'Too many authentication attempts, please try again later'
@@ -11,7 +11,7 @@ export const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    // Skip rate limiting in development for testing
+    // Skip rate limiting in development for testing (if header is set)
     return process.env.NODE_ENV === 'development' && req.headers['x-skip-rate-limit'] === 'true';
   }
 });

@@ -86,6 +86,22 @@ export const useAuthStore = create((set, get) => ({
     try {
       const res = await axiosInstance.post("/auth/signup", data);
       
+      // Check if response is successful
+      if (!res || !res.data) {
+        throw new Error("No response data received from server");
+      }
+      
+      // Check if response indicates an error (status >= 400 or success: false)
+      if (res.status >= 400 || res.data.success === false) {
+        // This is an error response, throw it so it goes to catch block
+        const error = new Error(res.data?.message || "Signup failed");
+        error.response = {
+          status: res.status,
+          data: res.data
+        };
+        throw error;
+      }
+      
       // Safari compatibility: Store token from response
       const token = res.headers['x-auth-token'] || res.data?.token;
       if (token) {
@@ -93,7 +109,28 @@ export const useAuthStore = create((set, get) => ({
       }
       
       // Handle new response format: { success: true, data: {...} }
-      const userData = res.data?.data || res.data;
+      // Also handle case where data might be directly in response
+      let userData = null;
+      
+      if (res.data.success && res.data.data) {
+        // New format: { success: true, data: {...} }
+        userData = res.data.data;
+      } else if (res.data._id) {
+        // Old format: user data directly in response
+        userData = res.data;
+      } else if (res.data.data && res.data.data._id) {
+        // Alternative nested format
+        userData = res.data.data;
+      }
+      
+      // Debug logging (only for successful responses)
+      if (userData && userData._id) {
+        console.log("Signup successful:", {
+          status: res.status,
+          userData: { _id: userData._id, fullname: userData.fullname, email: userData.email }
+        });
+      }
+      
       if (userData && userData._id) {
         set({ authUser: userData });
         toast.success("Account created successfully");
@@ -112,17 +149,56 @@ export const useAuthStore = create((set, get) => ({
         
         get().connectSocket(); // ✅ Connect socket after signup
       } else {
-        throw new Error("Invalid user data received");
+        // More detailed error message
+        console.error("Invalid user data structure:", {
+          status: res.status,
+          responseData: res.data,
+          userData: userData,
+          expectedFormat: { success: true, data: { _id: "...", fullname: "...", email: "..." } }
+        });
+        throw new Error(`Invalid user data received. Expected user object with _id, but got: ${JSON.stringify(res.data)}`);
       }
     } catch (error) {
-      console.error("Error:", error.response?.data || error.message);
+      // Handle different error structures
+      let errorData = null;
+      
+      // Check if error has response.data (axios error or manually thrown error)
+      if (error.response?.data) {
+        errorData = error.response.data;
+      } 
+      // Check if error itself has success/message properties (direct error object from throw)
+      else if (error.success === false && error.message) {
+        errorData = error;
+      }
+      // Check if error.message contains JSON (fallback)
+      else if (error.message && typeof error.message === 'string') {
+        // Try to parse if it looks like JSON
+        if (error.message.includes('{') && error.message.includes('}')) {
+          try {
+            const parsed = JSON.parse(error.message);
+            if (parsed.success === false || parsed.message) {
+              errorData = parsed;
+            }
+          } catch (e) {
+            // Not JSON, use message as is
+          }
+        }
+      }
+      
       // Handle validation errors with field-specific messages
-      const errorData = error.response?.data;
       if (errorData?.errors && Array.isArray(errorData.errors)) {
-        const errorMessages = errorData.errors.map(e => e.message).join(', ');
+        const errorMessages = errorData.errors.map(e => 
+          typeof e === 'string' ? e : (e.message || e.field || 'Validation error')
+        ).join(', ');
         toast.error(errorMessages || errorData.message || "Validation failed");
+      } else if (errorData?.message) {
+        // Show the error message from the server
+        toast.error(errorData.message);
+      } else if (error.message && !error.message.includes('Invalid user data')) {
+        // Use error message if it's not our internal error
+        toast.error(error.message);
       } else {
-        toast.error(errorData?.message || "An error occurred. Please try again.");
+        toast.error("An error occurred. Please try again.");
       }
     } finally {
       set({ isSigningUp: false });
