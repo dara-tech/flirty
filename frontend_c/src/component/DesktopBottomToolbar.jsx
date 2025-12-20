@@ -33,7 +33,8 @@ const DesktopBottomToolbar = () => {
   const [isResizing, setIsResizing] = useState(false);
   const [isGroupInfoOpen, setIsGroupInfoOpen] = useState(false);
   const [text, setText] = useState("");
-  const [imagePreview, setImagePreview] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null); // For single image (backward compatibility)
+  const [imagePreviews, setImagePreviews] = useState([]); // For multiple images
   const [isUploading, setIsUploading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false); // Only for media uploads
@@ -171,52 +172,109 @@ const DesktopBottomToolbar = () => {
   useEffect(() => {
     setText("");
     setImagePreview(null);
+    setImagePreviews([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [selectedUser?._id, selectedGroup?._id]);
 
   const handleImageChange = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith("image/")) {
-      toast.error("Please select a valid image file");
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
       return;
     }
 
+    // Filter only image files
+    const imageFiles = files.filter(file => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) {
+      toast.error("Please select valid image files");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return;
+    }
+
+    if (imageFiles.length < files.length) {
+      toast.error(`${files.length - imageFiles.length} non-image file(s) were ignored`);
+    }
+
     setIsUploading(true);
-    const reader = new FileReader();
+    const newPreviews = [];
+    let filesProcessed = 0;
+    const totalFiles = imageFiles.length;
 
-    reader.onloadend = () => {
-      setImagePreview(reader.result);
-      setIsUploading(false);
-    };
+    imageFiles.forEach((file) => {
+      const reader = new FileReader();
 
-    reader.onerror = () => {
-      toast.error("Failed to read image file");
-      setIsUploading(false);
-    };
+      reader.onloadend = () => {
+        newPreviews.push(reader.result);
+        filesProcessed++;
 
-    reader.readAsDataURL(file);
+        // When all files are processed
+        if (filesProcessed === totalFiles) {
+          if (totalFiles === 1) {
+            // Single image - use imagePreview for backward compatibility
+            setImagePreview(newPreviews[0]);
+            setImagePreviews([]);
+          } else {
+            // Multiple images - use imagePreviews array
+            setImagePreviews(newPreviews);
+            setImagePreview(null);
+          }
+          setIsUploading(false);
+          
+          // Reset input value to allow selecting the same files again
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        }
+      };
+
+      reader.onerror = () => {
+        toast.error(`Failed to read image file: ${file.name}`);
+        filesProcessed++;
+        
+        if (filesProcessed === totalFiles) {
+          setIsUploading(false);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        }
+      };
+
+      reader.readAsDataURL(file);
+    });
   }, []);
 
   const removeImage = useCallback(() => {
     setImagePreview(null);
+    setImagePreviews([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  const removeImageAtIndex = useCallback((index) => {
+    setImagePreviews(prev => prev.filter((_, i) => i !== index));
   }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!text.trim() && !imagePreview) return;
+    const hasImages = imagePreview || imagePreviews.length > 0;
+    if (!text.trim() && !hasImages) return;
     if (isSending) return; // Prevent double submission
     
     // Only show loading for media uploads (image), not text messages
-    const hasMedia = !!imagePreview;
-    if (hasMedia) {
+    if (hasImages) {
       setIsUploadingMedia(true);
       setIsSending(true);
     } else {
       setIsSending(false); // Text-only - no loading
     }
+    
+    // Determine which images to send (single or multiple)
+    const imagesToSend = imagePreviews.length > 0 
+      ? imagePreviews 
+      : (imagePreview ? [imagePreview] : []);
     
     if (isGroupChat) {
       if (!selectedGroup?._id) {
@@ -228,10 +286,11 @@ const DesktopBottomToolbar = () => {
       try {
         await sendGroupMessage(selectedGroup._id, {
           text: text.trim(),
-          image: imagePreview,
+          image: imagesToSend.length === 1 ? imagesToSend[0] : imagesToSend,
         });
         setText("");
         setImagePreview(null);
+        setImagePreviews([]);
         if (fileInputRef.current) fileInputRef.current.value = "";
       } catch (error) {
         console.error("Failed to send message:", error);
@@ -250,10 +309,11 @@ const DesktopBottomToolbar = () => {
       try {
         await sendMessage({
           text: text.trim(),
-          image: imagePreview,
+          image: imagesToSend.length === 1 ? imagesToSend[0] : imagesToSend,
         });
         setText("");
         setImagePreview(null);
+        setImagePreviews([]);
         if (fileInputRef.current) fileInputRef.current.value = "";
       } catch (error) {
         console.error("Failed to send message:", error);
@@ -368,30 +428,66 @@ const DesktopBottomToolbar = () => {
         {/* Right Column - Aligned with right panel */}
         <div className="flex-1 flex flex-col items-center justify-center px-4 relative">
           {/* Image Preview - Positioned absolutely above the toolbar */}
-          {imagePreview && (selectedUser || selectedGroup) && (
-            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-fit rounded-xl overflow-hidden group shadow-lg z-50">
-              <img
-                src={imagePreview}
-                alt="Selected"
-                className="w-32 h-32 object-cover rounded-xl"
-              />
-              {isSending && (
-                <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
-                  <div className="flex flex-col items-center gap-2">
-                    <FaSpinner className="size-5 text-white animate-spin" />
-                    <span className="text-xs text-white font-medium">Uploading...</span>
-                  </div>
+          {((imagePreview || imagePreviews.length > 0) && (selectedUser || selectedGroup)) && (
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-fit rounded-xl overflow-hidden shadow-lg z-50">
+              {imagePreviews.length > 0 ? (
+                // Multiple images preview
+                <div className="flex gap-2 p-2 bg-base-100 rounded-xl">
+                  {imagePreviews.map((preview, index) => (
+                    <div key={index} className="relative group">
+                      <img
+                        src={preview}
+                        alt={`Selected ${index + 1}`}
+                        className="w-24 h-24 object-cover rounded-lg"
+                      />
+                      {!isSending && (
+                        <button
+                          type="button"
+                          className="absolute top-1 right-1 size-6 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md"
+                          onClick={() => removeImageAtIndex(index)}
+                          title="Remove image"
+                        >
+                          <FaTimes className="size-3 text-base-content" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {isSending && (
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
+                      <div className="flex flex-col items-center gap-2">
+                        <FaSpinner className="size-5 text-white animate-spin" />
+                        <span className="text-xs text-white font-medium">Uploading...</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-              {!isSending && (
-                <button
-                  type="button"
-                  className="absolute top-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md"
-                  onClick={removeImage}
-                  title="Remove image"
-                >
-                  <FaTimes className="size-3.5 text-base-content" />
-                </button>
+              ) : (
+                // Single image preview (backward compatibility)
+                <div className="group">
+                  <img
+                    src={imagePreview}
+                    alt="Selected"
+                    className="w-32 h-32 object-cover rounded-xl"
+                  />
+                  {isSending && (
+                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-xl">
+                      <div className="flex flex-col items-center gap-2">
+                        <FaSpinner className="size-5 text-white animate-spin" />
+                        <span className="text-xs text-white font-medium">Uploading...</span>
+                      </div>
+                    </div>
+                  )}
+                  {!isSending && (
+                    <button
+                      type="button"
+                      className="absolute top-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md"
+                      onClick={removeImage}
+                      title="Remove image"
+                    >
+                      <FaTimes className="size-3.5 text-base-content" />
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -429,6 +525,7 @@ const DesktopBottomToolbar = () => {
                   ref={fileInputRef}
                   onChange={handleImageChange}
                   accept="image/*"
+                  multiple
                 />
 
                 <div className="relative">
@@ -483,12 +580,12 @@ const DesktopBottomToolbar = () => {
                 <button
                   type="submit"
                   className={`flex items-center justify-center size-7 rounded-lg transition-all duration-200 ${
-                    (!text.trim() && !imagePreview) || isUploadingMedia
+                    (!text.trim() && !imagePreview && imagePreviews.length === 0) || isUploadingMedia
                       ? 'opacity-40 cursor-not-allowed'
                       : 'text-primary hover:bg-base-300/50 active:scale-95'
                   }`}
                   title={isUploadingMedia ? "Sending..." : "Send message"}
-                  disabled={(!text.trim() && !imagePreview) || isUploadingMedia}
+                  disabled={(!text.trim() && !imagePreview && imagePreviews.length === 0) || isUploadingMedia}
                 >
                   {isUploadingMedia ? (
                     <FaSpinner className="size-4 animate-spin" />

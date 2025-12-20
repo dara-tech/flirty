@@ -1210,7 +1210,7 @@ const ChatContainer = () => {
               <div className="flex-shrink-0">
                 {lastPinnedMessage.image ? (
                   <img 
-                    src={lastPinnedMessage.image} 
+                    src={Array.isArray(lastPinnedMessage.image) ? lastPinnedMessage.image[0] : lastPinnedMessage.image} 
                     alt="Pinned" 
                     className="w-10 h-10 rounded object-cover"
                   />
@@ -1370,53 +1370,100 @@ const ChatContainer = () => {
               {/* Message Bubble */}
               {message.image ? (
                 /* Image Message - Enhanced styling */
-                <div 
-                  className={`relative group/message max-w-[280px] sm:max-w-[320px] transition-all duration-200 hover:scale-[1.01] ${
-                    isMyMessage 
-                      ? "rounded-3xl rounded-br-sm" 
-                      : "rounded-3xl rounded-bl-sm"
-                  } overflow-hidden`}
-                >
-                  {/* Image */}
-                  <div className="relative cursor-pointer group/image" onClick={() => setViewingMedia({ type: 'image', url: message.image })}>
-                    <img
-                      src={getHighQualityImageUrl(message.image, true)}
-                      alt="Attachment"
-                      className="w-full h-auto object-contain"
-                      style={{ imageRendering: 'auto' }}
-                      loading="lazy"
-                    />
+                (() => {
+                  // Handle both single image (string) and multiple images (array)
+                  const images = Array.isArray(message.image) ? message.image : [message.image];
+                  const isMultiple = images.length > 1;
+                  
+                  return (
+                    <div 
+                      className={`relative group/message transition-all duration-200 hover:scale-[1.01] ${
+                        isMyMessage 
+                          ? "rounded-3xl rounded-br-sm" 
+                          : "rounded-3xl rounded-bl-sm"
+                      } overflow-hidden ${
+                        isMultiple 
+                          ? "max-w-[400px] sm:max-w-[450px]" 
+                          : "max-w-[280px] sm:max-w-[320px]"
+                      }`}
+                    >
+                      {isMultiple ? (
+                      /* Multiple Images - Grid Layout */
+                      <div className={`grid gap-1 ${
+                        images.length === 1 ? 'grid-cols-1' :
+                        images.length === 2 ? 'grid-cols-2' :
+                        images.length === 3 ? 'grid-cols-2' :
+                        images.length === 4 ? 'grid-cols-2' :
+                        'grid-cols-3'
+                      }`}>
+                        {images.map((imgUrl, idx) => (
+                          <div 
+                            key={idx} 
+                            className="relative cursor-pointer group/image aspect-square overflow-hidden"
+                            onClick={() => setViewingMedia({ type: 'image', url: imgUrl })}
+                          >
+                            <img
+                              src={getHighQualityImageUrl(imgUrl, true)}
+                              alt={`Attachment ${idx + 1}`}
+                              className="w-full h-full object-cover"
+                              style={{ imageRendering: 'auto' }}
+                              loading="lazy"
+                            />
+                            {images.length > 4 && idx === 3 && (
+                              <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white font-semibold text-lg">
+                                +{images.length - 4}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      /* Single Image */
+                      <div className="relative cursor-pointer group/image">
+                        <img
+                          src={getHighQualityImageUrl(images[0], true)}
+                          alt="Attachment"
+                          className="w-full h-auto object-contain"
+                          style={{ imageRendering: 'auto' }}
+                          loading="lazy"
+                          onClick={() => setViewingMedia({ type: 'image', url: images[0] })}
+                        />
+                      </div>
+                    )}
                     {/* Delete image button - only for sender */}
-                    {isMyMessage && message.image && (
+                    {isMyMessage && (
                       <button
                         onClick={async (e) => {
                           e.stopPropagation();
-                          if (confirm('Delete this image?')) {
+                          if (confirm(`Delete ${isMultiple ? 'all images' : 'this image'}?`)) {
                             try {
                               await deleteMessageMedia(message._id, 'image');
-                              toast.success('Image deleted');
+                              toast.success('Image(s) deleted');
                             } catch (error) {
                               console.error('Failed to delete image:', error);
                             }
                           }
                         }}
-                        className="absolute top-2 right-2 opacity-0 group-hover/image:opacity-100 transition-opacity bg-error text-error-content rounded-full p-1.5 hover:bg-error/90 shadow-lg z-10"
-                        title="Delete image"
+                        className="absolute top-2 right-2 opacity-0 group-hover/message:opacity-100 transition-opacity bg-error text-error-content rounded-full p-1.5 hover:bg-error/90 shadow-lg z-10"
+                        title={`Delete ${isMultiple ? 'all images' : 'image'}`}
                       >
                         <FaTimes className="w-3 h-3" />
                       </button>
                     )}
-                    {/* Enhanced gradient overlay for better text readability */}
-                    <div className={`absolute inset-0 bg-gradient-to-t ${
-                      isMyMessage 
-                        ? "from-black/75 via-black/40 to-transparent" 
-                        : "from-black/70 via-black/30 to-transparent"
-                    } pointer-events-none `} />
-                    
+                    {/* Enhanced gradient overlay for better text readability - only for single image */}
+                    {!isMultiple && (
+                      <div className={`absolute inset-0 bg-gradient-to-t ${
+                        isMyMessage 
+                          ? "from-black/75 via-black/40 to-transparent" 
+                          : "from-black/70 via-black/30 to-transparent"
+                      } pointer-events-none `} />
+                    )}
                     
                     {/* Enhanced text overlay on image if exists */}
                     {message.text && (
-                      <div className="absolute bottom-0 left-0 right-0 p-4 pb-5">
+                      <div className={`absolute bottom-0 left-0 right-0 p-4 pb-5 ${
+                        isMultiple ? 'bg-black/60 backdrop-blur-sm rounded-b-3xl' : ''
+                      }`}>
                         <p className={`text-sm leading-relaxed font-semibold tracking-wide ${
                           isMyMessage ? 'text-white' : 'text-white'
                         } drop-shadow-2xl`}>
@@ -1424,7 +1471,6 @@ const ChatContainer = () => {
                         </p>
                       </div>
                     )}
-                    
                     
                     {/* Loading overlay for image update */}
                     {isUpdatingImage && updatingImageMessage?._id === message._id && (
@@ -1436,8 +1482,8 @@ const ChatContainer = () => {
                       </div>
                     )}
                     
-                    {/* Enhanced inline status indicators on image */}
-                    {isMyMessage && (
+                    {/* Enhanced inline status indicators on image - only for single image */}
+                    {isMyMessage && !isMultiple && (
                       <div className={`absolute bottom-3 right-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg backdrop-blur-md border border-white/10 ${
                         "bg-black/70 shadow-lg"
                       }`}>
@@ -1455,8 +1501,8 @@ const ChatContainer = () => {
                       </div>
                     )}
                   </div>
-                  
-                </div>
+                );
+                })()
               ) : message.audio ? (
                 /* Audio Message - Custom player with waveform */
                 <div 

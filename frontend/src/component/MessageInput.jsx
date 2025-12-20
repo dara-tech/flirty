@@ -715,7 +715,8 @@ const MessageInput = () => {
       }
       
       // Send single image/video/audio/file (backward compatibility)
-      if (messageImage || messageVideo || messageAudio || messageFile) {
+      // Only send single files if we don't have multiple files to send
+      if (filesToSend.length === 0 && (messageImage || messageVideo || messageAudio || messageFile)) {
         let videoDataUri = undefined;
         if (messageVideo) {
           try {
@@ -746,7 +747,7 @@ const MessageInput = () => {
         await sendSingleMessage(payload);
       }
       
-      // Send multiple files as separate messages
+      // Send multiple files - group by type and send in single message
       if (filesToSend.length > 0) {
         // Set upload state once for all files (only show one indicator)
         const firstImageFile = filesToSend.find(f => f.type === 'image');
@@ -771,34 +772,70 @@ const MessageInput = () => {
           sendUploadingPhotoStatus(selectedUser._id, true);
         }
         
-        // Send files sequentially to avoid overwhelming the server
-        for (let i = 0; i < filesToSend.length; i++) {
-          const fileItem = filesToSend[i];
-          let videoDataUri = undefined;
-          if (fileItem.type === 'video') {
-            try {
-              console.log(`Converting video file to data URI: ${fileItem.preview?.substring(0, 50)}...`);
-              videoDataUri = await blobToDataURL(fileItem.preview);
-              console.log(`Video file converted successfully`);
-            } catch (error) {
-              console.error("Failed to convert video file to data URI:", error);
-              toast.error(`Failed to process video ${fileItem.name}. Please try again.`);
-              continue; // Skip this file and continue with others
-            }
+        // Group files by type
+        const imageFiles = filesToSend.filter(f => f.type === 'image');
+        const videoFiles = filesToSend.filter(f => f.type === 'video');
+        const otherFiles = filesToSend.filter(f => f.type === 'file');
+        
+        // Process videos to data URIs
+        const videoDataUris = [];
+        for (const videoFile of videoFiles) {
+          try {
+            console.log(`Converting video file to data URI: ${videoFile.preview?.substring(0, 50)}...`);
+            const videoDataUri = await blobToDataURL(videoFile.preview);
+            videoDataUris.push(videoDataUri);
+            console.log(`Video file converted successfully`);
+          } catch (error) {
+            console.error("Failed to convert video file to data URI:", error);
+            toast.error(`Failed to process video ${videoFile.name}. Skipping...`);
           }
-          
-          const payload = {
-            text: i === 0 ? messageText : "", // Only add text to first file
-            image: fileItem.type === 'image' ? fileItem.data : undefined,
-            video: videoDataUri,
-            file: fileItem.type === 'file' ? fileItem.data : undefined,
-            fileName: fileItem.name,
-            fileSize: fileItem.size,
-            fileType: fileItem.mimeType,
-          };
-          
-          await sendSingleMessage(payload);
         }
+        
+        // Build payload with arrays for multiple files
+        // Note: fileName, fileSize, fileType arrays should match the order of image, video, file arrays
+        const payload = {
+          text: messageText || "",
+        };
+        
+        // Send images as array
+        if (imageFiles.length > 0) {
+          payload.image = imageFiles.map(f => f.data);
+          console.log(`Sending ${imageFiles.length} image(s) as array:`, imageFiles.map(f => f.name));
+        }
+        
+        // Send videos as array
+        if (videoDataUris.length > 0) {
+          payload.video = videoDataUris;
+          console.log(`Sending ${videoDataUris.length} video(s) as array`);
+        }
+        
+        // Send files as array
+        if (otherFiles.length > 0) {
+          payload.file = otherFiles.map(f => f.data);
+          console.log(`Sending ${otherFiles.length} file(s) as array`);
+        }
+        
+        // Metadata arrays: images first, then videos, then other files
+        const allFileNames = [...imageFiles.map(f => f.name), ...videoFiles.map(f => f.name), ...otherFiles.map(f => f.name)];
+        const allFileSizes = [...imageFiles.map(f => f.size), ...videoFiles.map(f => f.size), ...otherFiles.map(f => f.size)];
+        const allFileTypes = [...imageFiles.map(f => f.mimeType), ...videoFiles.map(f => f.mimeType), ...otherFiles.map(f => f.mimeType)];
+        
+        if (allFileNames.length > 0) {
+          payload.fileName = allFileNames;
+          payload.fileSize = allFileSizes;
+          payload.fileType = allFileTypes;
+        }
+        
+        console.log('Multi-file payload:', {
+          imageCount: imageFiles.length,
+          videoCount: videoDataUris.length,
+          fileCount: otherFiles.length,
+          hasText: !!payload.text,
+          payloadKeys: Object.keys(payload)
+        });
+        
+        // Send all files in a single message
+        await sendSingleMessage(payload);
         
         // Clear upload state after all files are sent
         useChatStore.setState({ 
@@ -1009,50 +1046,82 @@ const MessageInput = () => {
 
       {/* Multiple Files Preview */}
       {selectedFiles.length > 0 && (
-        <div className="mb-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {selectedFiles.map((fileItem, index) => (
-            <div key={index} className="relative rounded-xl overflow-hidden group shadow-sm">
-              {fileItem.type === 'image' && (
-                <img
-                  src={fileItem.data}
-                  alt={fileItem.name}
-                  className="w-full h-32 object-cover"
-                />
-              )}
-              {fileItem.type === 'video' && (
-                <video
-                  src={fileItem.preview}
-                  className="w-full h-32 object-cover bg-black"
-                  controls
-                  preload="metadata"
-                  playsInline
-                  onError={(e) => {
-                    console.error("Video preview error:", e);
-                  }}
-                />
-              )}
-              {fileItem.type === 'file' && (
-                <div className="w-full h-32 bg-base-200 flex items-center justify-center">
-                  <FaPaperclip className="size-8 text-base-content/50" />
+        <div className="mb-3 bg-base-200/50 rounded-xl p-3 border border-base-300/30">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-base-content">
+              {selectedFiles.length} {selectedFiles.length === 1 ? 'file' : 'files'} selected
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedFiles([]);
+                if (fileInputRef.current) fileInputRef.current.value = "";
+              }}
+              className="text-xs text-error hover:text-error/80 transition-colors"
+            >
+              Clear all
+            </button>
+          </div>
+          <div className={`grid gap-2 ${
+            selectedFiles.length === 1 ? 'grid-cols-1' :
+            selectedFiles.length === 2 ? 'grid-cols-2' :
+            selectedFiles.length <= 4 ? 'grid-cols-2 sm:grid-cols-2' :
+            selectedFiles.length <= 6 ? 'grid-cols-3 sm:grid-cols-3' :
+            'grid-cols-3 sm:grid-cols-4'
+          }`}>
+            {selectedFiles.map((fileItem, index) => (
+              <div key={index} className="relative rounded-lg overflow-hidden group shadow-sm bg-base-100 border border-base-300/50">
+                {fileItem.type === 'image' && (
+                  <img
+                    src={fileItem.data}
+                    alt={fileItem.name || `Image ${index + 1}`}
+                    className="w-full h-32 sm:h-40 object-cover"
+                  />
+                )}
+                {fileItem.type === 'video' && (
+                  <video
+                    src={fileItem.preview}
+                    className="w-full h-32 sm:h-40 object-cover bg-black"
+                    controls
+                    preload="metadata"
+                    playsInline
+                    onError={(e) => {
+                      console.error("Video preview error:", e);
+                    }}
+                  />
+                )}
+                {fileItem.type === 'file' && (
+                  <div className="w-full h-32 sm:h-40 bg-base-200 flex flex-col items-center justify-center gap-2">
+                    <FaPaperclip className="size-8 text-base-content/50" />
+                    <span className="text-xs text-base-content/70 px-2 text-center truncate w-full">
+                      {fileItem.name}
+                    </span>
+                  </div>
+                )}
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-all">
+                  <button
+                    type="button"
+                    className="absolute top-1.5 right-1.5 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all bg-error text-white hover:bg-error/90 flex items-center justify-center shadow-lg z-10"
+                    onClick={() => removeSelectedFile(index)}
+                    title="Remove file"
+                  >
+                    <FaTimes className="size-3.5" />
+                  </button>
                 </div>
-              )}
-              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all">
-                <button
-                  type="button"
-                  className="absolute top-2 right-2 size-6 rounded-full opacity-0 group-hover:opacity-100 transition-all bg-error text-error-content hover:bg-error/90 flex items-center justify-center shadow-md"
-                  onClick={() => removeSelectedFile(index)}
-                  title="Remove file"
-                >
-                  <FaTimes className="size-3" />
-                </button>
+                {fileItem.type === 'file' && (
+                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent text-white text-xs p-2 truncate">
+                    {fileItem.name}
+                  </div>
+                )}
+                {/* Image number badge */}
+                {fileItem.type === 'image' && selectedFiles.length > 1 && (
+                  <div className="absolute top-1.5 left-1.5 bg-black/60 text-white text-xs px-2 py-0.5 rounded-full font-medium">
+                    {index + 1}
+                  </div>
+                )}
               </div>
-              {fileItem.type === 'file' && (
-                <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-xs p-1 truncate">
-                  {fileItem.name}
-                </div>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 

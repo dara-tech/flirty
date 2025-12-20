@@ -575,6 +575,16 @@ export const getUsersForSidebar = async (req, res) => {
       const fileNames = normalizeToArray(fileName);
       const fileSizes = normalizeToArray(fileSize);
       const fileTypes = normalizeToArray(fileType);
+      
+      // Log for debugging multiple images
+      if (images.length > 1) {
+        logger.info("Multiple images received", {
+          requestId: req?.requestId,
+          imageCount: images.length,
+          isArray: Array.isArray(image),
+          firstImagePreview: images[0]?.substring(0, 50) + '...'
+        });
+      }
   
       // Validate that at least one of text, image, audio, video, or file is provided
       const hasText = text && typeof text === 'string' && text.trim().length > 0;
