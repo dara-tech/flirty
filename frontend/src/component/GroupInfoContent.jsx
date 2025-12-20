@@ -65,20 +65,20 @@ const GroupInfoContent = ({ groupId, onClose, embedded = false }) => {
   const handleUpdateImage = async (file) => {
     setIsUpdating(true);
     try {
-      const groupPicBase64 = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.readAsDataURL(file);
-      });
+      // Upload to OSS first
+      const { uploadSingleFileToOSS } = await import("../lib/ossService");
+      const imageUrl = await uploadSingleFileToOSS(file, 'sre', 'test01', 'file-upload');
 
+      // Send OSS URL to backend
       await updateGroupInfo(groupId, {
-        groupPic: groupPicBase64,
+        groupPic: imageUrl,
       });
 
       toast.success("Photo updated");
       setGroupPic(null);
       setGroupPicPreview(null);
     } catch (error) {
+      console.error("Failed to upload group picture:", error);
       toast.error(error.response?.data?.error || "Failed to update photo");
     } finally {
       setIsUpdating(false);

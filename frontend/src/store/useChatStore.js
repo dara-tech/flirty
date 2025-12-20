@@ -1011,7 +1011,29 @@ export const useChatStore = create((set, get) => ({
 
   updateMessageImage: async (messageId, image) => {
     try {
-      const res = await axiosInstance.put(`/messages/update-image/${messageId}`, { image });
+      // Upload image to OSS first if it's a data URI
+      let imageUrl = image;
+      if (image && (image.startsWith('data:') || image.startsWith('blob:'))) {
+        const { uploadDataURIToOSS, dataURItoBlob } = await import("../lib/ossService");
+        
+        // Convert blob URL to data URI if needed
+        let dataURI = image;
+        if (image.startsWith('blob:')) {
+          const response = await fetch(image);
+          const blob = await response.blob();
+          const reader = new FileReader();
+          dataURI = await new Promise((resolve, reject) => {
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        }
+        
+        const filename = `image_${Date.now()}.jpg`;
+        imageUrl = await uploadDataURIToOSS(dataURI, filename, 'sre', 'test01', 'file-upload');
+      }
+      
+      const res = await axiosInstance.put(`/messages/update-image/${messageId}`, { image: imageUrl });
       const updatedMessage = res.data;
       const authUser = useAuthStore.getState().authUser;
       if (!authUser || !authUser._id) return;

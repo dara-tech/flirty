@@ -1,6 +1,7 @@
 // Auth service layer - business logic separated from controllers
 import User from "../model/user.model.js";
 import bcrypt from 'bcryptjs';
+import cloudinary from "../lib/cloudinary.js";
 import { OAuth2Client } from 'google-auth-library';
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -72,8 +73,8 @@ export class AuthService {
     const updateFields = {};
     
     if (updateData.profilePic) {
-      // Client already uploaded to OSS, just use the URL
-      updateFields.profilePic = updateData.profilePic;
+      const uploadResponse = await cloudinary.uploader.upload(updateData.profilePic);
+      updateFields.profilePic = uploadResponse.secure_url;
     }
     
     if (updateData.fullname) {

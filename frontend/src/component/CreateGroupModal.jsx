@@ -64,10 +64,25 @@ const CreateGroupModal = ({ isOpen, onClose }) => {
 
     setIsCreating(true);
     try {
+      let groupPicUrl = null;
+      
+      // Upload group picture to OSS if provided
+      if (groupPic) {
+        try {
+          const { uploadSingleFileToOSS } = await import("../lib/ossService");
+          groupPicUrl = await uploadSingleFileToOSS(groupPic, 'sre', 'test01', 'file-upload');
+        } catch (error) {
+          console.error("Failed to upload group picture:", error);
+          toast.error("Failed to upload group picture. Please try again.");
+          setIsCreating(false);
+          return;
+        }
+      }
+
       await createGroup({
         name: name.trim(),
         description: description.trim(),
-        groupPic: groupPicPreview,
+        groupPic: groupPicUrl || groupPicPreview, // Fallback to preview if OSS upload failed
         memberIds: selectedMembers,
       });
       onClose();

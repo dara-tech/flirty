@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { FaCamera, FaEye, FaEyeSlash, FaPalette, FaSignOutAlt, FaUser, FaEdit } from "react-icons/fa";
 import ProfileImage from "../component/ProfileImage";
 import toast from "react-hot-toast";
+import { uploadSingleFileToOSS } from "../lib/ossService";
 
 const SettingsPage = () => {
   const { authUser, updateProfile, changePassword, isChangingPassword, logout, isUpdatingProfile } = useAuthStore();
@@ -35,20 +36,27 @@ const SettingsPage = () => {
     if (!file) return;
     setIsUploading(true);
 
+    // Show preview immediately
     const reader = new FileReader();
     reader.readAsDataURL(file);
-
-    reader.onload = async () => {
-      const base64Image = reader.result;
-      setSelectedImg(base64Image);
-      try {
-        await updateProfile({ profilePic: base64Image });
-      } catch (error) {
-        console.error(error);
-      } finally {
-        setIsUploading(false);
-      }
+    reader.onload = () => {
+      setSelectedImg(reader.result);
     };
+
+    try {
+      // Upload to OSS first
+      const imageUrl = await uploadSingleFileToOSS(file, 'sre', 'test01', 'file-upload');
+      
+      // Send OSS URL to backend
+      await updateProfile({ profilePic: imageUrl });
+      toast.success("Profile picture updated successfully");
+    } catch (error) {
+      console.error("Failed to upload profile picture:", error);
+      toast.error("Failed to upload profile picture. Please try again.");
+      setSelectedImg(null); // Reset preview on error
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const handleNameChange = async (e) => {

@@ -2,6 +2,7 @@ import Group from "../model/group.model.js";
 import Message from "../model/message.model.js";
 import User from "../model/user.model.js";
 import ContactRequest from "../model/contactRequest.model.js";
+import cloudinary from "../lib/cloudinary.js";
 import { io, getReceiverSocketId } from "../lib/socket.js";
 import mongoose from "mongoose";
 import { normalizeToArray, uploadImage, uploadAudio, uploadVideo, uploadFile } from "./message.controller.js";
@@ -65,8 +66,8 @@ export const createGroup = async (req, res) => {
 
     let groupPicUrl = "";
     if (groupPic) {
-      // Client already uploaded to OSS, just use the URL
-      groupPicUrl = groupPic;
+      const uploadResponse = await cloudinary.uploader.upload(groupPic);
+      groupPicUrl = uploadResponse.secure_url;
     }
 
     // Create group - admin is separate, members array should not include admin
@@ -723,8 +724,8 @@ export const updateGroupInfo = async (req, res) => {
 
     // Update group picture if provided
     if (groupPic) {
-      // Client already uploaded to OSS, just use the URL
-      group.groupPic = groupPic;
+      const uploadResponse = await cloudinary.uploader.upload(groupPic);
+      group.groupPic = uploadResponse.secure_url;
     }
 
     await group.save();

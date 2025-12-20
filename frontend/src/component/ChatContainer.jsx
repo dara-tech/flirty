@@ -2724,13 +2724,16 @@ const ChatContainer = () => {
           
           reader.onloadend = async () => {
             try {
+              // updateMessageImage will handle OSS upload internally
               await updateMessageImage(currentMessage._id, reader.result);
               if (!isGroupChat && selectedUser?._id) {
                 sendUploadingPhotoStatus(selectedUser._id, false);
               }
               setUpdatingImageMessage(null);
+              toast.success("Image updated successfully");
             } catch (error) {
               console.error("Failed to update image:", error);
+              toast.error("Failed to update image. Please try again.");
               if (!isGroupChat && selectedUser?._id) {
                 sendUploadingPhotoStatus(selectedUser._id, false);
               }

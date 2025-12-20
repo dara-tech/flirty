@@ -4,6 +4,7 @@ import { FaImage, FaPaperPlane, FaTimes, FaSpinner, FaPaperclip, FaSmile, FaMicr
 import { useAuthStore } from "../store/useAuthStore";
 import toast from "react-hot-toast";
 import EmojiPicker from "emoji-picker-react";
+import { uploadDataURIToOSS, uploadSingleFileToOSS, uploadMultipleFilesToOSS, dataURItoBlob } from "../lib/ossService";
 
 const MessageInput = () => {
   const [text, setText] = useState("");
@@ -717,28 +718,99 @@ const MessageInput = () => {
       // Send single image/video/audio/file (backward compatibility)
       // Only send single files if we don't have multiple files to send
       if (filesToSend.length === 0 && (messageImage || messageVideo || messageAudio || messageFile)) {
-        let videoDataUri = undefined;
-        if (messageVideo) {
-          try {
-            console.log(`Converting video to data URI: ${messageVideo.substring(0, 50)}...`);
-            videoDataUri = await blobToDataURL(messageVideo);
-            console.log(`Video converted successfully: ${videoDataUri ? videoDataUri.substring(0, 50) + '...' : 'null'}`);
-          } catch (error) {
-            console.error("Failed to convert video to data URI:", error);
-            toast.error("Failed to process video. Please try again.");
-            return;
+        // Upload files to OSS first
+        let imageUrl = undefined;
+        let videoUrl = undefined;
+        let audioUrl = undefined;
+        let fileUrl = undefined;
+
+        try {
+          // Upload image to OSS
+          if (messageImage) {
+            try {
+              const filename = `image_${Date.now()}.jpg`;
+              imageUrl = await uploadDataURIToOSS(messageImage, filename, 'sre', 'test01', 'file-upload', (progress) => {
+                useChatStore.setState({ uploadProgress: progress });
+              });
+              console.log('Image uploaded to OSS:', imageUrl);
+            } catch (error) {
+              console.error("Failed to upload image to OSS:", error);
+              toast.error("Failed to upload image. Please try again.");
+              return;
+            }
           }
+
+          // Upload video to OSS
+          if (messageVideo) {
+            try {
+              // Convert blob URL to File if needed
+              let videoFile;
+              if (messageVideo.startsWith('blob:')) {
+                const response = await fetch(messageVideo);
+                const blob = await response.blob();
+                videoFile = new File([blob], `video_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
+              } else if (messageVideo.startsWith('data:')) {
+                const blob = dataURItoBlob(messageVideo);
+                videoFile = new File([blob], `video_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
+              } else {
+                throw new Error('Unsupported video format');
+              }
+              
+              videoUrl = await uploadSingleFileToOSS(videoFile, 'sre', 'test01', 'file-upload', (progress) => {
+                useChatStore.setState({ uploadProgress: progress });
+              });
+              console.log('Video uploaded to OSS:', videoUrl);
+            } catch (error) {
+              console.error("Failed to upload video to OSS:", error);
+              toast.error("Failed to upload video. Please try again.");
+              return;
+            }
+          }
+
+          // Upload audio to OSS
+          if (messageAudio) {
+            try {
+              const filename = `audio_${Date.now()}.webm`;
+              audioUrl = await uploadDataURIToOSS(messageAudio, filename, 'sre', 'test01', 'file-upload', (progress) => {
+                useChatStore.setState({ uploadProgress: progress });
+              });
+              console.log('Audio uploaded to OSS:', audioUrl);
+            } catch (error) {
+              console.error("Failed to upload audio to OSS:", error);
+              toast.error("Failed to upload audio. Please try again.");
+              return;
+            }
+          }
+
+          // Upload file to OSS
+          if (messageFile && messageFileInfo) {
+            try {
+              const filename = messageFileInfo.name || `file_${Date.now()}`;
+              fileUrl = await uploadDataURIToOSS(messageFile, filename, 'sre', 'test01', 'file-upload', (progress) => {
+                useChatStore.setState({ uploadProgress: progress });
+              });
+              console.log('File uploaded to OSS:', fileUrl);
+            } catch (error) {
+              console.error("Failed to upload file to OSS:", error);
+              toast.error("Failed to upload file. Please try again.");
+              return;
+            }
+          }
+        } catch (error) {
+          console.error("Error uploading files to OSS:", error);
+          toast.error("Failed to upload files. Please try again.");
+          return;
         }
         
         const payload = {
           text: messageText || "",
-          image: messageImage || undefined,
-          video: videoDataUri,
-          audio: messageAudio || undefined,
+          image: imageUrl,
+          video: videoUrl,
+          audio: audioUrl,
+          file: fileUrl,
         };
         
-        if (messageFile && messageFileInfo) {
-          payload.file = messageFile;
+        if (messageFile && messageFileInfo && fileUrl) {
           payload.fileName = messageFileInfo.name;
           payload.fileSize = messageFileInfo.size;
           payload.fileType = messageFileInfo.type;
@@ -777,18 +849,72 @@ const MessageInput = () => {
         const videoFiles = filesToSend.filter(f => f.type === 'video');
         const otherFiles = filesToSend.filter(f => f.type === 'file');
         
-        // Process videos to data URIs
-        const videoDataUris = [];
-        for (const videoFile of videoFiles) {
-          try {
-            console.log(`Converting video file to data URI: ${videoFile.preview?.substring(0, 50)}...`);
-            const videoDataUri = await blobToDataURL(videoFile.preview);
-            videoDataUris.push(videoDataUri);
-            console.log(`Video file converted successfully`);
-          } catch (error) {
-            console.error("Failed to convert video file to data URI:", error);
-            toast.error(`Failed to process video ${videoFile.name}. Skipping...`);
+        // Upload all files to OSS
+        const imageUrls = [];
+        const videoUrls = [];
+        const fileUrls = [];
+        
+        try {
+          // Upload images to OSS
+          for (const imageFile of imageFiles) {
+            try {
+              const filename = imageFile.name || `image_${Date.now()}.jpg`;
+              const url = await uploadDataURIToOSS(imageFile.data, filename, 'sre', 'test01', 'file-upload', (progress) => {
+                useChatStore.setState({ uploadProgress: progress });
+              });
+              imageUrls.push(url);
+              console.log(`Image uploaded to OSS: ${url}`);
+            } catch (error) {
+              console.error(`Failed to upload image ${imageFile.name}:`, error);
+              toast.error(`Failed to upload image ${imageFile.name}. Skipping...`);
+            }
           }
+          
+          // Upload videos to OSS
+          for (const videoFile of videoFiles) {
+            try {
+              // Convert blob URL or data URI to File
+              let file;
+              if (videoFile.preview && videoFile.preview.startsWith('blob:')) {
+                const response = await fetch(videoFile.preview);
+                const blob = await response.blob();
+                file = new File([blob], videoFile.name || `video_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
+              } else if (videoFile.data && videoFile.data.startsWith('data:')) {
+                const blob = dataURItoBlob(videoFile.data);
+                file = new File([blob], videoFile.name || `video_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
+              } else {
+                throw new Error('Unsupported video format');
+              }
+              
+              const url = await uploadSingleFileToOSS(file, 'sre', 'test01', 'file-upload', (progress) => {
+                useChatStore.setState({ uploadProgress: progress });
+              });
+              videoUrls.push(url);
+              console.log(`Video uploaded to OSS: ${url}`);
+            } catch (error) {
+              console.error(`Failed to upload video ${videoFile.name}:`, error);
+              toast.error(`Failed to upload video ${videoFile.name}. Skipping...`);
+            }
+          }
+          
+          // Upload other files to OSS
+          for (const otherFile of otherFiles) {
+            try {
+              const filename = otherFile.name || `file_${Date.now()}`;
+              const url = await uploadDataURIToOSS(otherFile.data, filename, 'sre', 'test01', 'file-upload', (progress) => {
+                useChatStore.setState({ uploadProgress: progress });
+              });
+              fileUrls.push(url);
+              console.log(`File uploaded to OSS: ${url}`);
+            } catch (error) {
+              console.error(`Failed to upload file ${otherFile.name}:`, error);
+              toast.error(`Failed to upload file ${otherFile.name}. Skipping...`);
+            }
+          }
+        } catch (error) {
+          console.error("Error uploading files to OSS:", error);
+          toast.error("Failed to upload files. Please try again.");
+          return;
         }
         
         // Build payload with arrays for multiple files
@@ -797,22 +923,22 @@ const MessageInput = () => {
           text: messageText || "",
         };
         
-        // Send images as array
-        if (imageFiles.length > 0) {
-          payload.image = imageFiles.map(f => f.data);
-          console.log(`Sending ${imageFiles.length} image(s) as array:`, imageFiles.map(f => f.name));
+        // Send images as array of URLs
+        if (imageUrls.length > 0) {
+          payload.image = imageUrls;
+          console.log(`Sending ${imageUrls.length} image(s) as array:`, imageFiles.map(f => f.name));
         }
         
-        // Send videos as array
-        if (videoDataUris.length > 0) {
-          payload.video = videoDataUris;
-          console.log(`Sending ${videoDataUris.length} video(s) as array`);
+        // Send videos as array of URLs
+        if (videoUrls.length > 0) {
+          payload.video = videoUrls;
+          console.log(`Sending ${videoUrls.length} video(s) as array`);
         }
         
-        // Send files as array
-        if (otherFiles.length > 0) {
-          payload.file = otherFiles.map(f => f.data);
-          console.log(`Sending ${otherFiles.length} file(s) as array`);
+        // Send files as array of URLs
+        if (fileUrls.length > 0) {
+          payload.file = fileUrls;
+          console.log(`Sending ${fileUrls.length} file(s) as array`);
         }
         
         // Metadata arrays: images first, then videos, then other files
@@ -827,9 +953,9 @@ const MessageInput = () => {
         }
         
         console.log('Multi-file payload:', {
-          imageCount: imageFiles.length,
-          videoCount: videoDataUris.length,
-          fileCount: otherFiles.length,
+          imageCount: imageUrls.length,
+          videoCount: videoUrls.length,
+          fileCount: fileUrls.length,
           hasText: !!payload.text,
           payloadKeys: Object.keys(payload)
         });
