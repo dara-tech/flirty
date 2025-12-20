@@ -1,4 +1,4 @@
-import { FaTimes, FaBars, FaAngleLeft, FaInfoCircle, FaCheckSquare } from "react-icons/fa";
+import { FaTimes, FaBars, FaAngleLeft, FaInfoCircle, FaBookmark } from "react-icons/fa";
 import { useAuthStore } from "../store/useAuthStore";
 import { useChatStore } from "../store/useChatStore";
 import { useState, useEffect } from "react";
@@ -8,7 +8,7 @@ import GroupCallButton from "./GroupCallButton";
 import ProfileImage from "./ProfileImage";
 
 const ChatHeader = ({ onToggleSelectionMode, isSelectionMode }) => {
-  const { selectedUser, selectedGroup, setSelectedUser, setSelectedGroup } = useChatStore();
+  const { selectedUser, selectedGroup, selectedSavedMessages, setSelectedUser, setSelectedGroup, setSelectedSavedMessages } = useChatStore();
   const { onlineUsers } = useAuthStore();
   const [isMobile, setIsMobile] = useState(false);
   const navigate = useNavigate();
@@ -22,17 +22,37 @@ const ChatHeader = ({ onToggleSelectionMode, isSelectionMode }) => {
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
+  // Helper to normalize ID for comparison
+  const normalizeId = (id) => {
+    if (!id) return null;
+    if (typeof id === 'string') return id;
+    if (typeof id === 'object' && id._id) return id._id.toString();
+    return id.toString();
+  };
+
   const isGroup = !!selectedGroup;
-  const displayName = isGroup ? selectedGroup?.name : selectedUser?.fullname || "Unknown";
-  const displayPic = isGroup 
-    ? selectedGroup?.groupPic || "/avatar.png"
-    : selectedUser?.profilePic || "/avatar.png";
-  const displayStatus = isGroup
-    ? `${(selectedGroup?.admin ? 1 : 0) + (selectedGroup?.members?.length || 0)} members`
-    : selectedUser && onlineUsers.includes(selectedUser._id) ? "Online" : "Offline";
+  const isSaved = !!selectedSavedMessages;
+  
+  const displayName = isSaved 
+    ? "Saved Messages" 
+    : isGroup 
+      ? selectedGroup?.name 
+      : selectedUser?.fullname || "Unknown";
+  const displayPic = isSaved
+    ? null // No profile pic for saved messages
+    : isGroup 
+      ? selectedGroup?.groupPic || "/avatar.png"
+      : selectedUser?.profilePic || "/avatar.png";
+  const displayStatus = isSaved
+    ? "Messages you saved"
+    : isGroup
+      ? `${(selectedGroup?.admin ? 1 : 0) + (selectedGroup?.members?.length || 0)} members`
+      : selectedUser && onlineUsers.some(id => normalizeId(id) === normalizeId(selectedUser._id)) ? "Online" : "Offline";
 
   const handleClose = () => {
-    if (isGroup) {
+    if (isSaved) {
+      setSelectedSavedMessages(false);
+    } else if (isGroup) {
       setSelectedGroup(null);
     } else {
       setSelectedUser(null);
@@ -40,7 +60,9 @@ const ChatHeader = ({ onToggleSelectionMode, isSelectionMode }) => {
   };
 
   const handleBackToList = () => {
-    if (isGroup) {
+    if (isSaved) {
+      setSelectedSavedMessages(false);
+    } else if (isGroup) {
       setSelectedGroup(null);
     } else {
       setSelectedUser(null);
@@ -64,13 +86,21 @@ const ChatHeader = ({ onToggleSelectionMode, isSelectionMode }) => {
         </button>
         
         <div className="relative">
-          <ProfileImage
-            src={displayPic}
-            alt={displayName}
-            className="size-10 sm:size-11 rounded-full object-cover ring-2 ring-base-200 shadow-sm"
-          />
-          {!isGroup && selectedUser && onlineUsers.includes(selectedUser._id) && (
-            <span className="absolute bottom-0 right-0 size-3 sm:size-3.5 bg-green-500 rounded-full ring-2 ring-base-100 shadow-sm" />
+          {isSaved ? (
+            <div className="size-10 sm:size-11 rounded-full bg-primary/10 flex items-center justify-center ring-2 ring-base-200 shadow-sm">
+              <FaBookmark className="size-5 sm:size-6 text-primary" />
+            </div>
+          ) : (
+            <>
+              <ProfileImage
+                src={displayPic}
+                alt={displayName}
+                className="size-10 sm:size-11 rounded-full object-cover ring-2 ring-base-200 shadow-sm"
+              />
+              {!isGroup && selectedUser && onlineUsers.some(id => normalizeId(id) === normalizeId(selectedUser._id)) && (
+                <span className="absolute bottom-0 right-0 size-3 sm:size-3.5 bg-green-500 rounded-full ring-2 ring-base-100 shadow-sm" />
+              )}
+            </>
           )}
         </div>
 
@@ -84,24 +114,14 @@ const ChatHeader = ({ onToggleSelectionMode, isSelectionMode }) => {
 
       {/* Action buttons */}
       <div className="flex items-center gap-2">
-        {/* Selection Mode Toggle */}
-        {onToggleSelectionMode && (
-          <button
-            onClick={onToggleSelectionMode}
-            className={`btn btn-ghost btn-sm btn-circle hover:bg-base-200 transition-colors ${isSelectionMode ? 'bg-primary/20 text-primary' : ''}`}
-            title={isSelectionMode ? "Exit selection mode" : "Select messages"}
-          >
-            <FaCheckSquare className="size-5" />
-          </button>
-        )}
-        {/* Call buttons */}
-        {!isGroup && selectedUser && !isSelectionMode && (
+        {/* Call buttons - Hide for saved messages */}
+        {!isSaved && !isGroup && selectedUser && (
           <CallButton userId={selectedUser._id} variant="compact" />
         )}
-        {isGroup && selectedGroup && !isSelectionMode && (
+        {!isSaved && isGroup && selectedGroup && (
           <GroupCallButton groupId={selectedGroup._id} variant="compact" />
         )}
-        {!isGroup && selectedUser && (
+        {!isSaved && !isGroup && selectedUser && (
           <button
             onClick={() => {
               if (isMobile) {
@@ -118,7 +138,7 @@ const ChatHeader = ({ onToggleSelectionMode, isSelectionMode }) => {
             <FaInfoCircle className="size-5 text-base-content/60" />
           </button>
         )}
-        {isGroup && (
+        {!isSaved && isGroup && (
           <button
             onClick={() => {
               if (isMobile) {

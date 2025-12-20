@@ -2,7 +2,6 @@ import { useEffect, useState, useRef } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit, FaMicrophone, FaBookmark } from "react-icons/fa";
-import SavedMessages from "../component/SavedMessages";
 import CreateGroupModal from "../component/CreateGroupModal";
 import DeleteConversationModal from "../component/DeleteConversationModal";
 import DeleteGroupModal from "../component/DeleteGroupModal";
@@ -21,8 +20,10 @@ const ConversationsListPage = () => {
     getGroups,
     selectedUser, 
     selectedGroup,
+    selectedSavedMessages,
     setSelectedUser, 
     setSelectedGroup,
+    setSelectedSavedMessages,
     isUsersLoading, 
     isGroupsLoading,
     lastMessages, 
@@ -329,18 +330,6 @@ const ConversationsListPage = () => {
             >
               Groups
             </button>
-            <button
-              onClick={() => setActiveTab("saved")}
-              className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-all flex items-center justify-center gap-1.5 ${
-                activeTab === "saved" 
-                  ? "bg-primary text-white" 
-                  : "text-base-content/60 hover:text-base-content hover:bg-base-200"
-              }`}
-              title="Saved Messages"
-            >
-              <FaBookmark className="size-3.5" />
-              <span className="hidden sm:inline">Saved</span>
-            </button>
           </div>
 
           {/* Search Bar */}
@@ -357,9 +346,27 @@ const ConversationsListPage = () => {
         </div>
 
         {/* Conversations List - Scrollable */}
-        <div className="flex-1 overflow-y-auto hide-scrollbar">
+        <div className="flex-1 overflow-y-auto hide-scrollbar pb-16 lg:pb-20">
           {activeTab === "chats" ? (
             <>
+              {/* Saved Messages - First item in chat list (like Telegram) */}
+              {!searchQuery && (
+                <button
+                  onClick={() => setSelectedSavedMessages(true)}
+                  className="w-full px-4 py-3 flex items-center gap-3 transition-all duration-200 hover:bg-base-200/50 border-l-4 border-transparent"
+                >
+                  <div className="relative flex-shrink-0">
+                    <div className="size-12 rounded-full bg-primary/10 flex items-center justify-center">
+                      <FaBookmark className="size-6 text-primary" />
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-0 text-left">
+                    <div className="font-semibold text-base-content">Saved Messages</div>
+                    <div className="text-sm text-base-content/50">Messages you saved</div>
+                  </div>
+                </button>
+              )}
+
               {hasLoaded && filteredConversations.length === 0 ? (
                 <div className="text-center py-12 px-4">
                   <div className="size-16 rounded-full bg-base-200 flex items-center justify-center mx-auto mb-4">
@@ -381,7 +388,6 @@ const ConversationsListPage = () => {
                   const user = conv.user;
                   const lastMessage = conv.lastMessage;
                   const userId = normalizeId(user._id);
-                  const isSelected = normalizeId(selectedUser?._id) === userId;
                   const unreadCount = unreadMessages[userId] || unreadMessages[user._id] || 0;
                   const hasUnread = unreadCount > 0;
                   
@@ -404,11 +410,7 @@ const ConversationsListPage = () => {
                     >
                       <button
                         onClick={() => handleUserSelect(user)}
-                        className={`w-full px-4 py-3 flex items-center gap-3 transition-all duration-200 ${
-                          isSelected 
-                            ? 'bg-primary/10 border-l-4 border-primary' 
-                            : 'hover:bg-base-200/50 border-l-4 border-transparent'
-                        }`}
+                        className="w-full px-4 py-3 flex items-center gap-3 transition-all duration-200 hover:bg-base-200/50 border-l-4 border-transparent"
                       >
                         <div className="relative flex-shrink-0">
                           <ProfileImage
@@ -538,7 +540,6 @@ const ConversationsListPage = () => {
                 </div>
               ) : (
                 filteredGroups.map((group) => {
-                  const isSelected = selectedGroup?._id === group._id;
                   const authUserId = normalizeId(authUser?._id);
                   const groupAdminId = normalizeId(group.admin?._id || group.admin);
                   const isOwner = authUserId === groupAdminId;
@@ -555,11 +556,7 @@ const ConversationsListPage = () => {
                     >
                       <button
                       onClick={() => handleGroupSelect(group)}
-                      className={`w-full px-4 py-3 flex items-center gap-3 transition-all duration-200 ${
-                        isSelected 
-                          ? 'bg-primary/10 border-l-4 border-primary' 
-                          : 'hover:bg-base-200/50 border-l-4 border-transparent'
-                      }`}
+                      className="w-full px-4 py-3 flex items-center gap-3 transition-all duration-200 hover:bg-base-200/50 border-l-4 border-transparent"
                     >
                       <div className="relative flex-shrink-0">
                         <ProfileImage
@@ -685,8 +682,6 @@ const ConversationsListPage = () => {
                 })
               )}
             </>
-          ) : activeTab === "saved" ? (
-            <SavedMessages />
           ) : null}
         </div>
 

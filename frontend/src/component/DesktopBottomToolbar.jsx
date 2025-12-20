@@ -1,7 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { 
-  FaUser, 
+  FaUserCircle, 
   FaComment, 
   FaCog,
   FaPaperclip,
@@ -10,8 +10,9 @@ import {
   FaPaperPlane,
   FaTimes,
   FaSpinner,
-  FaMapMarkerAlt
+  FaPhone
 } from "react-icons/fa";
+import { IoChatbubbles } from "react-icons/io5";
 import { useChatStore } from "../store/useChatStore";
 import toast from "react-hot-toast";
 import EmojiPicker from "emoji-picker-react";
@@ -20,7 +21,7 @@ const DesktopBottomToolbar = () => {
   const location = useLocation();
   const isChatPage = location.pathname === '/';
   const isGroupInfoRoute = location.pathname.startsWith('/group/') && location.pathname.endsWith('/info');
-  const { selectedUser, selectedGroup, sendMessage, sendGroupMessage, unreadMessages, pendingRequests } = useChatStore();
+  const { selectedUser, selectedGroup, selectedSavedMessages, sendMessage, sendGroupMessage, unreadMessages, pendingRequests } = useChatStore();
   
   // Calculate total unread messages count
   const totalUnreadMessages = Object.values(unreadMessages).reduce((sum, count) => sum + (count || 0), 0);
@@ -282,7 +283,7 @@ const DesktopBottomToolbar = () => {
               title="Contacts"
             >
               <div className="relative">
-                <FaUser className={`size-7 transition-all ${
+                <FaUserCircle className={`size-7 transition-all ${
                   location.search.includes('view=contacts')
                     ? 'text-primary fill-primary'
                     : 'text-base-content/50'
@@ -296,12 +297,24 @@ const DesktopBottomToolbar = () => {
             </Link>
 
             <Link
+              to="/?view=calls"
+              className="flex items-center justify-center flex-1 h-full min-w-0 transition-all duration-200 hover:scale-110 active:scale-95"
+              title="Calls"
+            >
+              <FaPhone className={`size-7 transition-all ${
+                location.search.includes('view=calls')
+                  ? 'text-primary fill-primary'
+                  : 'text-base-content/50'
+              }`} />
+            </Link>
+
+            <Link
               to="/?view=chats"
               className="flex items-center justify-center flex-1 h-full min-w-0 transition-all duration-200 hover:scale-110 active:scale-95 relative"
               title="Chats"
             >
               <div className="relative">
-                <FaComment className={`size-7 transition-all ${
+                <IoChatbubbles className={`size-7 transition-all ${
                   location.search.includes('view=chats') || (!location.search.includes('view=') && !location.search.includes('settings=true'))
                     ? 'text-primary fill-primary'
                     : 'text-base-content/50'
@@ -312,18 +325,6 @@ const DesktopBottomToolbar = () => {
                   </span>
                 )}
               </div>
-            </Link>
-
-            <Link
-              to="/?view=analytics"
-              className="flex items-center justify-center flex-1 h-full min-w-0 transition-all duration-200 hover:scale-110 active:scale-95"
-              title="Live Map"
-            >
-              <FaMapMarkerAlt className={`size-7 transition-all ${
-                location.search.includes('view=analytics')
-                  ? 'text-primary fill-primary'
-                  : 'text-base-content/50'
-              }`} />
             </Link>
 
             <Link
@@ -396,8 +397,8 @@ const DesktopBottomToolbar = () => {
             </div>
           )}
           
-          {/* Message Input - Only show when chat is selected and NOT showing group info */}
-          {(selectedUser || selectedGroup) && !isGroupInfoRoute && !isGroupInfoOpen ? (
+          {/* Message Input - Only show when chat is selected and NOT showing group info and NOT saved messages */}
+          {(selectedUser || selectedGroup) && !selectedSavedMessages && !isGroupInfoRoute && !isGroupInfoOpen ? (
             <form onSubmit={handleSubmit} className="w-full max-w-4xl mx-auto">
               <div className="flex items-center gap-2 bg-base-200/90 rounded-2xl px-4 py-3 border border-base-300/30 shadow-inner">
                 <button

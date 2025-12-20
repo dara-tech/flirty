@@ -27,8 +27,12 @@ const CallButton = ({ userId, variant = "default" }) => {
   
   const isOnline = onlineUsers.includes(userId);
   const isInCall = callState !== 'idle';
-  const isDisabled = !isOnline || isInCall || isSelf;
+  const isDisabled = isInCall || isSelf;
   
+  let offlineToastShown = false;
+
+  // Removed showOfflineToast and offline toast as requested.
+
   const handleVoiceCall = async () => {
     // Prevent self-calls
     if (isSelf) {
@@ -36,9 +40,10 @@ const CallButton = ({ userId, variant = "default" }) => {
       return;
     }
     
+    // Allow calling offline users, but show a warning
+    // Offline: no toast, just proceed
     if (!isOnline) {
-      toast.error("User is offline");
-      return;
+      // No toast
     }
     
     if (isInCall) {
@@ -48,6 +53,7 @@ const CallButton = ({ userId, variant = "default" }) => {
     
     try {
       await initiateCall(userId, 'voice');
+      offlineToastShown = false; // reset after call attempt
     } catch (error) {
       toast.error(error.message || "Failed to start call");
     }
@@ -60,9 +66,10 @@ const CallButton = ({ userId, variant = "default" }) => {
       return;
     }
     
+    // Allow calling offline users, but show a warning
+    // Offline: no toast, just proceed
     if (!isOnline) {
-      toast.error("User is offline");
-      return;
+      // No toast
     }
     
     if (isInCall) {
@@ -72,6 +79,7 @@ const CallButton = ({ userId, variant = "default" }) => {
     
     try {
       await initiateCall(userId, 'video');
+      offlineToastShown = false; // reset after call attempt
     } catch (error) {
       toast.error(error.message || "Failed to start video call");
     }
@@ -84,7 +92,7 @@ const CallButton = ({ userId, variant = "default" }) => {
           onClick={handleVoiceCall}
           disabled={isDisabled}
           className="btn btn-sm btn-circle btn-ghost"
-          title={isSelf ? "Cannot call yourself" : !isOnline ? "User is offline" : "Voice call"}
+          title={isSelf ? "Cannot call yourself" : "Voice call" + (!isOnline ? " (user is offline)" : "")}
         >
           <FaPhone className="w-4 h-4" />
         </button>
@@ -92,7 +100,7 @@ const CallButton = ({ userId, variant = "default" }) => {
           onClick={handleVideoCall}
           disabled={isDisabled}
           className="btn btn-sm btn-circle btn-ghost"
-          title={isSelf ? "Cannot call yourself" : !isOnline ? "User is offline" : "Video call"}
+          title={isSelf ? "Cannot call yourself" : "Video call" + (!isOnline ? " (user is offline)" : "")}
         >
           <FaVideo className="w-4 h-4" />
         </button>

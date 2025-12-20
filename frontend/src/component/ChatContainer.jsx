@@ -92,6 +92,8 @@ const ChatContainer = () => {
     hasMoreMessages,
     selectedUser,
     selectedGroup,
+    selectedSavedMessages,
+    getSavedMessages,
     subscribeToGroupMessages,
     unsubscribeFromGroupMessages,
     editMessage,
@@ -151,6 +153,7 @@ const ChatContainer = () => {
   const prevChatRef = useRef(null);
 
   const isGroupChat = !!selectedGroup;
+  const isSavedMessages = !!selectedSavedMessages;
   
   // Cleanup effect to stop upload status when updatingImageMessage is cleared
   useEffect(() => {
@@ -168,7 +171,7 @@ const ChatContainer = () => {
   }, [updatingImageMessage, isGroupChat, selectedUser?._id, sendUploadingPhotoStatus]);
 
   useEffect(() => {
-    const currentChatId = selectedUser?._id || selectedGroup?._id;
+    const currentChatId = selectedUser?._id || selectedGroup?._id || (selectedSavedMessages ? 'saved' : null);
     const prevChatId = prevChatRef.current;
     
     // Only clear messages if switching to a different chat (to avoid showing wrong messages)
@@ -178,7 +181,18 @@ const ChatContainer = () => {
     }
     
     // Load messages in background without blocking UI (like Telegram)
-    if (selectedUser?._id) {
+    if (selectedSavedMessages) {
+      // Load saved messages
+      getSavedMessages(1, 50).then((data) => {
+        // Backend returns { messages, pagination: {...} }
+        const savedMessages = data?.messages || data?.data?.messages || [];
+        // Messages are already sorted newest first, reverse for display (oldest to newest)
+        useChatStore.setState({ messages: savedMessages.reverse() });
+      }).catch((error) => {
+        console.error("Failed to load saved messages:", error);
+      });
+      prevChatRef.current = 'saved';
+    } else if (selectedUser?._id) {
       getMessages(selectedUser._id);
       prevChatRef.current = selectedUser._id;
     } else if (selectedGroup?._id) {
@@ -199,13 +213,13 @@ const ChatContainer = () => {
         sendGroupEditingStatus(selectedGroup._id, false);
         sendGroupDeletingStatus(selectedGroup._id, false);
         sendGroupUploadingPhotoStatus(selectedGroup._id, false);
-      } else if (!isGroupChat && selectedUser?._id) {
+      } else if (!isGroupChat && !isSavedMessages && selectedUser?._id) {
         sendEditingStatus(selectedUser._id, false);
         sendDeletingStatus(selectedUser._id, false);
         sendUploadingPhotoStatus(selectedUser._id, false);
       }
     };
-  }, [selectedUser?._id, selectedGroup?._id, getMessages, getGroupMessages, subscribeToGroupMessages, unsubscribeFromGroupMessages, isGroupChat, sendEditingStatus, sendDeletingStatus, sendUploadingPhotoStatus]);
+  }, [selectedUser?._id, selectedGroup?._id, selectedSavedMessages, getMessages, getGroupMessages, getSavedMessages, subscribeToGroupMessages, unsubscribeFromGroupMessages, isGroupChat, isSavedMessages, sendEditingStatus, sendDeletingStatus, sendUploadingPhotoStatus]);
 
   // Close reaction picker when clicking outside
   useEffect(() => {
@@ -2419,7 +2433,7 @@ const ChatContainer = () => {
       </div>
       {/* Message Input - Only visible on mobile (desktop shows in bottom toolbar) */}
       <div className="lg:hidden flex-shrink-0 mt-auto w-full">
-        <MessageInput />
+        {!isSavedMessages && <MessageInput />}
       </div>
       
       {/* Edit Message Modal */}

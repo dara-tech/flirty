@@ -155,9 +155,13 @@ export const getPendingRequests = async (req, res) => {
       .populate("senderId", "fullname email profilePic")
       .sort({ createdAt: -1 });
 
-    res.status(200).json(requests);
+    res.status(200).json({
+      success: true,
+      message: 'Pending requests retrieved successfully',
+      data: requests
+    });
   } catch (error) {
-    res.status(500).json({ message: "Internal server error" });
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
 

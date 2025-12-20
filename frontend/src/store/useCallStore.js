@@ -38,10 +38,16 @@ export const useCallStore = create((set, get) => ({
   callDuration: 0,
   callStartTime: null,
   durationInterval: null,
+  callTimeoutId: null,
   
   // Reset call state
   resetCallState: () => {
-    const { durationInterval, localStream, peerConnection } = get();
+    const { durationInterval, callTimeoutId, localStream, peerConnection } = get();
+    
+    // Clear any pending call timeout
+    if (callTimeoutId) {
+      clearTimeout(callTimeoutId);
+    }
     
     // Clear interval
     if (durationInterval) {
@@ -97,6 +103,7 @@ export const useCallStore = create((set, get) => ({
       callDuration: 0,
       callStartTime: null,
       durationInterval: null,
+      callTimeoutId: null,
     });
   },
   
@@ -581,10 +588,21 @@ export const useCallStore = create((set, get) => ({
     }
     
     // Find receiver info using normalized ID comparison
-    const receiver = users.find(u => {
+    // First check users (users with conversations), then check allUsers (all users from contacts)
+    let receiver = users.find(u => {
       const uId = normalizeId(u._id);
       return uId === receiverIdStr;
     });
+    
+    // If not found in users, check allUsers (for contacts page)
+    if (!receiver) {
+      const { allUsers } = useChatStore.getState();
+      receiver = allUsers.find(u => {
+        const uId = normalizeId(u._id);
+        return uId === receiverIdStr;
+      });
+    }
+    
     if (!receiver) {
       toast.error("User not found");
       return;
@@ -592,10 +610,10 @@ export const useCallStore = create((set, get) => ({
     
     // Check if user is online
     const { onlineUsers } = useAuthStore.getState();
-    if (!onlineUsers.includes(receiverIdStr)) {
-      toast.error("User is offline");
-      return;
-    }
+    const isOnline = onlineUsers.includes(receiverIdStr);
+    
+    // If user is offline, we'll still allow the call to be initiated
+    // The server will handle queuing the call for when the user comes online
     
     // Generate unique call ID
     const callId = `${authUser._id}_${receiverId}_${Date.now()}`;
@@ -630,14 +648,20 @@ export const useCallStore = create((set, get) => ({
       },
     });
     
-    // Set timeout for no answer
-    setTimeout(() => {
+    // Set timeout for no answer - 60 seconds (like Telegram)
+    const timeoutId = setTimeout(() => {
       const { callState, callId: currentCallId } = get();
       if ((callState === 'calling' || callState === 'ringing') && currentCallId === callId) {
         get().endCall('no-answer');
-        toast.error("No answer. Call cancelled.");
+        // Show timeout message for both online and offline users
+        if (isOnline) {
+          toast.error("No answer. Call cancelled after 60 seconds.");
+        } else {
+          toast.error("User is offline. Call cancelled after 60 seconds.");
+        }
       }
-    }, 60000); // 60 seconds timeout
+    }, 60000); // 60 seconds timeout (like Telegram)
+    set({ callTimeoutId: timeoutId });
   },
   
   // Send call status message to chat
@@ -1012,8 +1036,8 @@ export const useCallStore = create((set, get) => ({
       get().resetCallState();
       
       
-      // Show toast notification
-      toast("Call ended");
+      // Do not show a toast here to avoid duplicate/confusing notifications for offline users
+      // toast("Call ended");
     } catch (error) {
       console.error('❌ Error ending call:', error);
       

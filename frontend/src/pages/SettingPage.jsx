@@ -122,7 +122,7 @@ const SettingsPage = () => {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto hide-scrollbar">
+      <div className="flex-1 overflow-y-auto hide-scrollbar pb-16 lg:pb-20">
         {/* Profile Section */}
         <div className="px-3 sm:px-4 py-4 sm:py-6">
           <div className="flex flex-col items-center gap-3 sm:gap-4">
@@ -390,18 +390,18 @@ const SettingsPage = () => {
             </div>
           </button>
         </div>
-        </div>
+      </div>
 
       {/* Logout Section - Fixed at Bottom */}
       <div className="flex-shrink-0 border-t border-base-200/50 bg-base-100 px-3 sm:px-4 py-4 sm:py-6">
-          <button
-            onClick={logout}
-          className="btn w-full flex items-center justify-center gap-2 rounded-full"
-          style={{ backgroundColor: '#e68b7d', border: 'none', color: 'white' }}
+        <button
+          onClick={logout}
+          className="btn w-full flex items-center justify-center gap-2"
+          style={{ backgroundColor: 'red', border: 'none', color: 'white' }}
         >
           <FaSignOutAlt className="size-4" />
           Logout
-          </button>
+        </button>
       </div>
     </div>
   );

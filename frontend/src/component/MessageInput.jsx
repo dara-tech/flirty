@@ -30,12 +30,18 @@ const MessageInput = () => {
   const recordingTimerRef = useRef(null);
   const emojiPickerRef = useRef(null);
 
-  const { sendMessage, sendGroupMessage, sendTypingStatus, sendUploadingPhotoStatus, sendGroupTypingStatus, sendGroupUploadingPhotoStatus } = useChatStore();
+  const { sendMessage, sendGroupMessage, sendTypingStatus, sendUploadingPhotoStatus, sendGroupTypingStatus, sendGroupUploadingPhotoStatus, selectedSavedMessages } = useChatStore();
   const { selectedUser, selectedGroup } = useChatStore();
   const { authUser } = useAuthStore();
   const socket = useAuthStore.getState().socket;
 
   const isGroupChat = !!selectedGroup;
+  const isSavedMessages = !!selectedSavedMessages;
+  
+  // Don't show input for saved messages (read-only)
+  if (isSavedMessages) {
+    return null;
+  }
 
   // Check if recording is supported on this browser
   useEffect(() => {

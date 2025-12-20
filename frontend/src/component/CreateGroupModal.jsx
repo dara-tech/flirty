@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaTimes, FaUsers, FaImage, FaSpinner } from "react-icons/fa";
+import { FaTimes, FaUsers, FaImage, FaSpinner, FaSearch } from "react-icons/fa";
 import ProfileImage from "./ProfileImage";
 import toast from "react-hot-toast";
 
@@ -12,21 +12,23 @@ const CreateGroupModal = ({ isOpen, onClose }) => {
   const [groupPicPreview, setGroupPicPreview] = useState(null);
   const [selectedMembers, setSelectedMembers] = useState([]);
   const [isCreating, setIsCreating] = useState(false);
-  const { createGroup, contacts, getContacts } = useChatStore();
+  const [searchQuery, setSearchQuery] = useState("");
+  const { createGroup, allUsers, getAllUsers, isAllUsersLoading } = useChatStore();
   const { authUser } = useAuthStore();
 
   useEffect(() => {
     if (isOpen) {
-      // Load contacts when modal opens
-      getContacts();
+      // Load all users when modal opens
+      getAllUsers();
     } else {
       setName("");
       setDescription("");
       setGroupPic(null);
       setGroupPicPreview(null);
       setSelectedMembers([]);
+      setSearchQuery("");
     }
-  }, [isOpen, getContacts]);
+  }, [isOpen, getAllUsers]);
 
   const handleImageChange = (e) => {
     const file = e.target.files?.[0];
@@ -78,13 +80,20 @@ const CreateGroupModal = ({ isOpen, onClose }) => {
 
   if (!isOpen) return null;
 
-  // Only show contacts as available members
-  const availableUsers = contacts.filter((user) => user._id !== authUser._id);
+  // Show all users as available members (excluding current user), filtered by search query
+  const safeAllUsers = Array.isArray(allUsers) ? allUsers : [];
+  const availableUsers = safeAllUsers.filter((user) => {
+    const isNotCurrentUser = user._id !== authUser?._id;
+    const matchesSearch = !searchQuery.trim() || 
+      user.fullname?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      user.email?.toLowerCase().includes(searchQuery.toLowerCase());
+    return isNotCurrentUser && matchesSearch;
+  });
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-base-100 rounded-lg w-full max-w-md max-h-[90vh] overflow-y-auto hide-scrollbar">
-        <div className="sticky top-0 bg-base-100 border-b border-base-200 p-4 flex items-center justify-between">
+      <div className="bg-base-100 rounded-lg w-full max-w-md max-h-[90vh] overflow-hidden flex flex-col shadow-xl">
+        <div className="flex-shrink-0 border-b border-base-200 p-4 flex items-center justify-between">
           <h2 className="text-xl font-semibold">Create New Group</h2>
           <button
             onClick={onClose}
@@ -94,7 +103,8 @@ const CreateGroupModal = ({ isOpen, onClose }) => {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-hidden flex flex-col">
+          <div className="flex-1 overflow-y-auto hide-scrollbar p-4 space-y-4">
           {/* Group Picture */}
           <div className="flex justify-center">
             <label className="cursor-pointer">
@@ -152,15 +162,31 @@ const CreateGroupModal = ({ isOpen, onClose }) => {
             />
           </div>
 
+          {/* Search Bar */}
+          <div className="relative">
+            <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-base-content/40" />
+            <input
+              type="text"
+              placeholder="Search users..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 bg-base-100 rounded-lg text-sm border-2 border-base-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all duration-200 placeholder:text-base-content/40"
+            />
+          </div>
+
           {/* Select Members */}
           <div>
             <label className="label">
               <span className="label-text">Add Members</span>
             </label>
-            <div className="max-h-48 overflow-y-auto hide-scrollbar border border-base-200 rounded-lg p-2 space-y-2">
-              {availableUsers.length === 0 ? (
+            <div className="border border-base-200 rounded-lg p-2 space-y-2 pb-4">
+              {isAllUsersLoading ? (
                 <p className="text-center text-base-content/50 py-4">
-                  No contacts available. Add contacts first to create a group.
+                  Loading users...
+                </p>
+              ) : availableUsers.length === 0 ? (
+                <p className="text-center text-base-content/50 py-4">
+                  {searchQuery ? "No users found" : "No users available."}
                 </p>
               ) : (
                 availableUsers.map((user) => (
@@ -185,9 +211,10 @@ const CreateGroupModal = ({ isOpen, onClose }) => {
               )}
             </div>
           </div>
+          </div>
 
           {/* Actions */}
-          <div className="flex gap-2 pt-4">
+          <div className="flex-shrink-0 border-t border-base-200 p-4 flex gap-2 bg-base-100">
             <button
               type="button"
               onClick={onClose}

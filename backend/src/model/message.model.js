@@ -27,29 +27,40 @@ const messageSchema = new mongoose.Schema({
     type: String,
     // Only require text if there's no image, audio, video, file, or link
     required: function() {
-      return !this.image && !this.audio && !this.video && !this.file && !this.link;
+      const hasImage = Array.isArray(this.image) ? this.image.length > 0 : this.image;
+      const hasAudio = Array.isArray(this.audio) ? this.audio.length > 0 : this.audio;
+      const hasVideo = Array.isArray(this.video) ? this.video.length > 0 : this.video;
+      const hasFile = Array.isArray(this.file) ? this.file.length > 0 : this.file;
+      return !hasImage && !hasAudio && !hasVideo && !hasFile && !this.link;
     }
   },
   image: {
-    type: String,
+    type: [String], // Support multiple images (array)
+    default: undefined,
   },
   audio: {
-    type: String,
+    type: [String], // Support multiple audio files (array)
+    default: undefined,
   },
   video: {
-    type: String, // URL to the video
+    type: [String], // Support multiple videos (array)
+    default: undefined,
   },
   file: {
-    type: String, // URL to the file
+    type: [String], // Support multiple files (array)
+    default: undefined,
   },
   fileName: {
-    type: String, // Original filename
+    type: [String], // Support multiple filenames (array)
+    default: undefined,
   },
   fileSize: {
-    type: Number, // File size in bytes
+    type: [Number], // Support multiple file sizes (array)
+    default: undefined,
   },
   fileType: {
-    type: String, // MIME type
+    type: [String], // Support multiple MIME types (array)
+    default: undefined,
   },
   link: {
     type: String, // URL

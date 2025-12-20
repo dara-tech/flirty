@@ -32,6 +32,8 @@ export const useChatStore = create((set, get) => ({
   isLoadingMoreMessages: false, // Track loading state for pagination
   lastLoadBeforeMessageId: null, // Prevent duplicate pagination requests
   users: [],
+  allUsers: [], // All users for contacts page (separate from users with conversations)
+  isAllUsersLoading: false,
   contacts: [],
   pendingRequests: [],
   isContactsLoading: false,
@@ -39,6 +41,7 @@ export const useChatStore = create((set, get) => ({
   groups: [],
   selectedUser: null,
   selectedGroup: null,
+  selectedSavedMessages: false, // Track if saved messages is selected
   isUsersLoading: false,
   isGroupsLoading: false,
   isMessagesLoading: false,
@@ -252,6 +255,49 @@ export const useChatStore = create((set, get) => ({
     } finally {
       clearTimeout(safetyTimeout);
       set({ isUsersLoading: false });
+    }
+  },
+
+  // Get all users (for contacts page - not just users with conversations)
+  getAllUsers: async () => {
+    const authUser = useAuthStore.getState().authUser;
+    
+    // Don't try to load users if not authenticated
+    if (!authUser) {
+      set({ allUsers: [], isAllUsersLoading: false });
+      return;
+    }
+    
+    set({ isAllUsersLoading: true });
+    
+    try {
+      // Load all users with pagination
+      const usersRes = await axiosInstance.get("/messages/users/all?page=1&limit=200");
+      
+      // Handle 401 errors gracefully
+      if (usersRes.status === 401) {
+        useAuthStore.getState().logout();
+        set({ allUsers: [], isAllUsersLoading: false });
+        return;
+      }
+
+      // Handle standardized response format: { success: true, data: [...], pagination: {...} }
+      let usersData = [];
+      if (usersRes.data) {
+        if (usersRes.data.data && Array.isArray(usersRes.data.data)) {
+          usersData = usersRes.data.data;
+        } else if (Array.isArray(usersRes.data)) {
+          usersData = usersRes.data;
+        }
+      }
+      
+      set({ allUsers: usersData, isAllUsersLoading: false });
+    } catch (error) {
+      console.error("Error loading all users:", error);
+      if (error.response?.status !== 401) {
+        toast.error(error.response?.data?.message || "Failed to load users");
+      }
+      set({ allUsers: [], isAllUsersLoading: false });
     }
   },
 
@@ -595,8 +641,12 @@ export const useChatStore = create((set, get) => ({
         if (xhr.status >= 200 && xhr.status < 300) {
           const serverMessage = JSON.parse(xhr.responseText);
           
-          // Replace optimistic message with server response
+          // Track this message ID FIRST to prevent duplicate from socket (before adding/updating)
+          isDuplicateMessage(serverMessage._id);
+          
+          // Handle message addition/update based on type
           if (isTextOnly) {
+            // Replace optimistic message with server response
             set((state) => ({
               messages: state.messages.map((msg) =>
                 msg._id === tempId ? { ...serverMessage, pending: false } : msg
@@ -606,8 +656,36 @@ export const useChatStore = create((set, get) => ({
                 [userId]: serverMessage,
               },
             }));
-            // Track this message ID to prevent duplicate from socket
+          } else {
+            // For images/files, add the server message to the array (no optimistic update was done)
+            // Track this message ID FIRST to prevent duplicate from socket (before adding)
             isDuplicateMessage(serverMessage._id);
+            
+            set((state) => {
+              // Check if message already exists (from socket or previous add)
+              const messageExists = state.messages.some(msg => msg._id === serverMessage._id);
+              if (messageExists) {
+                // Update existing message
+                return {
+                  messages: state.messages.map(msg =>
+                    msg._id === serverMessage._id ? serverMessage : msg
+                  ),
+                  lastMessages: {
+                    ...state.lastMessages,
+                    [userId]: serverMessage,
+                  },
+                };
+              } else {
+                // Add new message
+                return {
+                  messages: [...state.messages, serverMessage],
+                  lastMessages: {
+                    ...state.lastMessages,
+                    [userId]: serverMessage,
+                  },
+                };
+              }
+            });
           }
           
           set({ uploadProgress: 100 });
@@ -1043,21 +1121,60 @@ export const useChatStore = create((set, get) => ({
         const messageExistsInState = state.messages.some(msg => msg._id === messageId);
         const isDuplicate = isDuplicateMessage(messageId);
         
-        // If I'm the sender, skip adding via socket (we already added via optimistic update or API response)
+        // If I'm the sender, handle message addition/update carefully
         // This prevents duplicate messages when sending
         const iAmSender = senderId === authUserId;
         if (iAmSender) {
-          // Just update lastMessages, don't add to messages array (already handled by sendMessage)
+          // Skip if duplicate (already handled by XHR response)
+          if (isDuplicate || messageExistsInState) {
+            // Just update lastMessages, don't modify messages array
+            const updatedLastMessages = {
+              ...state.lastMessages,
+              [targetIdStr]: newMessage,
+            };
+            return {
+              ...state,
+              lastMessages: updatedLastMessages,
+            };
+          }
+          
+          // Check if this message is for the currently selected chat
+          const currentSelectedUser = state.selectedUser;
+          let isSelectedChat = false;
+          
+          if (currentSelectedUser) {
+            const selectedUserIdNormalized = normalizeId(currentSelectedUser._id);
+            const normalizedReceiverId = normalizeId(receiverIdRaw);
+            isSelectedChat = selectedUserIdNormalized === normalizedReceiverId;
+          }
+          
+          // Replace any temp message with the real one, or add if it doesn't exist and is for selected chat
+          let updatedMessages = state.messages;
+          
+          if (isSelectedChat) {
+            // Try to replace temp message if exists, otherwise add
+            const hasTempMessage = state.messages.some(msg => 
+              msg.tempId && msg.pending && normalizeId(msg.receiverId?._id || msg.receiverId) === receiverId
+            );
+            
+            if (hasTempMessage) {
+              // Replace temp message
+              updatedMessages = state.messages.map(msg => 
+                (msg.tempId && msg.pending && normalizeId(msg.receiverId?._id || msg.receiverId) === receiverId) 
+                  ? newMessage 
+                  : msg
+              );
+            } else {
+              // Add new message (shouldn't happen often, but handle it)
+              updatedMessages = [...state.messages, newMessage];
+            }
+          }
+          
           const updatedLastMessages = {
             ...state.lastMessages,
             [targetIdStr]: newMessage,
           };
-          // Also replace any temp message with the real one
-          const updatedMessages = state.messages.map(msg => 
-            (msg.tempId && msg.pending && normalizeId(msg.receiverId?._id || msg.receiverId) === receiverId) 
-              ? newMessage 
-              : msg
-          );
+          
           return {
             ...state,
             messages: updatedMessages,
@@ -1917,6 +2034,10 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
+  setSelectedSavedMessages: (selected) => {
+    set({ selectedSavedMessages: selected, selectedUser: null, selectedGroup: null });
+  },
+
   setSelectedUser: (selectedUser) => {
     set({ selectedUser, selectedGroup: null });
   },
@@ -1952,9 +2073,36 @@ export const useChatStore = create((set, get) => ({
         axiosInstance.get("/groups/last-messages")
       ]);
 
+      // Handle standardized response format: { success: true, data: [...] }
+      // Also supports old formats for backward compatibility
+      let groupsData = [];
+      if (groupsRes.data) {
+        // New standardized format: { success: true, data: [...] }
+        if (groupsRes.data.data && Array.isArray(groupsRes.data.data)) {
+          groupsData = groupsRes.data.data;
+        }
+        // Direct array format
+        else if (Array.isArray(groupsRes.data)) {
+          groupsData = groupsRes.data;
+        }
+      }
+
+      // Handle standardized response format for last messages
+      let lastMessagesData = [];
+      if (lastMessagesRes.data) {
+        // New standardized format: { success: true, data: [...] }
+        if (lastMessagesRes.data.data && Array.isArray(lastMessagesRes.data.data)) {
+          lastMessagesData = lastMessagesRes.data.data;
+        }
+        // Direct array format
+        else if (Array.isArray(lastMessagesRes.data)) {
+          lastMessagesData = lastMessagesRes.data;
+        }
+      }
+
       const groupLastMessagesMap = {};
       
-      lastMessagesRes.data.forEach(msg => {
+      lastMessagesData.forEach(msg => {
         const groupId = normalizeId(msg.groupId);
         if (groupId) {
           // Store with normalized key for consistency
@@ -1963,7 +2111,7 @@ export const useChatStore = create((set, get) => ({
       });
 
       set({ 
-        groups: groupsRes.data,
+        groups: groupsData,
         groupLastMessages: groupLastMessagesMap
       });
     } catch (error) {
@@ -2486,14 +2634,39 @@ export const useChatStore = create((set, get) => ({
 
   addMembersToGroup: async (groupId, memberIds) => {
     try {
-      const res = await axiosInstance.post(`/groups/${groupId}/members`, { memberIds });
+      // Ensure memberIds is an array of strings
+      const normalizedMemberIds = Array.isArray(memberIds) 
+        ? memberIds.map(id => typeof id === 'string' ? id : id.toString())
+        : [];
+      
+      if (normalizedMemberIds.length === 0) {
+        toast.error("Please select at least one member to add");
+        throw new Error("No members selected");
+      }
+
+      const res = await axiosInstance.post(`/groups/${groupId}/members`, { 
+        memberIds: normalizedMemberIds 
+      });
+      
+      // Handle standardized response format: { success: true, data: {...} }
+      const groupData = res.data?.data || res.data;
+      
       set(state => ({
-        groups: state.groups.map(g => g._id === groupId ? res.data : g)
+        groups: state.groups.map(g => {
+          const normalizedGroupId = typeof g._id === 'string' ? g._id : g._id?.toString();
+          const normalizedTargetId = typeof groupId === 'string' ? groupId : groupId?.toString();
+          return normalizedGroupId === normalizedTargetId ? groupData : g;
+        })
       }));
-      toast.success("Members added successfully");
-      return res.data;
+      
+      toast.success(res.data?.message || "Members added successfully");
+      return groupData;
     } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to add members");
+      const errorMessage = error.response?.data?.error || 
+                          error.response?.data?.message || 
+                          error.message || 
+                          "Failed to add members";
+      toast.error(errorMessage);
       throw error;
     }
   },
@@ -2748,8 +2921,12 @@ const gId = normalizeId(g._id);
         if (xhr.status >= 200 && xhr.status < 300) {
           const serverMessage = JSON.parse(xhr.responseText);
           
-          // Replace optimistic message with server response
+          // Track this message ID FIRST to prevent duplicate from socket (before adding/updating)
+          isDuplicateMessage(serverMessage._id);
+          
+          // Handle message addition/update based on type
           if (isTextOnly) {
+            // Replace optimistic message with server response
             set((state) => ({
               messages: state.messages.map((msg) =>
                 msg._id === tempId ? { ...serverMessage, pending: false } : msg
@@ -2759,8 +2936,33 @@ const gId = normalizeId(g._id);
                 [groupId]: serverMessage,
               },
             }));
-            // Track this message ID to prevent duplicate from socket
-            isDuplicateMessage(serverMessage._id);
+          } else {
+            // For images/files, add the server message to the array (no optimistic update was done)
+            set((state) => {
+              // Check if message already exists (from socket or previous add)
+              const messageExists = state.messages.some(msg => msg._id === serverMessage._id);
+              if (messageExists) {
+                // Update existing message
+                return {
+                  messages: state.messages.map(msg =>
+                    msg._id === serverMessage._id ? serverMessage : msg
+                  ),
+                  groupLastMessages: {
+                    ...state.groupLastMessages,
+                    [groupId]: serverMessage,
+                  },
+                };
+              } else {
+                // Add new message
+                return {
+                  messages: [...state.messages, serverMessage],
+                  groupLastMessages: {
+                    ...state.groupLastMessages,
+                    [groupId]: serverMessage,
+                  },
+                };
+              }
+            });
           }
           
           set({ uploadProgress: 100 });
@@ -3163,7 +3365,7 @@ const gId = normalizeId(g._id);
   },
 
   setSelectedGroup: (selectedGroup) => {
-    set({ selectedGroup, selectedUser: null });
+    set({ selectedGroup, selectedUser: null, selectedSavedMessages: false });
   },
 
   // Contact Request Functions
@@ -3197,12 +3399,22 @@ const gId = normalizeId(g._id);
     set({ isRequestsLoading: true });
     try {
       const res = await axiosInstance.get("/contacts/requests");
-      set({ pendingRequests: res.data });
+      // Handle standardized response format: { success: true, data: [...] }
+      let requestsData = [];
+      if (res.data) {
+        if (res.data.data && Array.isArray(res.data.data)) {
+          requestsData = res.data.data;
+        } else if (Array.isArray(res.data)) {
+          requestsData = res.data; // Backward compatibility
+        }
+      }
+      set({ pendingRequests: requestsData });
     } catch (error) {
       if (error.response?.status !== 401) {
         console.error("Error loading pending requests:", error);
         toast.error(error.response?.data?.message || "Failed to load requests");
       }
+      set({ pendingRequests: [] }); // Set empty array on error
     } finally {
       set({ isRequestsLoading: false });
     }

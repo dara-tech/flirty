@@ -8,12 +8,12 @@ import SettingPage from "./SettingPage";
 import ThemePage from "./ThemePage";
 import GroupInfoContent from "../component/GroupInfoContent";
 import UserInfoContent from "../component/UserInfoContent";
-import RealTimeMap from "../component/RealTimeMap";
+import CallsPage from "./CallsPage";
 import { useSearchParams, useLocation } from "react-router-dom";
 import { FaComment } from "react-icons/fa";
 
 const ChatPage = () => {
-  const { selectedUser, selectedGroup, getUsers, getGroups, setSelectedUser, setSelectedGroup, subscribeToContactRequests, unsubscribeFromContactRequests, subscribeToMessages, unsubscribeFromMessages, subscribeToTyping, unsubscribeFromTyping, subscribeToGroups, unsubscribeFromGroups } = useChatStore();
+  const { selectedUser, selectedGroup, selectedSavedMessages, getUsers, getGroups, setSelectedUser, setSelectedGroup, subscribeToContactRequests, unsubscribeFromContactRequests, subscribeToMessages, unsubscribeFromMessages, subscribeToTyping, unsubscribeFromTyping, subscribeToGroups, unsubscribeFromGroups } = useChatStore();
   const { authUser } = useAuthStore();
   const [searchParams] = useSearchParams();
   const location = useLocation();
@@ -237,24 +237,28 @@ const ChatPage = () => {
       return <SettingPage />;
     } else if (view === 'chats') {
       return <ConversationsListPage />;
-    } else if (view === 'analytics') {
-      return <RealTimeMap />;
+    } else if (view === 'calls') {
+      return <CallsPage />;
     } else {
       return <ContactsPage />;
     }
   };
 
   // Check if user is in an active chat (for conditional bottom spacing on mobile)
-  const isInActiveChat = !!(selectedUser || selectedGroup);
+  const isInActiveChat = !!(selectedUser || selectedGroup || selectedSavedMessages);
 
   return (
-    <div className={`absolute top-0 lg:top-16 left-0 right-0 ${isInActiveChat ? 'bottom-0' : 'h-[calc(100vh-5rem)] bottom-20'} lg:h-[calc(100vh-8rem)] lg:bottom-16 overflow-hidden`}>
+    <div className={`absolute top-0 left-0 right-0 ${
+      isInActiveChat 
+        ? 'bottom-0 lg:bottom-20' // Mobile: no bottom nav when in chat, Desktop: always has toolbar
+        : 'h-[calc(100vh-5rem)] bottom-16 lg:bottom-20' // Mobile: bottom nav visible, Desktop: toolbar visible
+    } overflow-hidden`}>
       <div ref={containerRef} className="h-full flex overflow-hidden bg-base-100">
         {/* Left Panel - Contacts, Chats, or Settings (switched by bottom bar) */}
         {/* Desktop: Always visible on left, full width on mobile when no chat selected */}
         <div 
           className={`
-            ${selectedUser || selectedGroup || showTheme ? 'hidden lg:flex' : 'flex'}
+            ${selectedUser || selectedGroup || selectedSavedMessages || showTheme ? 'hidden lg:flex' : 'flex'}
             flex-shrink-0
             overflow-hidden
             flex-col
@@ -325,7 +329,7 @@ const ChatPage = () => {
                 }
               }} 
             />
-          ) : selectedUser || selectedGroup ? (
+          ) : selectedUser || selectedGroup || selectedSavedMessages ? (
             <ChatContainer />
           ) : (
             // Empty state when no chat selected
@@ -342,7 +346,7 @@ const ChatPage = () => {
         </div>
         
         {/* Mobile: Show chat, theme, or settings when selected (full screen, replaces left panel) */}
-        {selectedUser || selectedGroup ? (
+        {selectedUser || selectedGroup || selectedSavedMessages ? (
           <div className="lg:hidden flex-1 flex flex-col overflow-hidden min-w-0 bg-base-100">
             <ChatContainer />
           </div>

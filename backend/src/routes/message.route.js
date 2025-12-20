@@ -1,11 +1,12 @@
 import express from "express";
 import { protectRoute } from "../middleware/auth.middleware.js";
-import { getLastMessages, getMessages, getUsersForSidebar, sendMessage, editMessage, deleteMessage, updateMessageImage, deleteConversation, getMessagesByType, pinMessage, unpinMessage, addReaction, removeReaction, deleteMessageMedia, markVoiceAsListened, saveMessage, unsaveMessage, getSavedMessages } from "../controllers/message.controller.js";
+import { getLastMessages, getMessages, getUsersForSidebar, getAllUsers, sendMessage, editMessage, deleteMessage, updateMessageImage, deleteConversation, getMessagesByType, pinMessage, unpinMessage, addReaction, removeReaction, deleteMessageMedia, markVoiceAsListened, saveMessage, unsaveMessage, getSavedMessages } from "../controllers/message.controller.js";
 import { messageLimiter, apiLimiter } from "../middleware/rateLimiter.js";
 
 const router = express.Router();
 
 router.get("/users", protectRoute, getUsersForSidebar);
+router.get("/users/all", protectRoute, getAllUsers); // Get all users for contacts page
 router.get("/last-messages", protectRoute, getLastMessages);
 router.get("/by-type/:id", protectRoute, getMessagesByType);
 router.get("/:id", protectRoute, getMessages);

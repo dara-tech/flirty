@@ -3,6 +3,19 @@
 @plugin "daisyui" {
     themes: all;  }
 
+/* Remove default margins and padding for full screen */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+}
+
 /* Safe area support for mobile devices */
 @supports (padding: max(0px)) {
   .safe-area-inset-bottom {
