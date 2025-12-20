@@ -18,32 +18,108 @@ export const getLastMessages = async (req, res) => {
     const skip = (page - 1) * limit; // Calculate skip from page
 
     // Get the last message for each conversation
-    const lastMessages = await Message.aggregate([
-      // Match messages where I'm either sender or receiver
+    // Optimize: Use a more memory-efficient approach
+    // First, get unique conversation partners
+    const conversationPartners = await Message.aggregate([
       {
         $match: {
           $or: [{ senderId: myId }, { receiverId: myId }],
         },
       },
-      // Sort by createdAt descending to get latest messages first
-      { $sort: { createdAt: -1 } },
-      // Group by conversation to get last message
       {
-        $group: {
-          _id: {
+        $project: {
+          partnerId: {
             $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
           },
-          lastMessage: { $first: "$$ROOT" },
-          lastMessageTime: { $first: "$createdAt" },
+          createdAt: 1,
         },
       },
-      // Sort by last message time (most recent conversations first)
+      {
+        $group: {
+          _id: "$partnerId",
+          lastMessageTime: { $max: "$createdAt" },
+        },
+      },
       { $sort: { lastMessageTime: -1 } },
-      // Apply pagination (skip and limit)
       { $skip: skip },
       { $limit: limit },
-      // Replace root with lastMessage
-      { $replaceRoot: { newRoot: "$lastMessage" } },
+    ], { allowDiskUse: true });
+
+    // Get the actual last messages for these conversations
+    const partnerIds = conversationPartners.map(p => p._id);
+    
+    if (partnerIds.length === 0) {
+      return paginatedResponse(
+        res,
+        [],
+        {
+          page,
+          limit,
+          total: 0,
+          totalPages: 0,
+          hasMore: false,
+          skip,
+        },
+        "Messages retrieved successfully"
+      );
+    }
+
+    const lastMessages = await Message.aggregate([
+      {
+        $match: {
+          $or: [
+            { senderId: myId, receiverId: { $in: partnerIds } },
+            { receiverId: myId, senderId: { $in: partnerIds } },
+          ],
+        },
+      },
+      {
+        $project: {
+          partnerId: {
+            $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
+          },
+          senderId: 1,
+          receiverId: 1,
+          text: 1,
+          image: 1,
+          audio: 1,
+          video: 1,
+          file: 1,
+          fileName: 1,
+          fileSize: 1,
+          fileType: 1,
+          link: 1,
+          linkPreview: 1,
+          groupId: 1,
+          forwardedFrom: 1,
+          reactions: 1,
+          seen: 1,
+          seenBy: 1,
+          pinned: 1,
+          pinnedAt: 1,
+          pinnedBy: 1,
+          edited: 1,
+          editedAt: 1,
+          createdAt: 1,
+          updatedAt: 1,
+          _id: 1,
+        },
+      },
+      {
+        $sort: { createdAt: -1 },
+      },
+      {
+        $group: {
+          _id: "$partnerId",
+          lastMessage: { $first: "$$ROOT" },
+        },
+      },
+      {
+        $replaceRoot: { newRoot: "$lastMessage" },
+      },
+      {
+        $sort: { createdAt: -1 },
+      },
       // Populate senderId and receiverId
       {
         $lookup: {
@@ -73,7 +149,7 @@ export const getLastMessages = async (req, res) => {
           preserveNullAndEmptyArrays: true,
         },
       },
-      // Project only necessary user fields
+      // Project only necessary user fields and all message fields
       {
         $project: {
           senderId: {
@@ -88,17 +164,33 @@ export const getLastMessages = async (req, res) => {
             email: "$receiverId.email",
             profilePic: "$receiverId.profilePic",
           },
+          // Include all message fields
           text: 1,
           image: 1,
           audio: 1,
+          video: 1,
           file: 1,
+          fileName: 1,
+          fileSize: 1,
+          fileType: 1,
+          link: 1,
+          linkPreview: 1,
+          groupId: 1,
+          forwardedFrom: 1,
+          reactions: 1,
+          seen: 1,
+          seenBy: 1,
+          pinned: 1,
+          pinnedAt: 1,
+          pinnedBy: 1,
+          edited: 1,
+          editedAt: 1,
           createdAt: 1,
           updatedAt: 1,
-          seen: 1,
           _id: 1,
         },
       },
-    ]);
+    ], { allowDiskUse: true });
 
     // Get total count for pagination info
     const totalCount = await Message.aggregate([
@@ -117,7 +209,7 @@ export const getLastMessages = async (req, res) => {
       {
         $count: "total",
       },
-    ]);
+    ], { allowDiskUse: true });
 
     const total = totalCount[0]?.total || 0;
     const totalPages = Math.ceil(total / limit);
@@ -142,8 +234,13 @@ export const getLastMessages = async (req, res) => {
       requestId: req?.requestId,
       error: error.message,
       stack: error.stack,
+      userId: req?.user?._id,
     });
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Full error in getLastMessages:", error);
+    res.status(500).json({ 
+      error: "Internal server error",
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
@@ -223,7 +320,7 @@ export const getUsersForSidebar = async (req, res) => {
       {
         $count: "total",
       },
-    ]);
+    ], { allowDiskUse: true });
 
     const total = totalCount[0]?.total || 0;
     const totalPages = Math.ceil(total / limit);

@@ -20,7 +20,12 @@ const AudioPlayer = ({ src, isMyMessage = false, onPlay, messageId }) => {
     if (!audio) return;
 
     const updateTime = () => setCurrentTime(audio.currentTime);
-    const updateDuration = () => setDuration(audio.duration);
+    const updateDuration = () => {
+      // Only set duration if it's a valid finite number
+      if (audio.duration && isFinite(audio.duration)) {
+        setDuration(audio.duration);
+      }
+    };
     const handleEnded = () => {
       setIsPlaying(false);
       setCurrentTime(0);
@@ -55,7 +60,7 @@ const AudioPlayer = ({ src, isMyMessage = false, onPlay, messageId }) => {
   };
 
   const formatTime = (seconds) => {
-    if (!seconds || isNaN(seconds)) return "00:00";
+    if (!seconds || isNaN(seconds) || !isFinite(seconds)) return "00:00";
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
@@ -127,7 +132,10 @@ const AudioPlayer = ({ src, isMyMessage = false, onPlay, messageId }) => {
           isMyMessage ? "text-primary-content/85" : "text-base-content/65"
         }`}
       >
-        {isPlaying ? formatTime(currentTime) : formatTime(duration || currentTime)}
+        {isPlaying 
+          ? formatTime(currentTime) 
+          : formatTime(duration && isFinite(duration) ? duration : currentTime)
+        }
       </div>
 
       {/* Hidden audio element */}

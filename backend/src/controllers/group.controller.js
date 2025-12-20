@@ -4,7 +4,7 @@ import User from "../model/user.model.js";
 import ContactRequest from "../model/contactRequest.model.js";
 import { io, getReceiverSocketId } from "../lib/socket.js";
 import mongoose from "mongoose";
-import { normalizeToArray, uploadImage, uploadAudio, uploadVideo, uploadFile } from "./message.controller.js";
+import { normalizeToArray } from "./message.controller.js";
 
 // Helper function to check if users are contacts
 const areContacts = async (userId, memberIds) => {
@@ -445,49 +445,24 @@ export const sendGroupMessage = async (req, res) => {
       return res.status(403).json({ error: "You are not a member of this group" });
     }
 
-    // Upload all files in parallel for better performance
+    // Client already uploaded to OSS, just pass through the URLs/data
     let imageUrls = [];
     let audioUrls = [];
     let videoUrls = [];
     let fileUrls = [];
 
-    try {
-      // Upload all images in parallel
-      if (images.length > 0) {
-        imageUrls = await Promise.all(images.map(img => uploadImage(img).catch(err => {
-          console.error("Error uploading image to Cloudinary:", err);
-          throw new Error(`Failed to upload image: ${err.message}`);
-        })));
-      }
-
-      // Upload all audio files in parallel
-      if (audios.length > 0) {
-        audioUrls = await Promise.all(audios.map(aud => uploadAudio(aud).catch(err => {
-          console.error("Error uploading audio to Cloudinary:", err);
-          throw new Error(`Failed to upload audio: ${err.message}`);
-        })));
-      }
-
-      // Upload all videos in parallel
-      if (videos.length > 0) {
-        videoUrls = await Promise.all(videos.map(vid => uploadVideo(vid).catch(err => {
-          console.error("Error uploading video to Cloudinary:", err);
-          throw new Error(`Failed to upload video: ${err.message}`);
-        })));
-      }
-
-      // Upload all files in parallel
-      if (files.length > 0) {
-        fileUrls = await Promise.all(files.map(f => uploadFile(f).catch(err => {
-          console.error("Error uploading file to Cloudinary:", err);
-          throw new Error(`Failed to upload file: ${err.message}`);
-        })));
-      }
-    } catch (uploadError) {
-      const errorMessage = process.env.NODE_ENV === 'development' 
-        ? uploadError.message || 'Unknown upload error'
-        : "Failed to upload files. Please try again.";
-      return res.status(500).json({ error: errorMessage });
+    // Simply pass through all media URLs (no server-side upload needed)
+    if (images.length > 0) {
+      imageUrls = images;
+    }
+    if (audios.length > 0) {
+      audioUrls = audios;
+    }
+    if (videos.length > 0) {
+      videoUrls = videos;
+    }
+    if (files.length > 0) {
+      fileUrls = files;
     }
 
     // Extract link from text if present
