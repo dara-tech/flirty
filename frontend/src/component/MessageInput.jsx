@@ -1,10 +1,11 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useChatStore } from "../store/useChatStore";
-import { FaImage, FaPaperPlane, FaTimes, FaSpinner, FaPaperclip, FaSmile, FaMicrophone, FaStop } from "react-icons/fa";
 import { useAuthStore } from "../store/useAuthStore";
 import toast from "react-hot-toast";
-import EmojiPicker from "emoji-picker-react";
 import { uploadDataURIToOSS, uploadSingleFileToOSS, uploadMultipleFilesToOSS, dataURItoBlob } from "../lib/ossService";
+import RecordingIndicator from "./MessageInput/RecordingIndicator";
+import { ImagePreview, VideoPreview, AudioPreview, FilePreview, MultipleFilesPreview } from "./MessageInput/MessagePreviews";
+import InputControls from "./MessageInput/InputControls";
 
 const MessageInput = () => {
   const [text, setText] = useState("");
@@ -1104,330 +1105,75 @@ const MessageInput = () => {
     }
   };
 
+  const hasContent = text.trim() || imagePreview || videoPreview || audioPreview || fileData || selectedFiles.length > 0;
+
   return (
     <form onSubmit={handleSubmit} className="px-4 pt-3 border-t border-base-200/50 bg-base-100 lg:relative lg:py-3" style={{ paddingBottom: `calc(0.5rem + env(safe-area-inset-bottom, 0px))` }}>
-      {/* Recording Indicator */}
       {isRecording && (
-        <div className="mb-3 flex items-center gap-3 px-4 py-3 bg-error/10 border border-error/30 rounded-xl">
-          <div className="flex items-center gap-2 flex-1">
-            <div className="size-3 bg-error rounded-full animate-pulse"></div>
-            <span className="text-sm font-medium text-error">
-              Recording... {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="size-8 rounded-full bg-error text-error-content hover:bg-error/90 flex items-center justify-center transition-all"
-            onClick={stopRecording}
-            title="Stop recording"
-          >
-            <FaStop className="size-3.5" />
-          </button>
-        </div>
-      )}
-
-      {/* Image Preview */}
-      {imagePreview && (
-        <div className="mb-3 relative w-fit rounded-xl overflow-hidden group shadow-sm">
-          <img
-            src={imagePreview}
-            alt="Selected"
-            className="w-32 h-32 object-cover rounded-xl"
-          />
-          <button
-            type="button"
-            className="absolute top-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md"
-            onClick={removeImage}
-            title="Remove image"
-          >
-            <FaTimes className="size-3.5 text-base-content" />
-          </button>
-        </div>
-      )}
-
-      {/* Video Preview */}
-      {videoPreview && (
-        <div className="mb-3 relative w-fit rounded-xl overflow-hidden group shadow-sm bg-black">
-          <video
-            src={videoPreview}
-            controls
-            preload="metadata"
-            playsInline
-            className="w-64 h-48 object-contain rounded-xl"
-            onError={(e) => {
-              console.error("Video preview error:", e);
-              toast.error("Failed to load video preview");
-            }}
-          />
-          <button
-            type="button"
-            className="absolute top-2 right-2 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-200 bg-base-100/95 hover:bg-base-100 flex items-center justify-center shadow-md z-10"
-            onClick={removeVideo}
-            title="Remove video"
-          >
-            <FaTimes className="size-3.5 text-base-content" />
-          </button>
-        </div>
-      )}
-
-      {/* Multiple Files Preview */}
-      {selectedFiles.length > 0 && (
-        <div className="mb-3 bg-base-200/50 rounded-xl p-3 border border-base-300/30">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-base-content">
-              {selectedFiles.length} {selectedFiles.length === 1 ? 'file' : 'files'} selected
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedFiles([]);
-                if (fileInputRef.current) fileInputRef.current.value = "";
-              }}
-              className="text-xs text-error hover:text-error/80 transition-colors"
-            >
-              Clear all
-            </button>
-          </div>
-          <div className={`grid gap-2 ${
-            selectedFiles.length === 1 ? 'grid-cols-1' :
-            selectedFiles.length === 2 ? 'grid-cols-2' :
-            selectedFiles.length <= 4 ? 'grid-cols-2 sm:grid-cols-2' :
-            selectedFiles.length <= 6 ? 'grid-cols-3 sm:grid-cols-3' :
-            'grid-cols-3 sm:grid-cols-4'
-          }`}>
-            {selectedFiles.map((fileItem, index) => (
-              <div key={index} className="relative rounded-lg overflow-hidden group shadow-sm bg-base-100 border border-base-300/50">
-                {fileItem.type === 'image' && (
-                  <img
-                    src={fileItem.data}
-                    alt={fileItem.name || `Image ${index + 1}`}
-                    className="w-full h-32 sm:h-40 object-cover"
-                  />
-                )}
-                {fileItem.type === 'video' && (
-                  <video
-                    src={fileItem.preview}
-                    className="w-full h-32 sm:h-40 object-cover bg-black"
-                    controls
-                    preload="metadata"
-                    playsInline
-                    onError={(e) => {
-                      console.error("Video preview error:", e);
-                    }}
-                  />
-                )}
-                {fileItem.type === 'file' && (
-                  <div className="w-full h-32 sm:h-40 bg-base-200 flex flex-col items-center justify-center gap-2">
-                    <FaPaperclip className="size-8 text-base-content/50" />
-                    <span className="text-xs text-base-content/70 px-2 text-center truncate w-full">
-                      {fileItem.name}
-                    </span>
-                  </div>
-                )}
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-all">
-                  <button
-                    type="button"
-                    className="absolute top-1.5 right-1.5 size-7 rounded-full opacity-0 group-hover:opacity-100 transition-all bg-error text-white hover:bg-error/90 flex items-center justify-center shadow-lg z-10"
-                    onClick={() => removeSelectedFile(index)}
-                    title="Remove file"
-                  >
-                    <FaTimes className="size-3.5" />
-                  </button>
-                </div>
-                {fileItem.type === 'file' && (
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent text-white text-xs p-2 truncate">
-                    {fileItem.name}
-                  </div>
-                )}
-                {/* Image number badge */}
-                {fileItem.type === 'image' && selectedFiles.length > 1 && (
-                  <div className="absolute top-1.5 left-1.5 bg-black/60 text-white text-xs px-2 py-0.5 rounded-full font-medium">
-                    {index + 1}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Audio Preview */}
-      {audioPreview && !isRecording && (
-        <div className={`mb-3 relative px-4 py-3 rounded-xl group shadow-sm ${
-          isUploadingMedia ? 'bg-primary/10 border border-primary/30' : 'bg-base-200'
-        }`}>
-          <div className="flex items-center gap-3">
-            {isUploadingMedia ? (
-              <>
-                <div className="loading loading-spinner loading-sm text-primary"></div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-primary">Sending voice message...</p>
-                  <p className="text-xs text-base-content/60">Please wait</p>
-                </div>
-              </>
-            ) : (
-              <>
-            <FaMicrophone className="size-5 text-primary flex-shrink-0" />
-            <audio
-              src={audioPreview}
-              controls
-              className="flex-1 h-8"
-              controlsList="nodownload"
-            />
-            <button
-              type="button"
-              className="size-7 rounded-full hover:bg-base-300 flex items-center justify-center transition-all flex-shrink-0"
-              onClick={removeAudio}
-              title="Remove audio"
-                  disabled={isUploadingMedia}
-            >
-              <FaTimes className="size-3.5 text-base-content" />
-            </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* File Preview */}
-      {filePreview && (
-        <div className="mb-3 relative px-4 py-3 bg-base-200 rounded-xl group shadow-sm">
-          <div className="flex items-center gap-3">
-            <FaPaperclip className="size-5 text-primary flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-base-content truncate">{filePreview.name}</p>
-              <p className="text-xs text-base-content/60">
-                {(filePreview.size / 1024).toFixed(2)} KB
-              </p>
-            </div>
-            <button
-              type="button"
-              className="size-7 rounded-full hover:bg-base-300 flex items-center justify-center transition-all flex-shrink-0"
-              onClick={removeFile}
-              title="Remove file"
-            >
-              <FaTimes className="size-3.5 text-base-content" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="flex items-center gap-2 bg-base-200/90 rounded-2xl px-4 py-3 border border-base-300/30 shadow-inner">
-        <button
-          type="button"
-          className="flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 text-primary disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Attach file"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (fileInputRef.current) {
-              fileInputRef.current.click();
-            }
-          }}
-          disabled={isUploading || isUploadingMedia}
-        >
-          {isUploading ? (
-            <div className="loading loading-spinner loading-xs"></div>
-          ) : (
-            <FaPaperclip className="size-4" />
-          )}
-        </button>
-
-        <input
-          type="text"
-          placeholder="Write a message..."
-          className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50"
-          value={text}
-          onChange={handleTyping}
+        <RecordingIndicator 
+          recordingDuration={recordingDuration} 
+          onStop={stopRecording} 
         />
+      )}
 
-        <input
-          type="file"
-          className="hidden"
-          ref={fileInputRef}
-          onChange={handleFileChange}
-          accept="*/*"
-          multiple={true}
-        />
+      <ImagePreview imagePreview={imagePreview} onRemove={removeImage} />
+      <VideoPreview videoPreview={videoPreview} onRemove={removeVideo} />
+      <MultipleFilesPreview 
+        selectedFiles={selectedFiles}
+        fileInputRef={fileInputRef}
+        onRemoveFile={removeSelectedFile}
+        onClearAll={() => {
+          setSelectedFiles([]);
+          if (fileInputRef.current) fileInputRef.current.value = "";
+        }}
+      />
+      <AudioPreview 
+        audioPreview={audioPreview}
+        isUploadingMedia={isUploadingMedia}
+        isRecording={isRecording}
+        onRemove={removeAudio}
+      />
+      <FilePreview filePreview={filePreview} onRemove={removeFile} />
 
-        <div className="relative">
-          <button
-            type="button"
-            className={`flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 ${
-              showEmojiPicker ? 'bg-primary/20 text-primary' : 'text-primary'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-            title="Emoji"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setShowEmojiPicker(!showEmojiPicker);
-            }}
-            disabled={isUploadingMedia || isUploading}
-          >
-            <FaSmile className="size-4" />
-          </button>
-          
-          {showEmojiPicker && (
-            <div 
-              ref={emojiPickerRef}
-              className="absolute bottom-full right-0 mb-2 z-[100]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <EmojiPicker
-                onEmojiClick={(emojiData) => {
-                  setText((prev) => prev + emojiData.emoji);
-                  setShowEmojiPicker(false);
-                }}
-                theme="dark"
-                width={350}
-                height={400}
-                previewConfig={{
-                  showPreview: false
-                }}
-              />
-            </div>
-          )}
-        </div>
-
-        <button
-          type="button"
-          className={`flex items-center justify-center size-7 rounded-lg hover:bg-base-300/50 active:scale-95 transition-all duration-200 ${
-            isRecording ? 'bg-error text-error-content animate-pulse' : 'text-primary'
-          } disabled:opacity-50 disabled:cursor-not-allowed`}
-          title={
-            !isRecordingSupported 
-              ? "Voice recording not supported" 
-              : isRecording 
-                ? "Stop recording" 
-                : "Voice message"
+      <InputControls
+        text={text}
+        onTextChange={handleTyping}
+        fileInputRef={fileInputRef}
+        onFileClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (fileInputRef.current) {
+            fileInputRef.current.click();
           }
-          disabled={!isRecordingSupported || (isUploading && !isRecording)}
-          onClick={(e) => {
-            e.preventDefault();
-            if (isRecording) {
-              stopRecording();
-            } else {
-              startRecording();
-            }
-          }}
-        >
-          {isRecording ? <FaStop className="size-4" /> : <FaMicrophone className="size-4" />}
-        </button>
-
-        {/* Send Button */}
-        <button
-          type="submit"
-          className={`flex items-center justify-center size-7 rounded-lg transition-all duration-200 ${
-            (!text.trim() && !imagePreview && !videoPreview && !audioPreview && !fileData && selectedFiles.length === 0)
-              ? 'opacity-40 cursor-not-allowed'
-              : 'text-primary hover:bg-base-300/50 active:scale-95'
-          }`}
-          title="Send message"
-          disabled={(!text.trim() && !imagePreview && !videoPreview && !audioPreview && !fileData && selectedFiles.length === 0)}
-        >
-          <FaPaperPlane className="size-4" />
-        </button>
-      </div>
+        }}
+        onFileChange={handleFileChange}
+        isUploading={isUploading}
+        isUploadingMedia={isUploadingMedia}
+        showEmojiPicker={showEmojiPicker}
+        emojiPickerRef={emojiPickerRef}
+        onEmojiToggle={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowEmojiPicker(!showEmojiPicker);
+        }}
+        onEmojiSelect={(emojiData) => {
+          setText((prev) => prev + emojiData.emoji);
+          setShowEmojiPicker(false);
+        }}
+        isRecording={isRecording}
+        isRecordingSupported={isRecordingSupported}
+        onRecordClick={(e) => {
+          e.preventDefault();
+          if (isRecording) {
+            stopRecording();
+          } else {
+            startRecording();
+          }
+        }}
+        hasContent={hasContent}
+        onSubmit={handleSubmit}
+        disabled={false}
+      />
     </form>
   );
 };

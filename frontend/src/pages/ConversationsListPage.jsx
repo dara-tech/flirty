@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
@@ -53,34 +53,101 @@ const ConversationsListPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [showCreateGroup, setShowCreateGroup] = useState(false);
+  
+  // Debounce search query to avoid filtering on every keystroke
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 300); // 300ms debounce
+    
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
   
   // Determine active tab from URL or default to "chats"
   const view = searchParams.get('view') || 'chats';
   const activeTab = view === 'contacts' ? 'contacts' : (view === 'groups' ? 'groups' : 'chats');
   
-  // Load all users when contacts tab is active
-  useEffect(() => {
-    if (activeTab === "contacts" && authUser) {
-      getAllUsers();
-    }
-  }, [activeTab, authUser, getAllUsers]);
   const longPressTimer = useRef(null);
   const longPressGroupTimer = useRef(null);
   const [conversationToDelete, setConversationToDelete] = useState(null);
   const [groupToDelete, setGroupToDelete] = useState(null);
+  const loadedTabsRef = useRef(new Set()); // Track which tabs have been loaded (use ref to avoid re-renders)
+  const loadingTabsRef = useRef(new Set()); // Track which tabs are currently loading
+  const abortControllerRef = useRef(null); // For request cancellation
 
+  // Load data only for the active tab (lazy loading)
   useEffect(() => {
     // Only load data if user is authenticated
     if (!authUser) return;
     
-    // Get contacts and users (users loads lastMessages needed for conversations list)
-    getContacts();
-    getUsers(); // This loads lastMessages which is needed to show conversations
-    getGroups();
+    // Cancel previous request if switching tabs
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
     
-    // Clear unread counts when viewing chats page
-    // This will be handled by individual chat selection, but we can also clear all here
+    // Create new abort controller for this request
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    
+    // Check if this tab has already been loaded
+    if (loadedTabsRef.current.has(activeTab)) {
+      return; // Already loaded, don't reload
+    }
+    
+    // Check if this tab is currently loading
+    if (loadingTabsRef.current.has(activeTab)) {
+      return; // Already loading, don't start another load
+    }
+    
+    // Mark as loading immediately to prevent duplicate calls
+    loadingTabsRef.current.add(activeTab);
+    
+    // Load data based on active tab
+    const loadTabData = async () => {
+      try {
+        if (activeTab === "chats") {
+          // Load chats tab data - only load getUsers (which loads 2 endpoints)
+          // getContacts() is loaded lazily when user actually needs it (e.g., when viewing contact requests)
+          await getUsers(); // This loads lastMessages which is needed to show conversations
+        } else if (activeTab === "groups") {
+          // Load groups tab data
+          await getGroups();
+        } else if (activeTab === "contacts") {
+          // Load contacts tab data
+          await getAllUsers();
+        }
+        
+        // Only mark as loaded if request wasn't aborted
+        if (!abortController.signal.aborted) {
+          loadedTabsRef.current.add(activeTab);
+        }
+      } catch (error) {
+        // Ignore abort errors
+        if (error.name === 'AbortError' || abortController.signal.aborted) {
+          return;
+        }
+        // On error, remove from loading so it can be retried
+        loadingTabsRef.current.delete(activeTab);
+        console.error(`Error loading ${activeTab} tab:`, error);
+      } finally {
+        // Remove from loading set if not aborted
+        if (!abortController.signal.aborted) {
+          loadingTabsRef.current.delete(activeTab);
+        }
+      }
+    };
+    
+    loadTabData();
+    
+    // Cleanup: cancel request if component unmounts or tab changes
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
     
     // Cleanup long press timers on unmount
     return () => {
@@ -91,7 +158,8 @@ const ConversationsListPage = () => {
         clearTimeout(longPressGroupTimer.current);
       }
     };
-  }, [authUser, getContacts, getUsers, getGroups]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, authUser]); // Only depend on activeTab and authUser to prevent unnecessary re-runs
 
   // Helper function to normalize IDs for consistent comparison
   const normalizeId = (id) => {
@@ -102,13 +170,22 @@ const ConversationsListPage = () => {
   };
 
   // Ensure we have valid data structures (before using them)
-  const safeLastMessages = lastMessages && typeof lastMessages === 'object' ? lastMessages : {};
-  const safeUsers = Array.isArray(users) ? users : [];
-  const safeGroups = Array.isArray(groups) ? groups : [];
+  const safeLastMessages = useMemo(() => 
+    lastMessages && typeof lastMessages === 'object' ? lastMessages : {}, 
+    [lastMessages]
+  );
+  const safeUsers = useMemo(() => 
+    Array.isArray(users) ? users : [], 
+    [users]
+  );
+  const safeGroups = useMemo(() => 
+    Array.isArray(groups) ? groups : [], 
+    [groups]
+  );
 
-  // Build conversations list from lastMessages - this is the source of truth
+  // Build conversations list from lastMessages - memoized for performance
   // Extract user info from messages if not found in users array
-  const usersWithMessages = Object.keys(safeLastMessages)
+  const usersWithMessages = useMemo(() => Object.keys(safeLastMessages)
     .map((targetId) => {
       try {
         const targetIdNormalized = normalizeId(targetId);
@@ -164,39 +241,55 @@ const ConversationsListPage = () => {
         return null;
       }
     })
-    .filter(Boolean); // Remove null entries
+    .filter(Boolean), // Remove null entries
+    [safeLastMessages, safeUsers, authUser, normalizeId]
+  );
 
-  // Sort conversations by most recent message first
-  const sortedConversations = [...usersWithMessages].sort((a, b) => {
-    if (!a.lastMessage && !b.lastMessage) return 0;
-    if (!a.lastMessage) return 1;
-    if (!b.lastMessage) return -1;
-    
-    const aDate = new Date(a.lastMessage.createdAt);
-    const bDate = new Date(b.lastMessage.createdAt);
-    return bDate - aDate;
-  });
+  // Sort conversations by most recent message first - memoized
+  const sortedConversations = useMemo(() => {
+    return [...usersWithMessages].sort((a, b) => {
+      if (!a.lastMessage && !b.lastMessage) return 0;
+      if (!a.lastMessage) return 1;
+      if (!b.lastMessage) return -1;
+      
+      const aDate = new Date(a.lastMessage.createdAt);
+      const bDate = new Date(b.lastMessage.createdAt);
+      return bDate - aDate;
+    });
+  }, [usersWithMessages]);
 
-  // Filter conversations based on search query
-  const filteredConversations = sortedConversations.filter((conv) => {
-    const matchesSearch = conv.user.fullname.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch;
-  });
+  // Filter conversations based on debounced search query - memoized
+  const filteredConversations = useMemo(() => {
+    if (!debouncedSearchQuery.trim()) {
+      return sortedConversations;
+    }
+    const searchLower = debouncedSearchQuery.toLowerCase();
+    return sortedConversations.filter((conv) => {
+      return conv.user.fullname.toLowerCase().includes(searchLower);
+    });
+  }, [sortedConversations, debouncedSearchQuery]);
 
-  // Filter groups based on search query
-  const filteredGroups = safeGroups.filter((group) => {
-    return group.name.toLowerCase().includes(searchQuery.toLowerCase());
-  });
+  // Filter groups based on debounced search query - memoized
+  const filteredGroups = useMemo(() => {
+    if (!debouncedSearchQuery.trim()) {
+      return safeGroups;
+    }
+    const searchLower = debouncedSearchQuery.toLowerCase();
+    return safeGroups.filter((group) => {
+      return group.name.toLowerCase().includes(searchLower);
+    });
+  }, [safeGroups, debouncedSearchQuery]);
 
-  const handleUserSelect = (user) => {
+  // Memoize handlers to prevent unnecessary re-renders
+  const handleUserSelect = useCallback((user) => {
     setSelectedUser(user);
     // ChatPage will show the chat on the right side
-  };
+  }, [setSelectedUser]);
 
-  const handleGroupSelect = (group) => {
+  const handleGroupSelect = useCallback((group) => {
     setSelectedGroup(group);
     // ChatPage will show the chat on the right side
-  };
+  }, [setSelectedGroup]);
 
   const handleLongPressStart = (user) => {
     longPressTimer.current = setTimeout(() => {

@@ -9,6 +9,11 @@ import mongoose from "mongoose";
 
 export const getLastMessages = async (req, res) => {
   try {
+    // Validate user authentication
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
     const myId = new mongoose.Types.ObjectId(req.user._id);
 
     // Get pagination parameters (Telegram-style: page-based)
@@ -17,36 +22,86 @@ export const getLastMessages = async (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
     const skip = (page - 1) * limit; // Calculate skip from page
 
-    // Get the last message for each conversation
-    // Optimize: Use a more memory-efficient approach
-    // First, get unique conversation partners
-    const conversationPartners = await Message.aggregate([
-      {
-        $match: {
-          $or: [{ senderId: myId }, { receiverId: myId }],
-        },
-      },
-      {
-        $project: {
-          partnerId: {
-            $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
-          },
-          createdAt: 1,
-        },
-      },
-      {
-        $group: {
-          _id: "$partnerId",
-          lastMessageTime: { $max: "$createdAt" },
-        },
-      },
-      { $sort: { lastMessageTime: -1 } },
-      { $skip: skip },
-      { $limit: limit },
-    ], { allowDiskUse: true });
+    // Optimized: Get unique partners efficiently, then fetch last messages in batches
+    // Limit to recent messages to reduce dataset size - reduced date range for faster queries
+    const dateLimit = new Date();
+    dateLimit.setMonth(dateLimit.getMonth() - 3); // Last 3 months (reduced from 6 for faster initial load)
 
-    // Get the actual last messages for these conversations
-    const partnerIds = conversationPartners.map(p => p._id);
+    // For first page, use a much smaller sample to find partners quickly
+    // For subsequent pages, we can use more messages since we already know the total
+    const isFirstPage = page === 1;
+    const messagesNeeded = isFirstPage 
+      ? Math.min(limit * 3, 200) // First page: only 200 messages max (very fast, avoids sort memory issues)
+      : Math.min(limit * 2, 500); // Later pages: reduced from 1000 to 500
+    
+    // Split into two queries to avoid complex $or sort operations
+    // Query 1: Messages where I'm the sender
+    const sentMessages = await Message.find({
+      senderId: myId,
+      receiverId: { $exists: true },
+      createdAt: { $gte: dateLimit },
+      groupId: { $exists: false },
+    })
+      .select("senderId receiverId createdAt")
+      .sort({ createdAt: -1 })
+      .limit(Math.ceil(messagesNeeded / 2))
+      .maxTimeMS(2000)
+      .lean();
+    
+    // Query 2: Messages where I'm the receiver
+    const receivedMessages = await Message.find({
+      receiverId: myId,
+      senderId: { $exists: true },
+      createdAt: { $gte: dateLimit },
+      groupId: { $exists: false },
+    })
+      .select("senderId receiverId createdAt")
+      .sort({ createdAt: -1 })
+      .limit(Math.ceil(messagesNeeded / 2))
+      .maxTimeMS(2000)
+      .lean();
+    
+    // Combine and sort in JavaScript (much faster than MongoDB sort on large datasets)
+    const recentMessages = [...sentMessages, ...receivedMessages]
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, messagesNeeded);
+
+    // Extract unique partners with their last message time
+    const partnerMap = new Map();
+    for (const msg of recentMessages) {
+      // Skip group messages (they don't have receiverId)
+      if (!msg.senderId || !msg.receiverId) {
+        continue;
+      }
+      
+      // Handle both ObjectId and string formats
+      const senderIdStr = msg.senderId?.toString ? msg.senderId.toString() : String(msg.senderId);
+      const receiverIdStr = msg.receiverId?.toString ? msg.receiverId.toString() : String(msg.receiverId);
+      const myIdStr = myId.toString();
+      
+      // Determine partner ID (the other user in the conversation)
+      const partnerId = senderIdStr === myIdStr ? receiverIdStr : senderIdStr;
+      
+      // Skip if partnerId is invalid
+      if (!partnerId || partnerId === myIdStr) {
+        continue;
+      }
+      
+      if (!partnerMap.has(partnerId) || new Date(msg.createdAt) > new Date(partnerMap.get(partnerId).lastMessageTime)) {
+        partnerMap.set(partnerId, {
+          partnerId: partnerId,
+          lastMessageTime: msg.createdAt,
+        });
+      }
+    }
+
+    // Convert to array and sort by last message time
+    const allPartners = Array.from(partnerMap.values())
+      .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
+    
+    const total = allPartners.length;
+    const conversationPartners = allPartners.slice(skip, skip + limit);
+    const partnerIds = conversationPartners.map(p => new mongoose.Types.ObjectId(p.partnerId));
     
     if (partnerIds.length === 0) {
       return paginatedResponse(
@@ -55,163 +110,99 @@ export const getLastMessages = async (req, res) => {
         {
           page,
           limit,
-          total: 0,
-          totalPages: 0,
-          hasMore: false,
+          total,
+          totalPages: Math.ceil(total / limit),
+          hasMore: skip + limit < total,
           skip,
         },
         "Messages retrieved successfully"
       );
     }
 
-    const lastMessages = await Message.aggregate([
-      {
-        $match: {
-          $or: [
-            { senderId: myId, receiverId: { $in: partnerIds } },
-            { receiverId: myId, senderId: { $in: partnerIds } },
-          ],
-        },
-      },
-      {
-        $project: {
-          partnerId: {
-            $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
-          },
-          senderId: 1,
-          receiverId: 1,
-          text: 1,
-          image: 1,
-          audio: 1,
-          video: 1,
-          file: 1,
-          fileName: 1,
-          fileSize: 1,
-          fileType: 1,
-          link: 1,
-          linkPreview: 1,
-          groupId: 1,
-          forwardedFrom: 1,
-          reactions: 1,
-          seen: 1,
-          seenBy: 1,
-          pinned: 1,
-          pinnedAt: 1,
-          pinnedBy: 1,
-          edited: 1,
-          editedAt: 1,
-          createdAt: 1,
-          updatedAt: 1,
-          _id: 1,
-        },
-      },
-      {
-        $sort: { createdAt: -1 },
-      },
-      {
-        $group: {
-          _id: "$partnerId",
-          lastMessage: { $first: "$$ROOT" },
-        },
-      },
-      {
-        $replaceRoot: { newRoot: "$lastMessage" },
-      },
-      {
-        $sort: { createdAt: -1 },
-      },
-      // Populate senderId and receiverId
-      {
-        $lookup: {
-          from: "users",
-          localField: "senderId",
-          foreignField: "_id",
-          as: "senderId",
-        },
-      },
-      {
-        $unwind: {
-          path: "$senderId",
-          preserveNullAndEmptyArrays: true,
-        },
-      },
-      {
-        $lookup: {
-          from: "users",
-          localField: "receiverId",
-          foreignField: "_id",
-          as: "receiverId",
-        },
-      },
-      {
-        $unwind: {
-          path: "$receiverId",
-          preserveNullAndEmptyArrays: true,
-        },
-      },
-      // Project only necessary user fields and all message fields
-      {
-        $project: {
-          senderId: {
-            _id: "$senderId._id",
-            fullname: "$senderId.fullname",
-            email: "$senderId.email",
-            profilePic: "$senderId.profilePic",
-          },
-          receiverId: {
-            _id: "$receiverId._id",
-            fullname: "$receiverId.fullname",
-            email: "$receiverId.email",
-            profilePic: "$receiverId.profilePic",
-          },
-          // Include all message fields
-          text: 1,
-          image: 1,
-          audio: 1,
-          video: 1,
-          file: 1,
-          fileName: 1,
-          fileSize: 1,
-          fileType: 1,
-          link: 1,
-          linkPreview: 1,
-          groupId: 1,
-          forwardedFrom: 1,
-          reactions: 1,
-          seen: 1,
-          seenBy: 1,
-          pinned: 1,
-          pinnedAt: 1,
-          pinnedBy: 1,
-          edited: 1,
-          editedAt: 1,
-          createdAt: 1,
-          updatedAt: 1,
-          _id: 1,
-        },
-      },
-    ], { allowDiskUse: true });
+    // Optimized: Fetch last message for each partner individually (more reliable than $or with $in)
+    // This avoids complex sort operations that can exceed memory limits
+    // Use Promise.all for parallel queries but limit concurrency
+    const allLastMessages = [];
+    const batchSize = 10; // Process partners in batches to avoid overwhelming the database
+    
+    for (let i = 0; i < partnerIds.length; i += batchSize) {
+      const batch = partnerIds.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (partnerId) => {
+        try {
+          const message = await Message.findOne({
+            $or: [
+              { senderId: myId, receiverId: partnerId },
+              { receiverId: myId, senderId: partnerId },
+            ],
+            groupId: { $exists: false },
+          })
+            .sort({ createdAt: -1 })
+            .populate("senderId", "fullname profilePic email")
+            .populate("receiverId", "fullname profilePic email")
+            .maxTimeMS(2000) // 2 second timeout per query
+            .lean();
+          return message;
+        } catch (error) {
+          logger.warn("Error fetching last message for partner", { partnerId, error: error.message });
+          return null;
+        }
+      });
+      
+      const batchResults = await Promise.all(batchPromises);
+      allLastMessages.push(...batchResults.filter(Boolean));
+    }
 
-    // Get total count for pagination info
-    const totalCount = await Message.aggregate([
-      {
-        $match: {
-          $or: [{ senderId: myId }, { receiverId: myId }],
-        },
-      },
-      {
-        $group: {
-          _id: {
-            $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
-          },
-        },
-      },
-      {
-        $count: "total",
-      },
-    ], { allowDiskUse: true });
+    // Group by partner and get the most recent message for each
+    const messagesByPartner = new Map();
+    const myIdStr = myId.toString();
+    
+    for (const msg of allLastMessages) {
+      // Skip group messages (they don't have receiverId)
+      if (!msg.senderId || !msg.receiverId) {
+        continue;
+      }
+      
+      // Handle populated objects (with _id) and ObjectIds/strings
+      const getSenderId = () => {
+        if (msg.senderId?._id) return msg.senderId._id.toString();
+        if (msg.senderId?.toString) return msg.senderId.toString();
+        return String(msg.senderId);
+      };
+      
+      const getReceiverId = () => {
+        if (msg.receiverId?._id) return msg.receiverId._id.toString();
+        if (msg.receiverId?.toString) return msg.receiverId.toString();
+        return String(msg.receiverId);
+      };
+      
+      const senderIdStr = getSenderId();
+      const receiverIdStr = getReceiverId();
+      
+      // Determine partner ID (the other user in the conversation)
+      const partnerId = senderIdStr === myIdStr ? receiverIdStr : senderIdStr;
+      
+      // Skip if partnerId is invalid
+      if (!partnerId || partnerId === myIdStr) {
+        continue;
+      }
+      
+      if (!messagesByPartner.has(partnerId)) {
+        messagesByPartner.set(partnerId, msg);
+      } else {
+        const existing = messagesByPartner.get(partnerId);
+        if (new Date(msg.createdAt) > new Date(existing.createdAt)) {
+          messagesByPartner.set(partnerId, msg);
+        }
+      }
+    }
 
-    const total = totalCount[0]?.total || 0;
+    // Get messages in the order of conversationPartners
+    const lastMessages = partnerIds
+      .map(id => {
+        const idStr = id.toString();
+        return messagesByPartner.get(idStr);
+      })
+      .filter(msg => msg !== undefined);
     const totalPages = Math.ceil(total / limit);
     const hasMore = page < totalPages;
 
@@ -254,75 +245,65 @@ export const getUsersForSidebar = async (req, res) => {
     const limit = parseInt(req.query.limit) || 100; // Default 100 users per page
     const skip = (page - 1) * limit;
 
-    // Only get users who have conversations with the current user
-    // This is much more efficient than loading all users
-    const usersWithConversations = await Message.aggregate([
-      {
-        $match: {
-          $or: [{ senderId: myId }, { receiverId: myId }],
-        },
-      },
-      {
-        $project: {
-          otherUserId: {
-            $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
-          },
-        },
-      },
-      {
-        $group: {
-          _id: "$otherUserId",
-        },
-      },
-      {
-        $lookup: {
-          from: "users",
-          localField: "_id",
-          foreignField: "_id",
-          as: "user",
-        },
-      },
-      {
-        $unwind: "$user",
-      },
-      {
-        $project: {
-          _id: "$user._id",
-          fullname: "$user.fullname",
-          email: "$user.email",
-          profilePic: "$user.profilePic",
-        },
-      },
-      // Apply pagination
-      { $skip: skip },
-      { $limit: limit },
-    ]);
+    // Optimized: Use the same approach as getLastMessages - faster than aggregation
+    // Limit to recent messages to reduce dataset size
+    // Reduced date range for faster queries
+    const dateLimitUsers = new Date();
+    dateLimitUsers.setMonth(dateLimitUsers.getMonth() - 3); // Last 3 months (reduced from 6)
 
-    // Get total count
-    const totalCount = await Message.aggregate([
-      {
-        $match: {
-          $or: [{ senderId: myId }, { receiverId: myId }],
-        },
-      },
-      {
-        $project: {
-          otherUserId: {
-            $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
-          },
-        },
-      },
-      {
-        $group: {
-          _id: "$otherUserId",
-        },
-      },
-      {
-        $count: "total",
-      },
-    ], { allowDiskUse: true });
+    // Get unique partners from recent messages (much faster than aggregation)
+    // Reduced limit for faster queries - only need enough to find unique partners
+    
+    const recentMessages = await Message.find({
+      $or: [{ senderId: myId }, { receiverId: myId }],
+      createdAt: { $gte: dateLimitUsers },
+      groupId: { $exists: false }, // Only direct messages
+    })
+      .select("senderId receiverId")
+      .limit(1000) // Reduced from 2000 to 1000 for faster queries
+      .maxTimeMS(3000) // Reduced timeout to 3 seconds
+      .lean();
 
-    const total = totalCount[0]?.total || 0;
+    // Extract unique partner IDs in JavaScript (faster than aggregation)
+    const partnerIdsSet = new Set();
+    const myIdStr = myId.toString();
+    
+    for (const msg of recentMessages) {
+      if (!msg.senderId || !msg.receiverId) continue;
+      
+      const senderIdStr = msg.senderId?.toString ? msg.senderId.toString() : String(msg.senderId);
+      const receiverIdStr = msg.receiverId?.toString ? msg.receiverId.toString() : String(msg.receiverId);
+      
+      const partnerId = senderIdStr === myIdStr ? receiverIdStr : senderIdStr;
+      if (partnerId && partnerId !== myIdStr) {
+        partnerIdsSet.add(partnerId);
+      }
+    }
+
+    const totalUsers = partnerIdsSet.size;
+    const partnerIdsArray = Array.from(partnerIdsSet);
+    
+    // Apply pagination
+    const paginatedPartnerIds = partnerIdsArray.slice(skip, skip + limit);
+    const partnerObjectIds = paginatedPartnerIds.map(id => new mongoose.Types.ObjectId(id));
+
+    // Fetch user data for paginated partners
+    let usersWithConversations = [];
+    if (partnerObjectIds.length > 0) {
+      usersWithConversations = await User.find({
+        _id: { $in: partnerObjectIds }
+      })
+        .select("fullname email profilePic")
+        .lean();
+      
+      // Sort by order in paginatedPartnerIds to maintain order
+      const userMap = new Map(usersWithConversations.map(u => [u._id.toString(), u]));
+      usersWithConversations = paginatedPartnerIds
+        .map(id => userMap.get(id))
+        .filter(Boolean); // Remove any missing users
+    }
+
+    const total = totalUsers;
     const totalPages = Math.ceil(total / limit);
     const hasMore = page < totalPages;
 
@@ -400,8 +381,13 @@ export const getMessages = async (req, res) => {
     const myId = req.user._id;
 
     // Pagination parameters (Telegram-style: newest first, load last N messages)
-    const limit = parseInt(req.query.limit) || 50; // Default: last 50 messages
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100); // Cap at 100 to prevent large queries
     const before = req.query.before; // Message ID to load messages before (for pagination)
+
+    // Validate userToChatId
+    if (!userToChatId || !mongoose.Types.ObjectId.isValid(userToChatId)) {
+      return res.status(400).json({ error: "Invalid user ID" });
+    }
 
     // Use ObjectId for proper comparison
     const myObjectId = new mongoose.Types.ObjectId(myId);
@@ -418,20 +404,25 @@ export const getMessages = async (req, res) => {
     // If 'before' is provided, load messages older than that message
     if (before) {
       try {
-        const beforeMessage = await Message.findById(before);
-        if (beforeMessage) {
-          query.createdAt = { $lt: beforeMessage.createdAt };
+        if (mongoose.Types.ObjectId.isValid(before)) {
+          const beforeMessage = await Message.findById(before).select("createdAt").lean();
+          if (beforeMessage) {
+            query.createdAt = { $lt: beforeMessage.createdAt };
+          }
         }
       } catch (e) {
         // Invalid before ID, ignore
+        logger.warn("Invalid before message ID", { before, error: e.message });
       }
     }
 
-    // Sort descending (newest first) and limit
+    // Sort descending (newest first) and limit with timeout protection
+    // Add maxTimeMS to prevent queries from hanging
     const messages = await Message.find(query)
       .populate("reactions.userId", "fullname profilePic")
       .sort({ createdAt: -1 }) // Newest first (Telegram-style)
       .limit(limit)
+      .maxTimeMS(10000) // 10 second timeout
       .lean(); // Use lean() for read-only queries (faster)
 
     // Check if there are more messages before reversing
@@ -446,7 +437,20 @@ export const getMessages = async (req, res) => {
       hasMore: hasMore, // If we got full limit, there might be more
     });
   } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
+    logger.error("Error in getMessages", {
+      requestId: req?.requestId,
+      error: error.message,
+      stack: error.stack,
+      userId: req.user?._id?.toString(),
+      userToChatId: req.params?.id,
+    });
+    
+    // Return more detailed error in development
+    const errorMessage =
+      process.env.NODE_ENV === "development"
+        ? `Internal server error: ${error.message || "Unknown error"}`
+        : "Internal server error";
+    res.status(500).json({ error: errorMessage });
   }
 };
 
@@ -520,13 +524,19 @@ export const sendMessage = async (req, res) => {
     const fileSizes = normalizeToArray(fileSize);
     const fileTypes = normalizeToArray(fileType);
 
-    // Log for debugging multiple images
-    if (images.length > 1) {
-      logger.info("Multiple images received", {
+    // Log for debugging multiple files
+    if (images.length > 1 || videos.length > 1 || files.length > 1) {
+      logger.info("Multiple files received", {
         requestId: req?.requestId,
         imageCount: images.length,
-        isArray: Array.isArray(image),
-        firstImagePreview: images[0]?.substring(0, 50) + "...",
+        videoCount: videos.length,
+        fileCount: files.length,
+        isImageArray: Array.isArray(image),
+        isVideoArray: Array.isArray(video),
+        isFileArray: Array.isArray(file),
+        imageUrls: images.length > 0 ? images.map((img, idx) => `[${idx}]: ${typeof img === 'string' ? img.substring(0, 50) + '...' : 'non-string'}`) : [],
+        videoUrls: videos.length > 0 ? videos.map((vid, idx) => `[${idx}]: ${typeof vid === 'string' ? vid.substring(0, 50) + '...' : 'non-string'}`) : [],
+        fileUrls: files.length > 0 ? files.map((f, idx) => `[${idx}]: ${typeof f === 'string' ? f.substring(0, 50) + '...' : 'non-string'}`) : [],
       });
     }
 
@@ -634,7 +644,31 @@ export const sendMessage = async (req, res) => {
       forwardedFrom: forwardedFromData,
     });
 
+    // Log what we're saving for debugging
+    if (imageUrls.length > 1 || videoUrls.length > 1 || fileUrls.length > 1) {
+      logger.info("Saving message with multiple files", {
+        requestId: req?.requestId,
+        imageCount: imageUrls.length,
+        videoCount: videoUrls.length,
+        fileCount: fileUrls.length,
+        imageArray: Array.isArray(newMessage.image),
+        videoArray: Array.isArray(newMessage.video),
+        fileArray: Array.isArray(newMessage.file),
+      });
+    }
+
     await newMessage.save();
+    
+    // Log what was actually saved
+    if (imageUrls.length > 1 || videoUrls.length > 1 || fileUrls.length > 1) {
+      logger.info("Message saved with files", {
+        requestId: req?.requestId,
+        messageId: newMessage._id,
+        savedImageCount: Array.isArray(newMessage.image) ? newMessage.image.length : (newMessage.image ? 1 : 0),
+        savedVideoCount: Array.isArray(newMessage.video) ? newMessage.video.length : (newMessage.video ? 1 : 0),
+        savedFileCount: Array.isArray(newMessage.file) ? newMessage.file.length : (newMessage.file ? 1 : 0),
+      });
+    }
     await newMessage.populate("senderId", "fullname profilePic");
     await newMessage.populate("receiverId", "fullname profilePic");
 

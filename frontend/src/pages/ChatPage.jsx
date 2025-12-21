@@ -135,16 +135,11 @@ const ChatPage = () => {
     // Only load data if user is authenticated
     if (!authUser) return;
     
-    // Load users and groups when chat page loads or when authUser changes
-    getUsers();
-    getGroups();
-    // Subscribe to contact request updates for real-time notifications
+    // Don't load users/groups here - let ConversationsListPage handle it based on active tab
+    // Only subscribe to real-time events (these don't load data, just listen for updates)
     subscribeToContactRequests();
-    // Subscribe to messages for real-time updates (including first messages)
     subscribeToMessages();
-    // Subscribe to typing/editing/deleting/uploading indicators
     subscribeToTyping();
-    // Subscribe to group events (creation, deletion, etc.)
     subscribeToGroups();
     
     return () => {
@@ -153,7 +148,7 @@ const ChatPage = () => {
       unsubscribeFromTyping();
       unsubscribeFromGroups();
     };
-  }, [authUser, getUsers, getGroups, subscribeToContactRequests, unsubscribeFromContactRequests, subscribeToMessages, unsubscribeFromMessages, subscribeToTyping, unsubscribeFromTyping, subscribeToGroups, unsubscribeFromGroups]);
+  }, [authUser, subscribeToContactRequests, unsubscribeFromContactRequests, subscribeToMessages, unsubscribeFromMessages, subscribeToTyping, unsubscribeFromTyping, subscribeToGroups, unsubscribeFromGroups]);
 
   useEffect(() => {
     // Clear selected chat when showing settings or theme

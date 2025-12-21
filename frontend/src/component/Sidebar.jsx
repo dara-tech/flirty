@@ -39,10 +39,8 @@ const Sidebar = () => {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [activeTab, setActiveTab] = useState("chats"); // "chats", "groups", or "saved"
 
-  useEffect(() => {
-    getUsers();
-    getGroups();
-  }, [getUsers, getGroups]);
+  // Don't load data here - let ConversationsListPage handle it based on active tab
+  // This component is likely not used anymore, but if it is, it should not load data on mount
 
   // Listen for custom event to open sidebar on mobile
   useEffect(() => {

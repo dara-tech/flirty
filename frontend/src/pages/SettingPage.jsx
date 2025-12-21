@@ -47,9 +47,8 @@ const SettingsPage = () => {
       // Upload to OSS first
       const imageUrl = await uploadSingleFileToOSS(file, 'sre', 'test01', 'file-upload');
       
-      // Send OSS URL to backend
+      // Send OSS URL to backend (updateProfile will show success message)
       await updateProfile({ profilePic: imageUrl });
-      toast.success("Profile picture updated successfully");
     } catch (error) {
       console.error("Failed to upload profile picture:", error);
       toast.error("Failed to upload profile picture. Please try again.");

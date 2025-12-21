@@ -5,446 +5,53 @@ import { useAuthStore } from "./useAuthStore";
 import { getAuthToken } from "../lib/safariUtils";
 import { normalizeId } from "../lib/utils";
 import { useNotificationStore } from "./useNotificationStore";
-
-// Track recently added message IDs to prevent duplicates (race condition between API and socket)
-const recentMessageIds = new Set();
-const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
-
-// Helper to check and track message IDs
-const isDuplicateMessage = (messageId) => {
-  if (!messageId) return false;
-  const idStr = String(messageId);
-  if (recentMessageIds.has(idStr)) {
-    return true; // Duplicate detected
-  }
-  // Add to tracking set
-  recentMessageIds.add(idStr);
-  // Clean up after timeout
-  setTimeout(() => {
-    recentMessageIds.delete(idStr);
-  }, MESSAGE_DEDUP_TIMEOUT);
-  return false; // Not a duplicate
-};
+import { isDuplicateMessage } from "./chatStore/utils";
+import { initialState } from "./chatStore/state";
+import { createSelectors } from "./chatStore/selectors";
+import { createTypingActions } from "./chatStore/typingActions";
+import { createUserActions } from "./chatStore/userActions";
 
 export const useChatStore = create((set, get) => ({
-  messages: [],
-  hasMoreMessages: false, // Track if there are more messages to load
-  isLoadingMoreMessages: false, // Track loading state for pagination
-  lastLoadBeforeMessageId: null, // Prevent duplicate pagination requests
-  users: [],
-  allUsers: [], // All users for contacts page (separate from users with conversations)
-  isAllUsersLoading: false,
-  contacts: [],
-  pendingRequests: [],
-  isContactsLoading: false,
-  isRequestsLoading: false,
-  groups: [],
-  selectedUser: null,
-  selectedGroup: null,
-  selectedSavedMessages: false, // Track if saved messages is selected
-  isUsersLoading: false,
-  isGroupsLoading: false,
-  isMessagesLoading: false,
-  typingUsers: [],
-  editingUsers: [],
-  deletingUsers: [],
-  uploadingPhotoUsers: [],
-  isCurrentUserUploading: false, // Track if current user is uploading
-  uploadProgress: 0, // Real upload progress percentage (0-100)
-  uploadType: null, // Type of upload: 'image', 'file', or null
-  uploadingImagePreview: null, // Preview of image being uploaded
-  groupTypingUsers: {}, // { groupId: [{ userId, senderName }] }
-  groupEditingUsers: {}, // { groupId: [userId] }
-  groupDeletingUsers: {}, // { groupId: [userId] }
-  groupUploadingPhotoUsers: {}, // { groupId: [userId] }
-  lastMessages: {},
-  groupLastMessages: {},
-  unreadMessages: {}, // { userId: count } or { groupId: count }
-  conversationPagination: { page: 1, limit: 50, total: 0, totalPages: 0, hasMore: false }, // Pagination for conversations (Telegram-style)
-  isLoadingMoreConversations: false, // Track loading state for loading more conversations
-  setTypingUsers: (users) => set({ typingUsers: users }),
-
-  getUsers: async () => {
-    const state = get();
-    const authUser = useAuthStore.getState().authUser;
-    
-    // Don't try to load users if not authenticated
-    if (!authUser) {
-      set({ users: [], lastMessages: {}, isUsersLoading: false });
-      return;
-    }
-    
-    // Only show loading if we don't have users data yet
-    if (state.users.length === 0) {
-      set({ isUsersLoading: true });
-    }
-    
-    // Create a safety timeout that ALWAYS clears loading state after 12 seconds
-    // This prevents stuck loading in production builds where errors might not be caught
-    const safetyTimeout = setTimeout(() => {
-      const currentState = get();
-      if (currentState.isUsersLoading) {
-        set({ isUsersLoading: false });
-      }
-    }, 12000);
-    
-    try {
-      // Load first page of conversations and users (Telegram-style: page=1&limit=50)
-      const [usersRes, lastMessagesRes] = await Promise.all([
-        axiosInstance.get("/messages/users?page=1&limit=100"), // Load first 100 users
-        axiosInstance.get("/messages/last-messages?page=1&limit=50") // Load first 50 conversations
-      ]);
-
-      // Handle 401 errors gracefully
-      if (usersRes.status === 401 || lastMessagesRes.status === 401) {
-        useAuthStore.getState().logout();
-        set({ users: [], lastMessages: {}, isUsersLoading: false });
-        return;
-      }
-
-      // Handle standardized response format: { success: true, data: [...], pagination: {...} }
-      // Also supports old formats for backward compatibility
-      let usersData = [];
-      if (usersRes.data) {
-        // New standardized format: { success: true, data: [...] }
-        if (usersRes.data.data && Array.isArray(usersRes.data.data)) {
-          usersData = usersRes.data.data;
-        }
-        // Old format: { users: [...] }
-        else if (usersRes.data.users && Array.isArray(usersRes.data.users)) {
-          usersData = usersRes.data.users;
-        }
-        // Direct array format
-        else if (Array.isArray(usersRes.data)) {
-          usersData = usersRes.data;
-        }
-      }
-      
-      // Handle standardized response format for last messages
-      let lastMessagesData = [];
-      let pagination = { skip: 0, limit: 50, total: 0, totalPages: 0, hasMore: false };
-      
-      if (lastMessagesRes.data && typeof lastMessagesRes.data === 'object') {
-        // New standardized format: { success: true, data: [...], pagination: {...} }
-        if (lastMessagesRes.data.data && Array.isArray(lastMessagesRes.data.data)) {
-          lastMessagesData = lastMessagesRes.data.data;
-          pagination = {
-            ...pagination,
-            ...(lastMessagesRes.data.pagination || {}),
-            page: lastMessagesRes.data.pagination?.page || 1,
-            limit: lastMessagesRes.data.pagination?.limit || 50,
-            total: lastMessagesRes.data.pagination?.total || 0,
-            totalPages: lastMessagesRes.data.pagination?.totalPages || 0,
-            hasMore: lastMessagesRes.data.pagination?.hasMore || false,
-            skip: lastMessagesRes.data.pagination?.skip || 0,
-          };
-        }
-        // Old format: { lastMessages: [...], pagination: {...} }
-        else if (lastMessagesRes.data.lastMessages && Array.isArray(lastMessagesRes.data.lastMessages)) {
-          lastMessagesData = lastMessagesRes.data.lastMessages;
-          pagination = {
-            ...pagination,
-            ...(lastMessagesRes.data.pagination || {}),
-            page: lastMessagesRes.data.pagination?.page || 1,
-            limit: lastMessagesRes.data.pagination?.limit || 50,
-            total: lastMessagesRes.data.pagination?.total || 0,
-            totalPages: lastMessagesRes.data.pagination?.totalPages || 0,
-            hasMore: lastMessagesRes.data.pagination?.hasMore || false,
-            skip: lastMessagesRes.data.pagination?.skip || 0,
-          };
-        }
-        // Direct array format
-        else if (Array.isArray(lastMessagesRes.data)) {
-          lastMessagesData = lastMessagesRes.data;
-        }
-      }
-
-      const lastMessagesMap = {};
-      if (!authUser || !authUser._id) {
-        set({ users: [], lastMessages: {}, isUsersLoading: false, conversationPagination: pagination });
-        return;
-      }
-      
-      const authUserIdNormalized = normalizeId(authUser._id);
-      
-      if (lastMessagesData && Array.isArray(lastMessagesData)) {
-        lastMessagesData.forEach(msg => {
-          // Get sender and receiver IDs, handling both object and string formats
-          const senderIdRaw = msg.senderId;
-          const receiverIdRaw = msg.receiverId;
-          const senderId = normalizeId(senderIdRaw);
-          const receiverId = normalizeId(receiverIdRaw);
-          
-          // Skip if senderId or receiverId is missing
-          if (!senderId || !receiverId) return;
-          
-          // Determine target ID (the other user in the conversation)
-          // If I'm the sender, target is receiver. If I'm the receiver, target is sender.
-          const targetIdRaw = senderId === authUserIdNormalized ? receiverIdRaw : senderIdRaw;
-          const targetIdStr = normalizeId(targetIdRaw);
-          
-          // Skip if targetId is missing
-          if (!targetIdStr) return;
-          
-          // Store with multiple key formats for compatibility
-          lastMessagesMap[targetIdStr] = msg;
-          if (targetIdRaw && typeof targetIdRaw !== 'string') {
-            lastMessagesMap[targetIdRaw] = msg;
-          }
-        });
-      }
-
-      // Remove duplicate users based on _id
-      const uniqueUsers = [];
-      const seenIds = new Set();
-      
-      // Add users from users endpoint
-      usersData.forEach(user => {
-        const userId = typeof user._id === 'string' ? user._id : user._id?.toString();
-        if (userId && !seenIds.has(userId)) {
-          seenIds.add(userId);
-          uniqueUsers.push(user);
-        }
-      });
-
-      // Also extract users from lastMessages if they're populated (as fallback)
-      if (lastMessagesData && Array.isArray(lastMessagesData)) {
-        lastMessagesData.forEach(msg => {
-          const senderIdRaw = msg.senderId;
-          const receiverIdRaw = msg.receiverId;
-          
-          // Extract user data if populated
-          [senderIdRaw, receiverIdRaw].forEach(userData => {
-            if (userData && typeof userData === 'object' && userData._id && userData.fullname) {
-              const userId = normalizeId(userData._id);
-              // Only add if not already in users array and not the auth user
-              if (userId && !seenIds.has(userId) && userId !== authUserIdNormalized) {
-                seenIds.add(userId);
-                uniqueUsers.push({
-                  _id: userData._id,
-                  fullname: userData.fullname || 'Unknown',
-                  profilePic: userData.profilePic || null,
-                  email: userData.email || null
-                });
-              }
-            }
-          });
-        });
-      }
-
-      // Set lastMessages from server response
-      // If messages were deleted from DB, they won't be in this response
-      set({ 
-        users: uniqueUsers,
-        lastMessages: lastMessagesMap,
-        conversationPagination: pagination
-      });
-    } catch (error) {
-      // Only log non-401 errors (401 is expected when not authenticated)
-      if (error.response?.status !== 401) {
-        console.error("Error loading users:", error);
-        toast.error(error.response?.data?.message || error.response?.data?.error || "Failed to load users");
-      }
-      // Clear users on error (except 401)
-      if (error.response?.status !== 401) {
-        set({ users: [], lastMessages: {}, isUsersLoading: false });
-      } else {
-        // Even for 401, clear loading state
-        set({ isUsersLoading: false });
-      }
-    } finally {
-      clearTimeout(safetyTimeout);
-      set({ isUsersLoading: false });
-    }
-  },
-
-  // Get all users (for contacts page - not just users with conversations)
-  getAllUsers: async () => {
-    const authUser = useAuthStore.getState().authUser;
-    
-    // Don't try to load users if not authenticated
-    if (!authUser) {
-      set({ allUsers: [], isAllUsersLoading: false });
-      return;
-    }
-    
-    set({ isAllUsersLoading: true });
-    
-    try {
-      // Load all users with pagination
-      const usersRes = await axiosInstance.get("/messages/users/all?page=1&limit=200");
-      
-      // Handle 401 errors gracefully
-      if (usersRes.status === 401) {
-        useAuthStore.getState().logout();
-        set({ allUsers: [], isAllUsersLoading: false });
-        return;
-      }
-
-      // Handle standardized response format: { success: true, data: [...], pagination: {...} }
-      let usersData = [];
-      if (usersRes.data) {
-        if (usersRes.data.data && Array.isArray(usersRes.data.data)) {
-          usersData = usersRes.data.data;
-        } else if (Array.isArray(usersRes.data)) {
-          usersData = usersRes.data;
-        }
-      }
-      
-      set({ allUsers: usersData, isAllUsersLoading: false });
-    } catch (error) {
-      console.error("Error loading all users:", error);
-      if (error.response?.status !== 401) {
-        toast.error(error.response?.data?.message || "Failed to load users");
-      }
-      set({ allUsers: [], isAllUsersLoading: false });
-    }
-  },
-
-  // Load more conversations (pagination - Telegram-style: page-based)
-  loadMoreConversations: async () => {
-    const state = get();
-    const authUser = useAuthStore.getState().authUser;
-    
-    // Don't load if already loading or no more to load
-    if (state.isLoadingMoreConversations || !state.conversationPagination.hasMore || !authUser) {
-      return;
-    }
-    
-    set({ isLoadingMoreConversations: true });
-    
-    try {
-      const { page, limit } = state.conversationPagination;
-      const nextPage = page + 1; // Load next page
-      
-      const lastMessagesRes = await axiosInstance.get(`/messages/last-messages?page=${nextPage}&limit=${limit}`);
-      
-      // Handle 401 errors gracefully
-      if (lastMessagesRes.status === 401) {
-        useAuthStore.getState().logout();
-        set({ isLoadingMoreConversations: false });
-        return;
-      }
-      
-      // Handle standardized response format: { success: true, data: [...], pagination: {...} }
-      // Also supports old formats for backward compatibility
-      let lastMessagesData = [];
-      let pagination = state.conversationPagination;
-      
-      if (lastMessagesRes.data && typeof lastMessagesRes.data === 'object') {
-        // New standardized format: { success: true, data: [...], pagination: {...} }
-        if (lastMessagesRes.data.data && Array.isArray(lastMessagesRes.data.data)) {
-          lastMessagesData = lastMessagesRes.data.data;
-          pagination = {
-            ...pagination,
-            ...(lastMessagesRes.data.pagination || {}),
-            page: lastMessagesRes.data.pagination?.page || nextPage,
-            limit: lastMessagesRes.data.pagination?.limit || limit,
-            total: lastMessagesRes.data.pagination?.total || 0,
-            totalPages: lastMessagesRes.data.pagination?.totalPages || 0,
-            hasMore: lastMessagesRes.data.pagination?.hasMore || false,
-            skip: lastMessagesRes.data.pagination?.skip || 0,
-          };
-        }
-        // Old format: { lastMessages: [...], pagination: {...} }
-        else if (lastMessagesRes.data.lastMessages && Array.isArray(lastMessagesRes.data.lastMessages)) {
-          lastMessagesData = lastMessagesRes.data.lastMessages;
-          pagination = {
-            ...pagination,
-            ...(lastMessagesRes.data.pagination || {}),
-            page: lastMessagesRes.data.pagination?.page || nextPage,
-            limit: lastMessagesRes.data.pagination?.limit || limit,
-            total: lastMessagesRes.data.pagination?.total || 0,
-            totalPages: lastMessagesRes.data.pagination?.totalPages || 0,
-            hasMore: lastMessagesRes.data.pagination?.hasMore || false,
-            skip: lastMessagesRes.data.pagination?.skip || 0,
-          };
-        }
-        // Direct array format
-        else if (Array.isArray(lastMessagesRes.data)) {
-          lastMessagesData = lastMessagesRes.data;
-        }
-      }
-      
-      if (!authUser || !authUser._id) {
-        set({ isLoadingMoreConversations: false });
-        return;
-      }
-      
-      const authUserIdNormalized = normalizeId(authUser._id);
-      const newLastMessagesMap = { ...state.lastMessages };
-      
-      // Merge new messages into existing map
-      if (lastMessagesData && Array.isArray(lastMessagesData)) {
-        lastMessagesData.forEach(msg => {
-          const senderIdRaw = msg.senderId;
-          const receiverIdRaw = msg.receiverId;
-          const senderId = normalizeId(senderIdRaw);
-          const receiverId = normalizeId(receiverIdRaw);
-          
-          if (!senderId || !receiverId) return;
-          
-          const targetIdRaw = senderId === authUserIdNormalized ? receiverIdRaw : senderIdRaw;
-          const targetIdStr = normalizeId(targetIdRaw);
-          
-          if (!targetIdStr) return;
-          
-          // Only add if not already present (to avoid duplicates)
-          if (!newLastMessagesMap[targetIdStr]) {
-            newLastMessagesMap[targetIdStr] = msg;
-            if (targetIdRaw && typeof targetIdRaw !== 'string') {
-              newLastMessagesMap[targetIdRaw] = msg;
-            }
-          }
-        });
-      }
-      
-      // Also update users array with any new users from messages
-      const uniqueUsers = [...state.users];
-      const seenIds = new Set(state.users.map(u => normalizeId(u._id)));
-      
-      if (lastMessagesData && Array.isArray(lastMessagesData)) {
-        lastMessagesData.forEach(msg => {
-          const senderIdRaw = msg.senderId;
-          const receiverIdRaw = msg.receiverId;
-          
-          [senderIdRaw, receiverIdRaw].forEach(userData => {
-            if (userData && typeof userData === 'object' && userData._id && userData.fullname) {
-              const userId = normalizeId(userData._id);
-              if (userId && !seenIds.has(userId) && userId !== authUserIdNormalized) {
-                seenIds.add(userId);
-                uniqueUsers.push({
-                  _id: userData._id,
-                  fullname: userData.fullname || 'Unknown',
-                  profilePic: userData.profilePic || null,
-                  email: userData.email || null
-                });
-              }
-            }
-          });
-        });
-      }
-      
-      set({
-        users: uniqueUsers,
-        lastMessages: newLastMessagesMap,
-        conversationPagination: pagination,
-        isLoadingMoreConversations: false
-      });
-    } catch (error) {
-      if (error.response?.status !== 401) {
-        console.error("Error loading more conversations:", error);
-        toast.error(error.response?.data?.message || error.response?.data?.error || "Failed to load more conversations");
-      }
-      set({ isLoadingMoreConversations: false });
-    }
-  },
+  ...initialState,
+  ...createSelectors(set),
+  ...createTypingActions(set),
+  ...createUserActions(set, get),
 
   getMessages: async (userId) => {
+    const state = get();
+    const userIdStr = typeof userId === 'string' ? userId : userId?.toString();
+    const normalizedUserId = normalizeId(userIdStr);
+    
+    // Prevent duplicate concurrent requests for the same user
+    if (state.loadingMessagesFor === normalizedUserId && state.isMessagesLoading) {
+      // Already loading messages for this user, skip duplicate request
+      return;
+    }
+    
+    // Check if we already have messages for this user (simple cache check)
+    // Only skip if we have messages AND they're for the same user
+    const currentSelectedUserId = state.selectedUser?._id 
+      ? (typeof state.selectedUser._id === 'string' ? state.selectedUser._id : state.selectedUser._id?.toString())
+      : null;
+    
+    // If we already have messages for this exact user, don't refetch immediately
+    // This prevents unnecessary API calls when switching back to a conversation
+    const hasCachedMessages = state.messages.length > 0 && 
+                              currentSelectedUserId && 
+                              normalizeId(currentSelectedUserId) === normalizedUserId;
+    
     // Don't clear messages - keep showing cached ones while loading
-    set({ isMessagesLoading: true, hasMoreMessages: false });
+    // Track which user we're loading for to prevent duplicates
+    set({ 
+      isMessagesLoading: true, 
+      hasMoreMessages: false,
+      loadingMessagesFor: normalizedUserId // Track current loading user
+    });
+    
     try {
-      const res = await axiosInstance.get(`/messages/${userId}`);
+      // Use a smaller limit for faster initial load (30 instead of 50)
+      // User can load more if needed via pagination
+      const res = await axiosInstance.get(`/messages/${userId}?limit=30`);
       // Handle new pagination format: { messages: [], hasMore: boolean }
       // Or fallback to old format: array directly
       const messagesData = res.data.messages || res.data;
@@ -456,13 +63,13 @@ export const useChatStore = create((set, get) => ({
       set({ 
         messages: orderedMessages,
         hasMoreMessages: hasMore,
+        loadingMessagesFor: null, // Clear loading flag on success
       });
 
       const authUser = useAuthStore.getState().authUser;
       if (!authUser || !authUser._id) return;
       
       // Clear unread count for this user when viewing messages
-      const userIdStr = typeof userId === 'string' ? userId : userId?.toString();
       set((state) => ({
         unreadMessages: {
           ...state.unreadMessages,
@@ -471,10 +78,8 @@ export const useChatStore = create((set, get) => ({
         }
       }));
       
-      // Normalize IDs for comparison
-      
-      // Only mark messages as seen if we actually loaded messages (not empty array)
-      // This prevents marking messages as seen if the conversation was deleted
+      // Mark messages as seen - OPTIMIZED: Process asynchronously after UI updates
+      // This doesn't block the initial message display
       if (orderedMessages && orderedMessages.length > 0) {
         const authUserId = normalizeId(authUser._id);
         const unseenMessages = orderedMessages.filter(msg => {
@@ -483,20 +88,41 @@ export const useChatStore = create((set, get) => ({
           return msgSenderId !== authUserId;
         });
         
+        // Mark as seen asynchronously - don't block UI rendering
         if (unseenMessages.length > 0) {
+          // Use requestIdleCallback if available, otherwise setTimeout
+          const markAsSeen = () => {
           const socket = useAuthStore.getState().socket;
           if (socket) {
-            unseenMessages.forEach((msg) => {
+              // Only mark the most recent unseen messages (limit to 20 for performance)
+              // Older messages will be marked when user scrolls to them
+              const messagesToMark = unseenMessages.slice(-20).reverse(); // Most recent first
+              
+              messagesToMark.forEach((msg) => {
               const msgSenderId = normalizeId(msg.senderId);
               socket.emit("messageSeen", { messageId: msg._id, senderId: msgSenderId });
             });
+            }
+          };
+          
+          // Defer to next event loop cycle so UI can render first
+          if (typeof requestIdleCallback !== 'undefined') {
+            requestIdleCallback(markAsSeen, { timeout: 1000 });
+          } else {
+            setTimeout(markAsSeen, 0);
           }
         }
       }
     } catch (error) {
-      toast.error(error.response?.data?.message || "Failed to load messages");
+      // Only show error if it's not a cancellation
+      if (error.name !== 'CanceledError' && !error.__CANCEL__) {
+        toast.error(error.response?.data?.message || "Failed to load messages");
+      }
     } finally {
-      set({ isMessagesLoading: false });
+      set({ 
+        isMessagesLoading: false,
+        loadingMessagesFor: null, // Clear loading flag
+      });
     }
   },
 
@@ -576,8 +202,28 @@ export const useChatStore = create((set, get) => ({
     }
 
     // === OPTIMISTIC UPDATE: Show message immediately for text-only messages ===
-    const isTextOnly = messageData.text && !messageData.image && !messageData.audio && !messageData.video && !messageData.file;
+    // Check if arrays are empty or if single values are falsy
+    const hasImage = Array.isArray(messageData.image) ? messageData.image.length > 0 : !!messageData.image;
+    const hasAudio = Array.isArray(messageData.audio) ? messageData.audio.length > 0 : !!messageData.audio;
+    const hasVideo = Array.isArray(messageData.video) ? messageData.video.length > 0 : !!messageData.video;
+    const hasFile = Array.isArray(messageData.file) ? messageData.file.length > 0 : !!messageData.file;
+    const isTextOnly = messageData.text && !hasImage && !hasAudio && !hasVideo && !hasFile;
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Log payload for debugging multiple files
+    if (hasImage || hasVideo || hasFile) {
+      console.log('Sending message with files:', {
+        imageCount: Array.isArray(messageData.image) ? messageData.image.length : (messageData.image ? 1 : 0),
+        videoCount: Array.isArray(messageData.video) ? messageData.video.length : (messageData.video ? 1 : 0),
+        fileCount: Array.isArray(messageData.file) ? messageData.file.length : (messageData.file ? 1 : 0),
+        audioCount: Array.isArray(messageData.audio) ? messageData.audio.length : (messageData.audio ? 1 : 0),
+        payload: {
+          image: Array.isArray(messageData.image) ? `[${messageData.image.length} items]` : messageData.image,
+          video: Array.isArray(messageData.video) ? `[${messageData.video.length} items]` : messageData.video,
+          file: Array.isArray(messageData.file) ? `[${messageData.file.length} items]` : messageData.file,
+        }
+      });
+    }
     
     if (isTextOnly) {
       const optimisticMessage = {
@@ -1961,109 +1607,6 @@ export const useChatStore = create((set, get) => ({
     socket.off("stopUploadingPhoto");
   },
 
-  sendTypingStatus: (receiverId, isTyping) => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-    
-    if (isTyping) {
-      socket.emit("typing", { receiverId });
-    } else {
-      socket.emit("stopTyping", { receiverId });
-    }
-  },
-
-  sendEditingStatus: (receiverId, isEditing) => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-    
-    if (isEditing) {
-      socket.emit("editing", { receiverId });
-    } else {
-      socket.emit("stopEditing", { receiverId });
-    }
-  },
-
-  sendDeletingStatus: (receiverId, isDeleting) => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-    
-    if (isDeleting) {
-      socket.emit("deleting", { receiverId });
-    } else {
-      socket.emit("stopDeleting", { receiverId });
-    }
-  },
-
-  sendUploadingPhotoStatus: (receiverId, isUploading) => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-    
-    // Track current user's upload state
-    set({ isCurrentUserUploading: isUploading });
-    
-    if (isUploading) {
-      socket.emit("uploadingPhoto", { receiverId });
-    } else {
-      socket.emit("stopUploadingPhoto", { receiverId });
-    }
-  },
-
-  // Group status indicators
-  sendGroupTypingStatus: (groupId, isTyping) => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-    
-    if (isTyping) {
-      socket.emit("groupTyping", { groupId });
-    } else {
-      socket.emit("groupStopTyping", { groupId });
-    }
-  },
-
-  sendGroupEditingStatus: (groupId, isEditing) => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-    
-    if (isEditing) {
-      socket.emit("groupEditing", { groupId });
-    } else {
-      socket.emit("groupStopEditing", { groupId });
-    }
-  },
-
-  sendGroupDeletingStatus: (groupId, isDeleting) => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-    
-    if (isDeleting) {
-      socket.emit("groupDeleting", { groupId });
-    } else {
-      socket.emit("groupStopDeleting", { groupId });
-    }
-  },
-
-  sendGroupUploadingPhotoStatus: (groupId, isUploading) => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-    
-    // Track current user's upload state
-    set({ isCurrentUserUploading: isUploading });
-    
-    if (isUploading) {
-      socket.emit("groupUploadingPhoto", { groupId });
-    } else {
-      socket.emit("groupStopUploadingPhoto", { groupId });
-    }
-  },
-
-  setSelectedSavedMessages: (selected) => {
-    set({ selectedSavedMessages: selected, selectedUser: null, selectedGroup: null });
-  },
-
-  setSelectedUser: (selectedUser) => {
-    set({ selectedUser, selectedGroup: null });
-  },
-
   // Group functions
   getGroups: async () => {
     const authUser = useAuthStore.getState().authUser;
@@ -2880,8 +2423,28 @@ const gId = normalizeId(g._id);
     }
 
     // === OPTIMISTIC UPDATE: Show message immediately for text-only messages ===
-    const isTextOnly = messageData.text && !messageData.image && !messageData.audio && !messageData.video && !messageData.file;
+    // Check if arrays are empty or if single values are falsy
+    const hasImage = Array.isArray(messageData.image) ? messageData.image.length > 0 : !!messageData.image;
+    const hasAudio = Array.isArray(messageData.audio) ? messageData.audio.length > 0 : !!messageData.audio;
+    const hasVideo = Array.isArray(messageData.video) ? messageData.video.length > 0 : !!messageData.video;
+    const hasFile = Array.isArray(messageData.file) ? messageData.file.length > 0 : !!messageData.file;
+    const isTextOnly = messageData.text && !hasImage && !hasAudio && !hasVideo && !hasFile;
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Log payload for debugging multiple files
+    if (hasImage || hasVideo || hasFile) {
+      console.log('Sending group message with files:', {
+        imageCount: Array.isArray(messageData.image) ? messageData.image.length : (messageData.image ? 1 : 0),
+        videoCount: Array.isArray(messageData.video) ? messageData.video.length : (messageData.video ? 1 : 0),
+        fileCount: Array.isArray(messageData.file) ? messageData.file.length : (messageData.file ? 1 : 0),
+        audioCount: Array.isArray(messageData.audio) ? messageData.audio.length : (messageData.audio ? 1 : 0),
+        payload: {
+          image: Array.isArray(messageData.image) ? `[${messageData.image.length} items]` : messageData.image,
+          video: Array.isArray(messageData.video) ? `[${messageData.video.length} items]` : messageData.video,
+          file: Array.isArray(messageData.file) ? `[${messageData.file.length} items]` : messageData.file,
+        }
+      });
+    }
     
     if (isTextOnly) {
       const optimisticMessage = {
@@ -3384,10 +2947,6 @@ const gId = normalizeId(g._id);
     
     // Group status events (typing, editing, deleting, uploading) are shared between global and local handlers
     // Don't remove them here - they're needed for both the group list and the chat view
-  },
-
-  setSelectedGroup: (selectedGroup) => {
-    set({ selectedGroup, selectedUser: null, selectedSavedMessages: false });
   },
 
   // Contact Request Functions

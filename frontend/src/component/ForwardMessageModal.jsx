@@ -73,24 +73,42 @@ const ForwardMessageModal = ({ message, onClose }) => {
         messagePayload.text = message.text;
       }
       
-      // Only include media URLs if they exist and are valid URLs
-      if (message.image && (message.image.startsWith('http://') || message.image.startsWith('https://'))) {
-        messagePayload.image = message.image;
+      // Helper function to check if a value is a valid URL (string) or array of URLs
+      const isValidUrl = (value) => {
+        if (!value) return false;
+        if (Array.isArray(value)) {
+          return value.length > 0 && value.every(url => 
+            typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))
+          );
+        }
+        return typeof value === 'string' && (value.startsWith('http://') || value.startsWith('https://'));
+      };
+
+      // Only include media URLs if they exist and are valid URLs (handle both arrays and strings)
+      if (message.image && isValidUrl(message.image)) {
+        messagePayload.image = message.image; // Can be array or string
       }
       
-      if (message.video && (message.video.startsWith('http://') || message.video.startsWith('https://'))) {
-        messagePayload.video = message.video;
+      if (message.video && isValidUrl(message.video)) {
+        messagePayload.video = message.video; // Can be array or string
       }
       
-      if (message.audio && (message.audio.startsWith('http://') || message.audio.startsWith('https://'))) {
-        messagePayload.audio = message.audio;
+      if (message.audio && isValidUrl(message.audio)) {
+        messagePayload.audio = message.audio; // Can be array or string
       }
       
-      if (message.file && (message.file.startsWith('http://') || message.file.startsWith('https://'))) {
-        messagePayload.file = message.file;
-        if (message.fileName) messagePayload.fileName = message.fileName;
-        if (message.fileSize) messagePayload.fileSize = message.fileSize;
-        if (message.fileType) messagePayload.fileType = message.fileType;
+      if (message.file && isValidUrl(message.file)) {
+        messagePayload.file = message.file; // Can be array or string
+        // Handle fileName, fileSize, fileType - can be arrays or single values
+        if (message.fileName) {
+          messagePayload.fileName = Array.isArray(message.fileName) ? message.fileName : [message.fileName];
+        }
+        if (message.fileSize) {
+          messagePayload.fileSize = Array.isArray(message.fileSize) ? message.fileSize : [message.fileSize];
+        }
+        if (message.fileType) {
+          messagePayload.fileType = Array.isArray(message.fileType) ? message.fileType : [message.fileType];
+        }
       }
 
       // Include forwardedFrom info

@@ -580,32 +580,37 @@ export const getGroupLastMessages = async (req, res) => {
       });
     }
 
-    // Get last message for each group
-    const lastMessages = await Message.aggregate([
-      {
-        $match: {
-          groupId: { $in: groupIds },
-        },
-      },
-      { $sort: { createdAt: -1 } },
-      {
-        $group: {
-          _id: "$groupId",
-          lastMessage: { $first: "$$ROOT" },
-        },
-      },
-      { $replaceRoot: { newRoot: "$lastMessage" } },
-    ]);
+    // Optimized: Use a single query with $in to get all last messages at once
+    // This is much faster than individual queries
+    const allMessages = await Message.find({
+      groupId: { $in: groupIds },
+    })
+      .sort({ createdAt: -1 })
+      .populate("senderId", "fullname profilePic")
+      .populate("seenBy.userId", "fullname profilePic")
+      .lean();
 
-    // Populate senderId for each message
-    const populatedMessages = await Promise.all(
-      lastMessages.map(async (msg) => {
-        const populated = await Message.findById(msg._id)
-          .populate("senderId", "fullname profilePic")
-          .populate("seenBy.userId", "fullname profilePic");
-        return populated || msg;
+    // Group by groupId and get the most recent message for each group
+    const messagesByGroup = new Map();
+    for (const msg of allMessages) {
+      const groupIdStr = msg.groupId?.toString() || msg.groupId;
+      if (!messagesByGroup.has(groupIdStr)) {
+        messagesByGroup.set(groupIdStr, msg);
+      } else {
+        const existing = messagesByGroup.get(groupIdStr);
+        if (new Date(msg.createdAt) > new Date(existing.createdAt)) {
+          messagesByGroup.set(groupIdStr, msg);
+        }
+      }
+    }
+
+    // Get messages in the order of groupIds
+    const populatedMessages = groupIds
+      .map(id => {
+        const idStr = id.toString();
+        return messagesByGroup.get(idStr);
       })
-    );
+      .filter(msg => msg !== undefined);
 
     res.status(200).json({
       success: true,

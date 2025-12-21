@@ -181,24 +181,35 @@ const ChatContainer = () => {
     }
     
     // Load messages in background without blocking UI (like Telegram)
+    // Use refs to prevent duplicate calls when dependencies change
+    let isMounted = true;
+    
     if (selectedSavedMessages) {
       // Load saved messages
       getSavedMessages(1, 50).then((data) => {
+        if (!isMounted) return;
         // Backend returns { messages, pagination: {...} }
         const savedMessages = data?.messages || data?.data?.messages || [];
         // Messages are already sorted newest first, reverse for display (oldest to newest)
         useChatStore.setState({ messages: savedMessages.reverse() });
       }).catch((error) => {
+        if (!isMounted) return;
         console.error("Failed to load saved messages:", error);
       });
       prevChatRef.current = 'saved';
     } else if (selectedUser?._id) {
-      getMessages(selectedUser._id);
-      prevChatRef.current = selectedUser._id;
+      // Only call if chat ID actually changed
+      if (prevChatId !== selectedUser._id) {
+        getMessages(selectedUser._id);
+        prevChatRef.current = selectedUser._id;
+      }
     } else if (selectedGroup?._id) {
-      getGroupMessages(selectedGroup._id);
-      subscribeToGroupMessages();
-      prevChatRef.current = selectedGroup._id;
+      // Only call if chat ID actually changed
+      if (prevChatId !== selectedGroup._id) {
+        getGroupMessages(selectedGroup._id);
+        subscribeToGroupMessages();
+        prevChatRef.current = selectedGroup._id;
+      }
     } else {
       // Clear messages when no chat is selected
       prevChatRef.current = null;
@@ -206,6 +217,7 @@ const ChatContainer = () => {
     }
 
     return () => {
+      isMounted = false;
       // Don't unsubscribe from messages here - it's handled globally in ChatPage
       unsubscribeFromGroupMessages();
       // Stop any active status indicators when switching chats
@@ -219,7 +231,9 @@ const ChatContainer = () => {
         sendUploadingPhotoStatus(selectedUser._id, false);
       }
     };
-  }, [selectedUser?._id, selectedGroup?._id, selectedSavedMessages, getMessages, getGroupMessages, getSavedMessages, subscribeToGroupMessages, unsubscribeFromGroupMessages, isGroupChat, isSavedMessages, sendEditingStatus, sendDeletingStatus, sendUploadingPhotoStatus]);
+    // Reduced dependencies - only depend on IDs, not function references
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedUser?._id, selectedGroup?._id, selectedSavedMessages]);
 
   // Close reaction picker when clicking outside
   useEffect(() => {
