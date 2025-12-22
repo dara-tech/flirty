@@ -4,7 +4,6 @@ import { getReceiverSocketId, io } from "../lib/socket.js";
 import { toPlainObject } from "../lib/utils.js";
 import logger from "../lib/logger.js";
 import { paginatedResponse } from "../lib/apiResponse.js";
-
 import mongoose from "mongoose";
 
 export const getLastMessages = async (req, res) => {
@@ -548,12 +547,9 @@ export const sendMessage = async (req, res) => {
     const hasFile = files.length > 0;
 
     if (!hasText && !hasImage && !hasAudio && !hasVideo && !hasFile) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Message must contain either text, image, audio, video, or file",
-        });
+      return res.status(400).json({
+        error: "Message must contain either text, image, audio, video, or file",
+      });
     }
 
     // Client already uploaded to OSS, just pass through the URLs/data
@@ -825,11 +821,9 @@ export const deleteMessage = async (req, res) => {
     if (deleteType === "forEveryone") {
       // Only sender can delete for everyone
       if (message.senderId.toString() !== userId.toString()) {
-        return res
-          .status(403)
-          .json({
-            error: "You can only delete your own messages for everyone",
-          });
+        return res.status(403).json({
+          error: "You can only delete your own messages for everyone",
+        });
       }
 
       // Save message info before deletion to find new last message
@@ -1125,11 +1119,9 @@ export const getMessagesByType = async (req, res) => {
     const myId = req.user._id;
 
     if (!type || !["media", "files", "links", "voice"].includes(type)) {
-      return res
-        .status(400)
-        .json({
-          error: "Invalid type. Must be 'media', 'files', 'links', or 'voice'",
-        });
+      return res.status(400).json({
+        error: "Invalid type. Must be 'media', 'files', 'links', or 'voice'",
+      });
     }
 
     const myObjectId = new mongoose.Types.ObjectId(myId);
@@ -1429,12 +1421,10 @@ export const addReaction = async (req, res) => {
         })));
 
     if (!isParticipant) {
-      return res
-        .status(403)
-        .json({
-          error:
-            "You can only react to messages in conversations you are part of",
-        });
+      return res.status(403).json({
+        error:
+          "You can only react to messages in conversations you are part of",
+      });
     }
 
     // Remove existing reaction from this user if exists
@@ -1559,12 +1549,10 @@ export const deleteMessageMedia = async (req, res) => {
       !mediaType ||
       !["image", "video", "audio", "file"].includes(mediaType)
     ) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Invalid media type. Must be 'image', 'video', 'audio', or 'file'",
-        });
+      return res.status(400).json({
+        error:
+          "Invalid media type. Must be 'image', 'video', 'audio', or 'file'",
+      });
     }
 
     const message = await Message.findById(messageId);
@@ -1604,12 +1592,10 @@ export const deleteMessageMedia = async (req, res) => {
       message.link;
     if (!hasContent) {
       await Message.findByIdAndDelete(messageId);
-      return res
-        .status(200)
-        .json({
-          message: "Message deleted (no content remaining)",
-          deleted: true,
-        });
+      return res.status(200).json({
+        message: "Message deleted (no content remaining)",
+        deleted: true,
+      });
     }
 
     message.edited = true;
