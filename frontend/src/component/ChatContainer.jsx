@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
+import { useSettingsStore } from "../store/useSettingsStore";
 import { FaEdit, FaTrash, FaImage, FaSpinner, FaEllipsisV, FaCopy, FaShare, FaThumbtack, FaMicrophone, FaFile, FaLink, FaDownload, FaTimes, FaSave, FaTimesCircle, FaSmile, FaVideo } from "react-icons/fa";
 import ChatHeader from "./ChatHeader";
 import MessageInput from "./MessageInput";
@@ -13,6 +14,7 @@ import ForwardMultipleMessagesModal from "./ForwardMultipleMessagesModal";
 import ProfileImage from "./ProfileImage";
 import AudioPlayer from "./AudioPlayer";
 import { formatMessageTime, normalizeId } from "../lib/utils";
+import { getBubbleStyles } from "../lib/bubbleStyles";
 import toast from "react-hot-toast";
 
 // Helper function to enhance Cloudinary image URLs with quality parameters
@@ -127,6 +129,7 @@ const ChatContainer = () => {
     groupUploadingPhotoUsers,
   } = useChatStore();
   const { authUser, socket } = useAuthStore();
+  const { chatBubbleStyle } = useSettingsStore();
   const messageEndRef = useRef(null);
   const messageTopRef = useRef(null); // For detecting scroll to top
   const messagesContainerRef = useRef(null); // Container ref for scroll detection
@@ -181,35 +184,24 @@ const ChatContainer = () => {
     }
     
     // Load messages in background without blocking UI (like Telegram)
-    // Use refs to prevent duplicate calls when dependencies change
-    let isMounted = true;
-    
     if (selectedSavedMessages) {
       // Load saved messages
       getSavedMessages(1, 50).then((data) => {
-        if (!isMounted) return;
         // Backend returns { messages, pagination: {...} }
         const savedMessages = data?.messages || data?.data?.messages || [];
         // Messages are already sorted newest first, reverse for display (oldest to newest)
         useChatStore.setState({ messages: savedMessages.reverse() });
       }).catch((error) => {
-        if (!isMounted) return;
         console.error("Failed to load saved messages:", error);
       });
       prevChatRef.current = 'saved';
     } else if (selectedUser?._id) {
-      // Only call if chat ID actually changed
-      if (prevChatId !== selectedUser._id) {
-        getMessages(selectedUser._id);
-        prevChatRef.current = selectedUser._id;
-      }
+      getMessages(selectedUser._id);
+      prevChatRef.current = selectedUser._id;
     } else if (selectedGroup?._id) {
-      // Only call if chat ID actually changed
-      if (prevChatId !== selectedGroup._id) {
-        getGroupMessages(selectedGroup._id);
-        subscribeToGroupMessages();
-        prevChatRef.current = selectedGroup._id;
-      }
+      getGroupMessages(selectedGroup._id);
+      subscribeToGroupMessages();
+      prevChatRef.current = selectedGroup._id;
     } else {
       // Clear messages when no chat is selected
       prevChatRef.current = null;
@@ -217,7 +209,6 @@ const ChatContainer = () => {
     }
 
     return () => {
-      isMounted = false;
       // Don't unsubscribe from messages here - it's handled globally in ChatPage
       unsubscribeFromGroupMessages();
       // Stop any active status indicators when switching chats
@@ -231,9 +222,7 @@ const ChatContainer = () => {
         sendUploadingPhotoStatus(selectedUser._id, false);
       }
     };
-    // Reduced dependencies - only depend on IDs, not function references
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedUser?._id, selectedGroup?._id, selectedSavedMessages]);
+  }, [selectedUser?._id, selectedGroup?._id, selectedSavedMessages, getMessages, getGroupMessages, getSavedMessages, subscribeToGroupMessages, unsubscribeFromGroupMessages, isGroupChat, isSavedMessages, sendEditingStatus, sendDeletingStatus, sendUploadingPhotoStatus]);
 
   // Close reaction picker when clicking outside
   useEffect(() => {
@@ -733,18 +722,18 @@ const ChatContainer = () => {
       // Inline version (inside bubble)
       return (
         <span 
-          className="relative inline-flex items-center group/status"
+          className="relative inline-flex items-end group/status"
           onMouseEnter={() => message.seen && setShowTooltip(true)}
           onMouseLeave={() => setShowTooltip(false)}
         >
           {/* Direct messages: show checkmark inside bubble only when NOT seen */}
           {isMyMessage && !message.groupId && !message.seen && (
-            <div className="relative inline-flex items-center justify-center transition-all duration-300 opacity-70">
+            <div className="relative inline-flex items-end justify-center transition-all duration-300 opacity-70">
               <CheckIcon 
                 isSeen={false}
                 className={`${isOnImage 
                   ? 'w-3 h-3 text-white drop-shadow-lg' 
-                  : 'w-3 h-3 text-primary-content drop-shadow-sm'
+                  : 'w-3.5 h-3.5 text-primary-content drop-shadow-sm'
                 }`}
               />
             </div>
@@ -1522,8 +1511,8 @@ const ChatContainer = () => {
                 <div 
                   className={`relative group/message max-w-[320px] sm:max-w-[360px] px-4 py-3 transition-all duration-200 hover:scale-[1.01] ${
                     isMyMessage 
-                      ? "bg-gradient-to-br from-primary to-primary/90 text-primary-content rounded-3xl rounded-br-sm shadow-lg shadow-primary/20" 
-                      : "bg-base-200/95 backdrop-blur-sm text-base-content rounded-3xl rounded-bl-sm shadow-lg shadow-black/10 border border-base-300/50"
+                      ? getBubbleStyles(chatBubbleStyle, true).my
+                      : getBubbleStyles(chatBubbleStyle, false).other
                   }`}
                 >
                   {/* Custom Audio Player */}
@@ -1545,13 +1534,13 @@ const ChatContainer = () => {
                   {/* Text with audio if exists */}
                   {message.text ? (
                     <div className="mt-3 pt-3 border-t border-primary-content/25">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-end gap-1.5">
                         <span className={`text-sm leading-relaxed flex-1 min-w-0 tracking-wide ${isMyMessage ? 'text-primary-content/95' : 'text-base-content'}`}>
                           {message.text}
                         </span>
                         
                         {/* Inline status indicators (Enhanced Telegram style) */}
-                        <div className="flex items-center gap-1 flex-shrink-0 ml-1">
+                        <div className="flex items-end gap-1 flex-shrink-0 ml-1 pb-0.5">
                           {/* Edited indicator */}
                           {message.edited && (
                             <span 
@@ -1597,8 +1586,8 @@ const ChatContainer = () => {
                 <div 
                   className={`relative group/message max-w-[320px] sm:max-w-[360px] px-5 py-4 transition-all duration-200 hover:scale-[1.01] ${
                     isMyMessage 
-                      ? "bg-gradient-to-br from-primary to-primary/90 text-primary-content rounded-3xl rounded-br-sm shadow-lg shadow-primary/20" 
-                      : "bg-base-200/95 backdrop-blur-sm text-base-content rounded-3xl rounded-bl-sm shadow-lg shadow-black/10 border border-base-300/50"
+                      ? getBubbleStyles(chatBubbleStyle, true).my
+                      : getBubbleStyles(chatBubbleStyle, false).other
                   }`}
                 >
                   <div
@@ -1650,8 +1639,8 @@ const ChatContainer = () => {
                 <div 
                   className={`relative group/message max-w-[320px] sm:max-w-[360px] px-5 py-4 transition-all duration-200 hover:scale-[1.01] ${
                     isMyMessage 
-                      ? "bg-gradient-to-br from-primary to-primary/90 text-primary-content rounded-3xl rounded-br-sm shadow-lg shadow-primary/20" 
-                      : "bg-base-200/95 backdrop-blur-sm text-base-content rounded-3xl rounded-bl-sm shadow-lg shadow-black/10 border border-base-300/50"
+                      ? getBubbleStyles(chatBubbleStyle, true).my
+                      : getBubbleStyles(chatBubbleStyle, false).other
                   }`}
                 >
                   <a
@@ -1695,13 +1684,13 @@ const ChatContainer = () => {
                 <div 
                   className={`relative px-4 py-2.5 text-sm transition-all duration-200 hover:scale-[1.01] group/message ${
                     isMyMessage
-                      ? "bg-gradient-to-br from-primary to-primary/90 text-primary-content rounded-3xl rounded-br-sm shadow-lg shadow-primary/20"
-                      : "bg-base-200/95 backdrop-blur-sm text-base-content rounded-3xl rounded-bl-sm shadow-lg shadow-black/10 border border-base-300/50"
+                      ? getBubbleStyles(chatBubbleStyle, true).my
+                      : getBubbleStyles(chatBubbleStyle, false).other
                   }`}
                 >
                   
                   {/* Message text with inline status (Enhanced Telegram style) */}
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-end gap-1.5">
                     {message.text && (
                       <span className={`leading-relaxed break-words flex-1 min-w-0 font-normal tracking-wide ${
                         isMyMessage ? 'text-primary-content' : 'text-base-content'
@@ -1711,7 +1700,7 @@ const ChatContainer = () => {
                     )}
                     
                     {/* Inline status indicators (Enhanced Telegram style) */}
-                    <div className="flex items-center gap-1 flex-shrink-0 ml-1">
+                    <div className="flex items-end gap-1 flex-shrink-0 ml-1 pb-0.5">
                       {/* Edited indicator */}
                       {message.edited && (
                         <span 

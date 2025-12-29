@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
-import { FaUsers, FaTimes, FaBars, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaComment, FaMicrophone, FaBookmark } from "react-icons/fa";
+import { useFolderStore } from "../store/useFolderStore";
+import { FaUsers, FaTimes, FaBars, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaComment, FaMicrophone, FaBookmark, FaFolder, FaChevronDown, FaChevronRight} from "react-icons/fa";
 import SidebarSkeleton from "./skeletons/SideBarSkeleton";
 import CreateGroupModal from "./CreateGroupModal";
+import FolderManagementModal from "./FolderManagementModal";
 import ProfileImage from "./ProfileImage";
 import SavedMessages from "./SavedMessages";
 import { formatDistanceToNow } from "date-fns";
+import { getFolderIcon, DEFAULT_FOLDER_ICON } from "../lib/folderIcons";
 
 const Sidebar = () => {
   const { 
@@ -25,8 +28,11 @@ const Sidebar = () => {
     typingUsers 
   } = useChatStore();
   const { onlineUsers } = useAuthStore();
+  const { folders, getFolders, toggleFolderExpansion, addConversationToFolder, removeConversationFromFolder, getFolderForConversation } = useFolderStore();
   const [showOnlineOnly, setShowOnlineOnly] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const [showFolderManagement, setShowFolderManagement] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
 
   // Auto-open sidebar on mobile when on chat page to show conversation list
   useEffect(() => {
@@ -39,8 +45,11 @@ const Sidebar = () => {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [activeTab, setActiveTab] = useState("chats"); // "chats", "groups", or "saved"
 
-  // Don't load data here - let ConversationsListPage handle it based on active tab
-  // This component is likely not used anymore, but if it is, it should not load data on mount
+  useEffect(() => {
+    getUsers();
+    getGroups();
+    getFolders();
+  }, [getUsers, getGroups, getFolders]);
 
   // Listen for custom event to open sidebar on mobile
   useEffect(() => {
@@ -78,6 +87,68 @@ const Sidebar = () => {
     const matchesOnline = !showOnlineOnly || onlineUsers.includes(user._id);
     return matchesSearch && matchesOnline;
   });
+
+  // Separate conversations into folders and unorganized
+  const getConversationsInFolders = () => {
+    const inFolders = new Set();
+    folders.forEach((folder) => {
+      folder.conversations.forEach((conv) => {
+        if (conv.type === "user") {
+          inFolders.add(conv.id.toString());
+        }
+      });
+    });
+    return inFolders;
+  };
+
+  const conversationsInFolders = getConversationsInFolders();
+  const unorganizedUsers = filteredUsers.filter((user) => {
+    const userId = typeof user._id === 'string' ? user._id : user._id.toString();
+    return !conversationsInFolders.has(userId);
+  });
+
+  // Get users in a specific folder
+  const getUsersInFolder = (folder) => {
+    const folderUserIds = folder.conversations
+      .filter((conv) => conv.type === "user")
+      .map((conv) => conv.id.toString());
+    
+    return filteredUsers.filter((user) => {
+      const userId = typeof user._id === 'string' ? user._id : user._id.toString();
+      return folderUserIds.includes(userId);
+    });
+  };
+
+  // Handle context menu for moving conversations to folders
+  const handleContextMenu = (e, user) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      user,
+    });
+  };
+
+  const handleMoveToFolder = async (folderId, user) => {
+    const userId = typeof user._id === 'string' ? user._id : user._id.toString();
+    try {
+      await addConversationToFolder(folderId, "user", userId);
+      setContextMenu(null);
+    } catch (error) {
+      console.error("Failed to move conversation to folder:", error);
+    }
+  };
+
+  const handleRemoveFromFolder = async (folderId, user) => {
+    const userId = typeof user._id === 'string' ? user._id : user._id.toString();
+    try {
+      await removeConversationFromFolder(folderId, "user", userId);
+      setContextMenu(null);
+    } catch (error) {
+      console.error("Failed to remove conversation from folder:", error);
+    }
+  };
 
   // Filter groups based on search query
   const filteredGroups = groups.filter((group) => {
@@ -144,6 +215,15 @@ const Sidebar = () => {
             </div>
             
             <div className="flex items-center gap-2">
+              {activeTab === "chats" && (
+                <button
+                  onClick={() => setShowFolderManagement(true)}
+                  className="btn btn-ghost btn-sm btn-circle hover:bg-primary/10 hover:text-primary transition-all"
+                  title="Manage Folders"
+                >
+                  <FaFolder className="size-5" />
+                </button>
+              )}
               {activeTab === "groups" && (
                 <button
                   onClick={() => setShowCreateGroup(true)}
@@ -238,12 +318,93 @@ const Sidebar = () => {
           <div className="p-3 space-y-2">
             {activeTab === "chats" ? (
               <>
-                {filteredUsers.map((user) => {
+                {/* Folders */}
+                {folders.map((folder) => {
+                  const folderUsers = getUsersInFolder(folder);
+                  if (folderUsers.length === 0 && !searchQuery) return null;
+                  
+                  return (
+                    <div key={folder._id} className="space-y-1">
+                      <button
+                        onClick={() => toggleFolderExpansion(folder._id)}
+                        className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-base-200/70 transition-colors"
+                      >
+                        {folder.isExpanded ? (
+                          <FaChevronDown className="size-3 text-base-content/60" />
+                        ) : (
+                          <FaChevronRight className="size-3 text-base-content/60" />
+                        )}
+                        {(() => {
+                          const FolderIconComponent = getFolderIcon(folder.icon || DEFAULT_FOLDER_ICON);
+                          return <FolderIconComponent className="size-5" style={{ color: folder.color }} />;
+                        })()}
+                        <div
+                          className="w-1 h-4 rounded-full"
+                          style={{ backgroundColor: folder.color }}
+                        />
+                        <span className="flex-1 text-left font-medium text-sm text-base-content">
+                          {folder.name}
+                        </span>
+                        <span className="text-xs text-base-content/60">
+                          {folderUsers.length}
+                        </span>
+                      </button>
+                      {folder.isExpanded && (
+                        <div className="ml-6 space-y-1">
+                          {folderUsers.map((user) => {
+                            const userId = typeof user._id === 'string' ? user._id : user._id?.toString() || `user-${Math.random()}`;
+                            const lastMessage = lastMessages[userId] || lastMessages[user._id];
+                            return (
+                              <button
+                                key={userId}
+                                onClick={() => handleUserSelect(user)}
+                                onContextMenu={(e) => handleContextMenu(e, user)}
+                                className={`
+                                  w-full p-2 rounded-lg flex items-center gap-3
+                                  hover:bg-base-200/70 active:bg-base-200
+                                  transition-all duration-200
+                                  ${selectedUser?._id === user._id 
+                                    ? "bg-primary/10 border border-primary/30" 
+                                    : "border border-transparent"}
+                                `}
+                              >
+                                <div className="relative">
+                                  <ProfileImage
+                                    src={user.profilePic}
+                                    alt={user.fullname}
+                                    className="size-10 object-cover rounded-full"
+                                  />
+                                  {onlineUsers.includes(user._id) && (
+                                    <span className="absolute bottom-0 right-0 size-2.5 bg-green-500 rounded-full ring-2 ring-base-100" />
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-medium text-sm truncate">
+                                    {user.fullname}
+                                  </div>
+                                  {lastMessage && (
+                                    <div className="text-xs text-base-content/60 truncate mt-0.5">
+                                      {lastMessage.text || "Media"}
+                                    </div>
+                                  )}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Unorganized Conversations */}
+                {unorganizedUsers.map((user) => {
                   const userId = typeof user._id === 'string' ? user._id : user._id?.toString() || `user-${Math.random()}`;
                   return (
               <button
                 key={userId}
                 onClick={() => handleUserSelect(user)}
+                onContextMenu={(e) => handleContextMenu(e, user)}
                 className={`
                   w-full p-3 rounded-xl flex items-center gap-4
                   hover:bg-base-200/70 active:bg-base-200
@@ -348,7 +509,7 @@ const Sidebar = () => {
                   );
                 })}
                 
-                 {filteredUsers.length === 0 && (
+                 {(filteredUsers.length === 0 || (unorganizedUsers.length === 0 && folders.length === 0)) && (
                    <div className="text-center py-12">
                      <div className="size-16 rounded-full bg-base-200 flex items-center justify-center mx-auto mb-4">
                        <FaUsers className="size-8 text-base-content/30" />
@@ -366,7 +527,7 @@ const Sidebar = () => {
                    </div>
                  )}
               </>
-            ) : (
+            ) : activeTab === "groups" ? (
               <>
                 {filteredGroups.map((group) => {
                   const groupId = typeof group._id === 'string' ? group._id : group._id?.toString() || `group-${Math.random()}`;
@@ -379,7 +540,8 @@ const Sidebar = () => {
                       hover:bg-base-200/70 active:bg-base-200
                       transition-all duration-200 ease-in-out
                       ${selectedGroup?._id === group._id 
-                        ? "bg-primary/10 border border-primary/30 shadow-sm" 
+                        ? "bg-primary/10 border border-primary/30 shadow-sm"
+
                         : "border border-transparent"}
                     `}
                   >
@@ -455,6 +617,145 @@ const Sidebar = () => {
           getGroups(); // Refresh groups list
         }}
       />
+      <FolderManagementModal
+        isOpen={showFolderManagement}
+        onClose={() => {
+          setShowFolderManagement(false);
+          getFolders(); // Refresh folders list
+        }}
+      />
+      
+      {/* Context Menu for Moving Conversations */}
+      {contextMenu && (() => {
+        const userId = typeof contextMenu.user._id === 'string' 
+          ? contextMenu.user._id 
+          : contextMenu.user._id?.toString() || String(contextMenu.user._id);
+        const currentFolder = getFolderForConversation("user", userId);
+        const isInFolder = !!currentFolder;
+        
+        // Debug logging (can be removed later)
+        if (process.env.NODE_ENV === 'development') {
+          console.log('Context menu debug:', {
+            userId,
+            userIdType: typeof userId,
+            foldersCount: folders.length,
+            currentFolder: currentFolder ? { id: currentFolder._id, name: currentFolder.name } : null,
+            isInFolder,
+            folders: folders.map(f => ({
+              id: f._id,
+              name: f.name,
+              conversations: f.conversations?.map(c => ({
+                type: c.type,
+                id: c.id,
+                idType: typeof c.id
+              }))
+            }))
+          });
+        }
+        
+        return (
+          <div
+            className="fixed z-50 bg-base-100 rounded-lg shadow-xl border border-base-300 py-2 min-w-[200px]"
+            style={{
+              left: contextMenu.x,
+              top: contextMenu.y,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {isInFolder ? (
+              <>
+                <div className="px-3 py-2 text-xs font-semibold text-base-content/60 border-b border-base-300">
+                  Remove from Folder
+                </div>
+                <div className="px-3 py-2 text-sm text-base-content/60 border-b border-base-300">
+                  Currently in: <span className="font-medium">{currentFolder.name}</span>
+                </div>
+                <button
+                  onClick={() => handleRemoveFromFolder(currentFolder._id, contextMenu.user)}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-base-200 flex items-center gap-2 text-red-500"
+                >
+                  <span>Remove from "{currentFolder.name}"</span>
+                </button>
+                <div className="border-t border-base-300 mt-1">
+                  <div className="px-3 py-2 text-xs font-semibold text-base-content/60">
+                    Or move to another folder:
+                  </div>
+                  {folders.filter(f => f._id !== currentFolder._id).length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-base-content/60">
+                      No other folders available
+                    </div>
+                  ) : (
+                    folders
+                      .filter(f => f._id !== currentFolder._id)
+                      .map((folder) => {
+                        const FolderIconComponent = getFolderIcon(folder.icon || DEFAULT_FOLDER_ICON);
+                        return (
+                          <button
+                            key={folder._id}
+                            onClick={() => handleMoveToFolder(folder._id, contextMenu.user)}
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-base-200 flex items-center gap-2"
+                          >
+                            <FolderIconComponent className="size-4" style={{ color: folder.color }} />
+                            <div
+                              className="w-1 h-4 rounded-full"
+                              style={{ backgroundColor: folder.color }}
+                            />
+                            <span className="flex-1">{folder.name}</span>
+                          </button>
+                        );
+                      })
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="px-3 py-2 text-xs font-semibold text-base-content/60 border-b border-base-300">
+                  Move to Folder
+                </div>
+                {folders.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-base-content/60">
+                    No folders. Create one first!
+                  </div>
+                ) : (
+                  folders.map((folder) => {
+                    const FolderIconComponent = getFolderIcon(folder.icon || DEFAULT_FOLDER_ICON);
+                    return (
+                      <button
+                        key={folder._id}
+                        onClick={() => handleMoveToFolder(folder._id, contextMenu.user)}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-base-200 flex items-center gap-2"
+                      >
+                        <FolderIconComponent className="size-4" style={{ color: folder.color }} />
+                        <div
+                          className="w-1 h-4 rounded-full"
+                          style={{ backgroundColor: folder.color }}
+                        />
+                        <span className="flex-1">{folder.name}</span>
+                      </button>
+                    );
+                  })
+                )}
+              </>
+            )}
+            <div className="border-t border-base-300 mt-1">
+              <button
+                onClick={() => setContextMenu(null)}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-base-200 text-base-content/60"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+      
+      {/* Overlay to close context menu */}
+      {contextMenu && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => setContextMenu(null)}
+        />
+      )}
     </>
   );
 };

@@ -1,16 +1,19 @@
-import { useEffect, useState, useRef, useMemo, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { useCallStore } from "../store/useCallStore";
-import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit, FaMicrophone, FaBookmark, FaUsers, FaPhone, FaVideo } from "react-icons/fa";
+import { useFolderStore } from "../store/useFolderStore";
+import { FaComment, FaSearch, FaImage, FaFileAlt, FaCheck, FaCheckDouble, FaUserPlus, FaTh, FaTrash, FaEdit, FaMicrophone, FaBookmark, FaUsers, FaPhone, FaVideo, FaFolder, FaChevronDown, FaChevronRight } from "react-icons/fa";
 import CreateGroupModal from "../component/CreateGroupModal";
+import FolderManagementModal from "../component/FolderManagementModal";
 import DeleteConversationModal from "../component/DeleteConversationModal";
 import DeleteGroupModal from "../component/DeleteGroupModal";
 import ProfileImage from "../component/ProfileImage";
 import { formatDistanceToNow } from "date-fns";
 import SidebarSkeleton from "../component/skeletons/SideBarSkeleton";
 import toast from "react-hot-toast";
+import { getFolderIcon, DEFAULT_FOLDER_ICON } from "../lib/folderIcons";
 
 const ConversationsListPage = () => {
   const { 
@@ -50,20 +53,13 @@ const ConversationsListPage = () => {
   } = useChatStore();
   const { onlineUsers, authUser } = useAuthStore();
   const { initiateCall, callState } = useCallStore();
+  const { folders, getFolders, toggleFolderExpansion, addConversationToFolder, removeConversationFromFolder } = useFolderStore();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [showCreateGroup, setShowCreateGroup] = useState(false);
-  
-  // Debounce search query to avoid filtering on every keystroke
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearchQuery(searchQuery);
-    }, 300); // 300ms debounce
-    
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+  const [showFolderManagement, setShowFolderManagement] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
   
   // Determine active tab from URL or default to "chats"
   const view = searchParams.get('view') || 'chats';
@@ -74,80 +70,32 @@ const ConversationsListPage = () => {
   const [conversationToDelete, setConversationToDelete] = useState(null);
   const [groupToDelete, setGroupToDelete] = useState(null);
   const loadedTabsRef = useRef(new Set()); // Track which tabs have been loaded (use ref to avoid re-renders)
-  const loadingTabsRef = useRef(new Set()); // Track which tabs are currently loading
-  const abortControllerRef = useRef(null); // For request cancellation
 
   // Load data only for the active tab (lazy loading)
   useEffect(() => {
     // Only load data if user is authenticated
     if (!authUser) return;
     
-    // Cancel previous request if switching tabs
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+    // Load folders when chats tab is active
+    if (activeTab === "chats") {
+      getFolders();
     }
     
-    // Create new abort controller for this request
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-    
-    // Check if this tab has already been loaded
-    if (loadedTabsRef.current.has(activeTab)) {
-      return; // Already loaded, don't reload
+    // Load data based on active tab - only load once per tab
+    if (activeTab === "chats" && !loadedTabsRef.current.has("chats")) {
+      // Load chats tab data
+      getContacts(); // Needed for contacts functionality
+      getUsers(); // This loads lastMessages which is needed to show conversations
+      loadedTabsRef.current.add("chats");
+    } else if (activeTab === "groups" && !loadedTabsRef.current.has("groups")) {
+      // Load groups tab data
+      getGroups();
+      loadedTabsRef.current.add("groups");
+    } else if (activeTab === "contacts" && !loadedTabsRef.current.has("contacts")) {
+      // Load contacts tab data
+      getAllUsers();
+      loadedTabsRef.current.add("contacts");
     }
-    
-    // Check if this tab is currently loading
-    if (loadingTabsRef.current.has(activeTab)) {
-      return; // Already loading, don't start another load
-    }
-    
-    // Mark as loading immediately to prevent duplicate calls
-    loadingTabsRef.current.add(activeTab);
-    
-    // Load data based on active tab
-    const loadTabData = async () => {
-      try {
-        if (activeTab === "chats") {
-          // Load chats tab data - only load getUsers (which loads 2 endpoints)
-          // getContacts() is loaded lazily when user actually needs it (e.g., when viewing contact requests)
-          await getUsers(); // This loads lastMessages which is needed to show conversations
-        } else if (activeTab === "groups") {
-          // Load groups tab data
-          await getGroups();
-        } else if (activeTab === "contacts") {
-          // Load contacts tab data
-          await getAllUsers();
-        }
-        
-        // Only mark as loaded if request wasn't aborted
-        if (!abortController.signal.aborted) {
-          loadedTabsRef.current.add(activeTab);
-        }
-      } catch (error) {
-        // Ignore abort errors
-        if (error.name === 'AbortError' || abortController.signal.aborted) {
-          return;
-        }
-        // On error, remove from loading so it can be retried
-        loadingTabsRef.current.delete(activeTab);
-        console.error(`Error loading ${activeTab} tab:`, error);
-      } finally {
-        // Remove from loading set if not aborted
-        if (!abortController.signal.aborted) {
-          loadingTabsRef.current.delete(activeTab);
-        }
-      }
-    };
-    
-    loadTabData();
-    
-    // Cleanup: cancel request if component unmounts or tab changes
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-    };
     
     // Cleanup long press timers on unmount
     return () => {
@@ -158,8 +106,23 @@ const ConversationsListPage = () => {
         clearTimeout(longPressGroupTimer.current);
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, authUser]); // Only depend on activeTab and authUser to prevent unnecessary re-runs
+  }, [activeTab, authUser, getContacts, getUsers, getGroups, getAllUsers, getFolders]);
+
+  // Debounced search for users not in conversations (chats tab only)
+  useEffect(() => {
+    // Only search when on chats tab and search query is at least 2 characters
+    if (activeTab !== "chats") return;
+    
+    const searchTimer = setTimeout(() => {
+      if (searchQuery && searchQuery.length >= 2) {
+        getAllUsers(searchQuery);
+      }
+      // Note: We don't clear allUsers when search is cleared - it's fine to leave them
+      // The search results will just be filtered to show nothing when searchQuery is empty
+    }, 300); // 300ms debounce
+
+    return () => clearTimeout(searchTimer);
+  }, [searchQuery, activeTab, getAllUsers]);
 
   // Helper function to normalize IDs for consistent comparison
   const normalizeId = (id) => {
@@ -170,22 +133,13 @@ const ConversationsListPage = () => {
   };
 
   // Ensure we have valid data structures (before using them)
-  const safeLastMessages = useMemo(() => 
-    lastMessages && typeof lastMessages === 'object' ? lastMessages : {}, 
-    [lastMessages]
-  );
-  const safeUsers = useMemo(() => 
-    Array.isArray(users) ? users : [], 
-    [users]
-  );
-  const safeGroups = useMemo(() => 
-    Array.isArray(groups) ? groups : [], 
-    [groups]
-  );
+  const safeLastMessages = lastMessages && typeof lastMessages === 'object' ? lastMessages : {};
+  const safeUsers = Array.isArray(users) ? users : [];
+  const safeGroups = Array.isArray(groups) ? groups : [];
 
-  // Build conversations list from lastMessages - memoized for performance
+  // Build conversations list from lastMessages - this is the source of truth
   // Extract user info from messages if not found in users array
-  const usersWithMessages = useMemo(() => Object.keys(safeLastMessages)
+  const usersWithMessages = Object.keys(safeLastMessages)
     .map((targetId) => {
       try {
         const targetIdNormalized = normalizeId(targetId);
@@ -241,55 +195,116 @@ const ConversationsListPage = () => {
         return null;
       }
     })
-    .filter(Boolean), // Remove null entries
-    [safeLastMessages, safeUsers, authUser, normalizeId]
-  );
+    .filter(Boolean); // Remove null entries
 
-  // Sort conversations by most recent message first - memoized
-  const sortedConversations = useMemo(() => {
-    return [...usersWithMessages].sort((a, b) => {
-      if (!a.lastMessage && !b.lastMessage) return 0;
-      if (!a.lastMessage) return 1;
-      if (!b.lastMessage) return -1;
-      
-      const aDate = new Date(a.lastMessage.createdAt);
-      const bDate = new Date(b.lastMessage.createdAt);
-      return bDate - aDate;
+  // Sort conversations by most recent message first
+  const sortedConversations = [...usersWithMessages].sort((a, b) => {
+    if (!a.lastMessage && !b.lastMessage) return 0;
+    if (!a.lastMessage) return 1;
+    if (!b.lastMessage) return -1;
+    
+    const aDate = new Date(a.lastMessage.createdAt);
+    const bDate = new Date(b.lastMessage.createdAt);
+    return bDate - aDate;
+  });
+
+  // Separate conversations into folders and unorganized
+  const getConversationsInFolders = () => {
+    const inFolders = new Set();
+    folders.forEach((folder) => {
+      folder.conversations.forEach((conv) => {
+        if (conv.type === "user") {
+          inFolders.add(conv.id.toString());
+        }
+      });
     });
-  }, [usersWithMessages]);
+    return inFolders;
+  };
 
-  // Filter conversations based on debounced search query - memoized
-  const filteredConversations = useMemo(() => {
-    if (!debouncedSearchQuery.trim()) {
-      return sortedConversations;
+  const conversationsInFolders = getConversationsInFolders();
+  
+  // Filter conversations based on search query
+  const filteredConversations = sortedConversations.filter((conv) => {
+    const matchesSearch = conv.user.fullname.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesSearch;
+  });
+
+  // Separate filtered conversations into folders and unorganized
+  const unorganizedConversations = filteredConversations.filter((conv) => {
+    const userId = normalizeId(conv.user._id);
+    return !conversationsInFolders.has(userId);
+  });
+
+  // Get conversations in a specific folder
+  const getConversationsInFolder = (folder) => {
+    const folderUserIds = folder.conversations
+      .filter((conv) => conv.type === "user")
+      .map((conv) => conv.id.toString());
+    
+    return filteredConversations.filter((conv) => {
+      const userId = normalizeId(conv.user._id);
+      return folderUserIds.includes(userId);
+    });
+  };
+
+  // Get the folder that contains a specific user conversation
+  const getFolderForUser = (userId) => {
+    const normalizedUserId = normalizeId(userId);
+    return folders.find((folder) =>
+      folder.conversations.some(
+        (conv) => conv.type === "user" && normalizeId(conv.id) === normalizedUserId
+      )
+    );
+  };
+
+  // Handle context menu for moving conversations to folders
+  const handleContextMenu = (e, user) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      user,
+    });
+  };
+
+  const handleMoveToFolder = async (folderId, user) => {
+    const userId = normalizeId(user._id);
+    try {
+      await addConversationToFolder(folderId, "user", userId);
+      setContextMenu(null);
+      getFolders(); // Refresh folders
+    } catch (error) {
+      console.error("Failed to move conversation to folder:", error);
     }
-    const searchLower = debouncedSearchQuery.toLowerCase();
-    return sortedConversations.filter((conv) => {
-      return conv.user.fullname.toLowerCase().includes(searchLower);
-    });
-  }, [sortedConversations, debouncedSearchQuery]);
+  };
 
-  // Filter groups based on debounced search query - memoized
-  const filteredGroups = useMemo(() => {
-    if (!debouncedSearchQuery.trim()) {
-      return safeGroups;
+  const handleRemoveFromFolder = async (folderId, user) => {
+    const userId = normalizeId(user._id);
+    try {
+      await removeConversationFromFolder(folderId, "user", userId);
+      setContextMenu(null);
+      getFolders(); // Refresh folders
+      toast.success("Removed from folder");
+    } catch (error) {
+      console.error("Failed to remove conversation from folder:", error);
     }
-    const searchLower = debouncedSearchQuery.toLowerCase();
-    return safeGroups.filter((group) => {
-      return group.name.toLowerCase().includes(searchLower);
-    });
-  }, [safeGroups, debouncedSearchQuery]);
+  };
 
-  // Memoize handlers to prevent unnecessary re-renders
-  const handleUserSelect = useCallback((user) => {
+  // Filter groups based on search query
+  const filteredGroups = safeGroups.filter((group) => {
+    return group.name.toLowerCase().includes(searchQuery.toLowerCase());
+  });
+
+  const handleUserSelect = (user) => {
     setSelectedUser(user);
     // ChatPage will show the chat on the right side
-  }, [setSelectedUser]);
+  };
 
-  const handleGroupSelect = useCallback((group) => {
+  const handleGroupSelect = (group) => {
     setSelectedGroup(group);
     // ChatPage will show the chat on the right side
-  }, [setSelectedGroup]);
+  };
 
   const handleLongPressStart = (user) => {
     longPressTimer.current = setTimeout(() => {
@@ -407,6 +422,15 @@ const ConversationsListPage = () => {
             <h1 className="text-lg font-semibold text-base-content">
               {activeTab === "chats" ? "Chats" : activeTab === "groups" ? "Groups" : "Contacts"}
             </h1>
+            {activeTab === "chats" && (
+              <button
+                onClick={() => setShowFolderManagement(true)}
+                className="p-2 hover:bg-base-200/50 rounded-lg transition-colors"
+                title="Manage Folders"
+              >
+                <FaFolder className="size-5 text-base-content/70" />
+              </button>
+            )}
             {activeTab === "groups" && (
               <button
                 onClick={() => setShowCreateGroup(true)}
@@ -416,7 +440,7 @@ const ConversationsListPage = () => {
                 <FaUserPlus className="size-5 text-base-content/70" />
               </button>
             )}
-            {(activeTab === "chats" || activeTab === "contacts") && (
+            {(activeTab === "contacts") && (
               <div className="w-9"></div>
             )}
           </div>
@@ -490,7 +514,92 @@ const ConversationsListPage = () => {
                 </button>
               )}
 
-              {hasLoaded && filteredConversations.length === 0 ? (
+              {/* Folders */}
+              {!searchQuery && folders.map((folder) => {
+                const folderConversations = getConversationsInFolder(folder);
+                if (folderConversations.length === 0) return null;
+                
+                return (
+                  <div key={folder._id} className="space-y-1">
+                    <button
+                      onClick={() => toggleFolderExpansion(folder._id)}
+                      className="w-full px-4 py-2 flex items-center gap-2 hover:bg-base-200/50 transition-colors"
+                    >
+                      {folder.isExpanded ? (
+                        <FaChevronDown className="size-3 text-base-content/60" />
+                      ) : (
+                        <FaChevronRight className="size-3 text-base-content/60" />
+                      )}
+                      {(() => {
+                        const FolderIconComponent = getFolderIcon(folder.icon || DEFAULT_FOLDER_ICON);
+                        return <FolderIconComponent className="size-5" style={{ color: folder.color }} />;
+                      })()}
+                      <div
+                        className="w-1 h-4 rounded-full"
+                        style={{ backgroundColor: folder.color }}
+                      />
+                      <span className="flex-1 text-left font-medium text-sm text-base-content">
+                        {folder.name}
+                      </span>
+                      <span className="text-xs text-base-content/60">
+                        {folderConversations.length}
+                      </span>
+                    </button>
+                    {folder.isExpanded && (
+                      <div className="ml-6 space-y-1">
+                        {folderConversations.map((conv) => {
+                          const user = conv.user;
+                          const lastMessage = conv.lastMessage;
+                          const userId = normalizeId(user._id);
+                          const unreadCount = unreadMessages[userId] || unreadMessages[user._id] || 0;
+                          const hasUnread = unreadCount > 0;
+                          
+                          return (
+                            <div
+                              key={user._id}
+                              onContextMenu={(e) => handleContextMenu(e, user)}
+                              className="conversation-item relative w-full"
+                            >
+                              <button
+                                onClick={() => handleUserSelect(user)}
+                                className="w-full px-4 py-2 flex items-center gap-3 transition-all duration-200 hover:bg-base-200/50 border-l-4 border-transparent"
+                              >
+                                <div className="relative flex-shrink-0">
+                                  <ProfileImage
+                                    src={user.profilePic}
+                                    alt={user.fullname}
+                                    className="size-10 rounded-full object-cover"
+                                  />
+                                  {onlineUsers.includes(user._id) && (
+                                    <span className="absolute bottom-0 right-0 size-2.5 bg-green-500 rounded-full ring-2 ring-base-100" />
+                                  )}
+                                  {hasUnread && (
+                                    <span className="absolute -top-1 -right-1 min-w-[18px] h-4.5 px-1 flex items-center justify-center bg-red-500 text-white text-[10px] font-semibold rounded-full">
+                                      {unreadCount > 99 ? '99+' : unreadCount}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0 text-left">
+                                  <div className={`text-sm truncate ${hasUnread ? 'font-bold text-base-content' : 'font-semibold text-base-content'}`}>
+                                    {user.fullname}
+                                  </div>
+                                  {lastMessage && (
+                                    <div className={`text-xs truncate ${hasUnread ? 'font-semibold text-base-content' : 'text-base-content/50'}`}>
+                                      {lastMessage.text || "Media"}
+                                    </div>
+                                  )}
+                                </div>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {hasLoaded && filteredConversations.length === 0 && unorganizedConversations.length === 0 && folders.length === 0 ? (
                 <div className="text-center py-12 px-4">
                   <div className="size-16 rounded-full bg-base-200 flex items-center justify-center mx-auto mb-4">
                     <FaComment className="size-8 text-base-content/30" />
@@ -506,8 +615,8 @@ const ConversationsListPage = () => {
                       : "Start chatting with someone to see conversations here"}
                   </p>
                 </div>
-              ) : filteredConversations.length > 0 ? (
-                filteredConversations.map((conv) => {
+              ) : unorganizedConversations.length > 0 ? (
+                unorganizedConversations.map((conv) => {
                   const user = conv.user;
                   const lastMessage = conv.lastMessage;
                   const userId = normalizeId(user._id);
@@ -529,6 +638,7 @@ const ConversationsListPage = () => {
                       onMouseLeave={handleLongPressEnd}
                       onTouchStart={() => handleLongPressStart(user)}
                       onTouchEnd={handleLongPressEnd}
+                      onContextMenu={(e) => handleContextMenu(e, user)}
                       className="conversation-item relative w-full"
                     >
                       <button
@@ -623,6 +733,82 @@ const ConversationsListPage = () => {
                   );
                 })
               ) : null}
+
+              {/* Search Results - Users not in conversations */}
+              {searchQuery && searchQuery.length >= 2 && (
+                <>
+                  {/* Filter allUsers to exclude users already in conversations */}
+                  {(() => {
+                    const existingUserIds = new Set(
+                      users.map(u => normalizeId(u._id))
+                    );
+                    const searchResults = (allUsers || []).filter((user) => {
+                      const userId = normalizeId(user._id);
+                      const authUserId = normalizeId(authUser?._id);
+                      // Exclude current user and users already in conversations
+                      return userId !== authUserId && !existingUserIds.has(userId);
+                    });
+
+                    if (isAllUsersLoading) {
+                      return (
+                        <div className="px-4 py-3 border-t border-base-300">
+                          <div className="flex items-center justify-center gap-2 text-base-content/60">
+                            <span className="loading loading-spinner loading-sm"></span>
+                            <span className="text-sm">Searching users...</span>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (searchResults.length === 0 && !isAllUsersLoading) {
+                      return null; // Don't show anything if no results
+                    }
+
+                    return (
+                      <>
+                        {searchResults.length > 0 && (
+                          <div className="px-4 py-2 border-t border-base-300">
+                            <div className="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                              Start New Conversation
+                            </div>
+                            {searchResults.map((user) => {
+                              const userId = normalizeId(user._id);
+                              return (
+                                <button
+                                  key={user._id}
+                                  onClick={() => handleUserSelect(user)}
+                                  className="w-full px-4 py-3 flex items-center gap-3 transition-all duration-200 hover:bg-base-200/50 border-l-4 border-transparent rounded-lg mb-1"
+                                >
+                                  <div className="relative flex-shrink-0">
+                                    <ProfileImage
+                                      src={user.profilePic}
+                                      alt={user.fullname}
+                                      className="size-10 rounded-full object-cover"
+                                    />
+                                    {onlineUsers.includes(user._id) && (
+                                      <span className="absolute bottom-0 right-0 size-2.5 bg-green-500 rounded-full ring-2 ring-base-100" />
+                                    )}
+                                  </div>
+                                  <div className="flex-1 min-w-0 text-left">
+                                    <div className="text-sm font-semibold text-base-content truncate">
+                                      {user.fullname}
+                                    </div>
+                                    {user.email && (
+                                      <div className="text-xs text-base-content/50 truncate">
+                                        {user.email}
+                                      </div>
+                                    )}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </>
+              )}
               
               {/* Load More Conversations Button (Telegram-style pagination) */}
               {!searchQuery && conversationPagination?.hasMore && (
@@ -934,6 +1120,7 @@ const ConversationsListPage = () => {
             </>
           ) : null}
         </div>
+      </div>
 
       {/* Create Group Modal */}
       <CreateGroupModal
@@ -943,6 +1130,106 @@ const ConversationsListPage = () => {
           getGroups();
         }}
       />
+
+      {/* Folder Management Modal */}
+      <FolderManagementModal
+        isOpen={showFolderManagement}
+        onClose={() => {
+          setShowFolderManagement(false);
+          getFolders(); // Refresh folders list
+        }}
+      />
+
+      {/* Context Menu for Moving Conversations */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-base-100 rounded-lg shadow-xl border border-base-300 py-2 min-w-[200px]"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-xs font-semibold text-base-content/60 border-b border-base-300">
+            Move to Folder
+          </div>
+          {folders.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-base-content/60">
+              No folders. Create one first!
+            </div>
+          ) : (() => {
+            // Get the folder that already contains this conversation (if any)
+            const currentFolder = contextMenu?.user 
+              ? getFolderForUser(contextMenu.user._id)
+              : null;
+            
+            // Filter out folders that already contain this conversation
+            const availableFolders = folders.filter(
+              (folder) => folder._id !== currentFolder?._id
+            );
+            
+            return (
+              <>
+                {availableFolders.map((folder) => (
+                  <button
+                    key={folder._id}
+                    onClick={() => handleMoveToFolder(folder._id, contextMenu.user)}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-base-200 flex items-center gap-2"
+                  >
+                    {(() => {
+                      const FolderIconComponent = getFolderIcon(folder.icon || DEFAULT_FOLDER_ICON);
+                      return <FolderIconComponent className="size-4" style={{ color: folder.color }} />;
+                    })()}
+                    <div
+                      className="w-1 h-4 rounded-full"
+                      style={{ backgroundColor: folder.color }}
+                    />
+                    <span className="flex-1">{folder.name}</span>
+                  </button>
+                ))}
+              </>
+            );
+          })()}
+          {(() => {
+            // Get the folder that already contains this conversation (if any)
+            const currentFolder = contextMenu?.user 
+              ? getFolderForUser(contextMenu.user._id)
+              : null;
+            
+            // Show "Remove from Folder" option if conversation is in a folder
+            if (currentFolder) {
+              return (
+                <div className="border-t border-base-300 mt-1">
+                  <button
+                    onClick={() => handleRemoveFromFolder(currentFolder._id, contextMenu.user)}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-base-200 text-red-500/80 flex items-center gap-2"
+                  >
+                    <FaTrash className="size-3" />
+                    Remove from "{currentFolder.name}"
+                  </button>
+                </div>
+              );
+            }
+            return null;
+          })()}
+          <div className="border-t border-base-300 mt-1">
+            <button
+              onClick={() => setContextMenu(null)}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-base-200 text-base-content/60"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      
+      {/* Overlay to close context menu */}
+      {contextMenu && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => setContextMenu(null)}
+        />
+      )}
 
       {/* Delete Conversation Modal */}
       <DeleteConversationModal
@@ -957,11 +1244,8 @@ const ConversationsListPage = () => {
       <DeleteGroupModal
         isOpen={!!groupToDelete}
         onClose={() => setGroupToDelete(null)}
-        group={groupToDelete}
-        onDelete={handleConfirmDeleteGroup}
-        isDeleting={false}
+        onConfirm={handleConfirmDeleteGroup}
       />
-    </div>
     </>
   );
 };

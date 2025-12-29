@@ -30,11 +30,9 @@ export const createUserActions = (set, get) => ({
     
     try {
       // Load first page of conversations and users (Telegram-style: page=1&limit=50)
-      // Reduced limits for better performance: 20 conversations, 30 users initially
-      // Further reduced for faster initial load - user can load more via pagination
       const [usersRes, lastMessagesRes] = await Promise.all([
-        axiosInstance.get("/messages/users?page=1&limit=30"), // Reduced from 50 to 30 for faster load
-        axiosInstance.get("/messages/last-messages?page=1&limit=20") // Reduced from 30 to 20 for faster load
+        axiosInstance.get("/messages/users?page=1&limit=100"), // Load first 100 users
+        axiosInstance.get("/messages/last-messages?page=1&limit=50") // Load first 50 conversations
       ]);
 
       // Handle 401 errors gracefully
@@ -201,7 +199,8 @@ export const createUserActions = (set, get) => ({
   },
 
   // Get all users (for contacts page - not just users with conversations)
-  getAllUsers: async () => {
+  // Optional searchQuery parameter for searching users by name or email
+  getAllUsers: async (searchQuery = "") => {
     const authUser = useAuthStore.getState().authUser;
     
     // Don't try to load users if not authenticated
@@ -213,8 +212,9 @@ export const createUserActions = (set, get) => ({
     set({ isAllUsersLoading: true });
     
     try {
-      // Load all users with pagination - reduced limit for better performance
-      const usersRes = await axiosInstance.get("/messages/users/all?page=1&limit=100"); // Reduced from 200 to 100
+      // Build URL with optional search parameter
+      const searchParam = searchQuery ? `&search=${encodeURIComponent(searchQuery)}` : "";
+      const usersRes = await axiosInstance.get(`/messages/users/all?page=1&limit=200${searchParam}`);
       
       // Handle 401 errors gracefully
       if (usersRes.status === 401) {

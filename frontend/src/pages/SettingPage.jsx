@@ -1,13 +1,16 @@
 import { useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
 import { useNavigate } from "react-router-dom";
-import { FaCamera, FaEye, FaEyeSlash, FaPalette, FaSignOutAlt, FaUser, FaEdit } from "react-icons/fa";
+import { FaCamera, FaEye, FaEyeSlash, FaPalette, FaSignOutAlt, FaUser, FaEdit, FaComments } from "react-icons/fa";
 import ProfileImage from "../component/ProfileImage";
 import toast from "react-hot-toast";
 import { uploadSingleFileToOSS } from "../lib/ossService";
+import { useSettingsStore } from "../store/useSettingsStore";
+import { bubbleStyleOptions } from "../lib/bubbleStyles";
 
 const SettingsPage = () => {
   const { authUser, updateProfile, changePassword, isChangingPassword, logout, isUpdatingProfile } = useAuthStore();
+  const { chatBubbleStyle, setChatBubbleStyle } = useSettingsStore();
   const navigate = useNavigate();
   const [selectedImg, setSelectedImg] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -396,6 +399,80 @@ const SettingsPage = () => {
               </svg>
             </div>
           </button>
+        </div>
+
+        {/* Chat Bubble Style Section */}
+        <div className="px-3 sm:px-4 py-4 sm:py-6 border-t border-base-200/50">
+          <div className="mb-4">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="size-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                <FaComments className="size-5 text-primary" />
+              </div>
+              <div>
+                <h2 className="text-base sm:text-lg font-semibold text-base-content">Chat Bubble Style</h2>
+                <p className="text-xs sm:text-sm text-base-content/60">Choose your preferred message bubble style</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {bubbleStyleOptions.map((style) => (
+              <button
+                key={style.id}
+                onClick={() => setChatBubbleStyle(style.id)}
+                className={`relative p-4 rounded-xl border-2 transition-all duration-200 text-left ${
+                  chatBubbleStyle === style.id
+                    ? "border-primary bg-primary/10 shadow-md"
+                    : "border-base-300 bg-base-200 hover:border-base-400 hover:bg-base-300"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-sm sm:text-base text-base-content mb-1">
+                      {style.name}
+                    </h3>
+                    <p className="text-xs sm:text-sm text-base-content/60 mb-3">
+                      {style.description}
+                    </p>
+                    {/* Preview bubbles */}
+                    <div className="flex items-center gap-2">
+                      {/* Other user bubble preview */}
+                      <div
+                        className={`px-3 py-1.5 text-xs bg-base-200 border border-base-300 ${style.preview.other}`}
+                      >
+                        <span className="text-base-content/70">Hello</span>
+                      </div>
+                      {/* My bubble preview */}
+                      <div
+                        className={`px-3 py-1.5 text-xs bg-primary text-primary-content ${style.preview.my}`}
+                      >
+                        <span className="text-white">Hi there!</span>
+                      </div>
+                    </div>
+                  </div>
+                  {chatBubbleStyle === style.id && (
+                    <div className="flex-shrink-0">
+                      <div className="size-6 rounded-full bg-primary flex items-center justify-center">
+                        <svg
+                          className="size-4 text-white"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={3}
+                            d="M5 13l4 4L19 7"
+                          />
+                        </svg>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
