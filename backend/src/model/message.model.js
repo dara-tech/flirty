@@ -187,6 +187,9 @@ messageSchema.index({ groupId: 1, createdAt: -1 });
 // Indexes for conversation list queries (used in $or queries with createdAt sort)
 messageSchema.index({ senderId: 1, createdAt: -1 });
 messageSchema.index({ receiverId: 1, createdAt: -1 });
+// Compound index for getLastMessages optimization (groupId + senderId/receiverId + createdAt)
+messageSchema.index({ senderId: 1, groupId: 1, createdAt: -1 });
+messageSchema.index({ receiverId: 1, groupId: 1, createdAt: -1 });
 // Index for seenBy queries in group messages
 messageSchema.index({ "seenBy.userId": 1 });
 // Index for reactions queries

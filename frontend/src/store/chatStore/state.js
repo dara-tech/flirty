@@ -5,7 +5,7 @@ export const initialState = {
   isLoadingMoreMessages: false, // Track loading state for pagination
   lastLoadBeforeMessageId: null, // Prevent duplicate pagination requests
   users: [],
-  allUsers: [], // All users for contacts page (separate from users with conversations)
+  allUsers: [], // All users for contacts page (separate from users with conversations)\
   isAllUsersLoading: false,
   contacts: [],
   pendingRequests: [],
@@ -18,7 +18,6 @@ export const initialState = {
   isUsersLoading: false,
   isGroupsLoading: false,
   isMessagesLoading: false,
-  loadingMessagesFor: null, // Track which user's messages are currently loading (prevent duplicates)
   typingUsers: [],
   editingUsers: [],
   deletingUsers: [],

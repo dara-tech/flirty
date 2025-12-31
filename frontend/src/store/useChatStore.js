@@ -20,13 +20,6 @@ export const useChatStore = create((set, get) => ({
   getMessages: async (userId) => {
     const state = get();
     const userIdStr = typeof userId === 'string' ? userId : userId?.toString();
-    const normalizedUserId = normalizeId(userIdStr);
-    
-    // Prevent duplicate concurrent requests for the same user
-    if (state.loadingMessagesFor === normalizedUserId && state.isMessagesLoading) {
-      // Already loading messages for this user, skip duplicate request
-      return;
-    }
     
     // Check if we already have messages for this user (simple cache check)
     // Only skip if we have messages AND they're for the same user
@@ -38,15 +31,10 @@ export const useChatStore = create((set, get) => ({
     // This prevents unnecessary API calls when switching back to a conversation
     const hasCachedMessages = state.messages.length > 0 && 
                               currentSelectedUserId && 
-                              normalizeId(currentSelectedUserId) === normalizedUserId;
+                              normalizeId(currentSelectedUserId) === normalizeId(userIdStr);
     
     // Don't clear messages - keep showing cached ones while loading
-    // Track which user we're loading for to prevent duplicates
-    set({ 
-      isMessagesLoading: true, 
-      hasMoreMessages: false,
-      loadingMessagesFor: normalizedUserId // Track current loading user
-    });
+    set({ isMessagesLoading: true, hasMoreMessages: false });
     
     try {
       // Use a smaller limit for faster initial load (30 instead of 50)
@@ -63,7 +51,6 @@ export const useChatStore = create((set, get) => ({
       set({ 
         messages: orderedMessages,
         hasMoreMessages: hasMore,
-        loadingMessagesFor: null, // Clear loading flag on success
       });
 
       const authUser = useAuthStore.getState().authUser;
@@ -114,15 +101,9 @@ export const useChatStore = create((set, get) => ({
         }
       }
     } catch (error) {
-      // Only show error if it's not a cancellation
-      if (error.name !== 'CanceledError' && !error.__CANCEL__) {
-        toast.error(error.response?.data?.message || "Failed to load messages");
-      }
+      toast.error(error.response?.data?.message || "Failed to load messages");
     } finally {
-      set({ 
-        isMessagesLoading: false,
-        loadingMessagesFor: null, // Clear loading flag
-      });
+      set({ isMessagesLoading: false });
     }
   },
 
