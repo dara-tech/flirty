@@ -106,6 +106,58 @@ export const getLastMessages = async (req, res) => {
                 ],
               },
             },
+            // Stage 8.5: Lookup replyTo message data (for reply UI context)
+            {
+              $lookup: {
+                from: "messages",
+                localField: "lastMessage.replyTo",
+                foreignField: "_id",
+                as: "replyToData",
+                pipeline: [
+                  {
+                    $project: {
+                      _id: 1,
+                      text: 1,
+                      image: 1,
+                      audio: 1,
+                      video: 1,
+                      file: 1,
+                      senderId: 1,
+                      receiverId: 1,
+                      createdAt: 1,
+                    },
+                  },
+                  // Populate senderId in replyTo message
+                  {
+                    $lookup: {
+                      from: "users",
+                      localField: "senderId",
+                      foreignField: "_id",
+                      as: "senderInfo",
+                      pipeline: [
+                        {
+                          $project: {
+                            _id: 1,
+                            fullname: 1,
+                            profilePic: 1,
+                          },
+                        },
+                      ],
+                    },
+                  },
+                  {
+                    $addFields: {
+                      senderId: { $arrayElemAt: ["$senderInfo", 0] },
+                    },
+                  },
+                  {
+                    $project: {
+                      senderInfo: 0,
+                    },
+                  },
+                ],
+              },
+            },
             // Stage 9: Reshape the document to match expected format
             {
               $project: {
@@ -143,6 +195,7 @@ export const getLastMessages = async (req, res) => {
                 pinnedAt: "$lastMessage.pinnedAt",
                 pinnedBy: "$lastMessage.pinnedBy",
                 reactions: "$lastMessage.reactions",
+                replyTo: { $arrayElemAt: ["$replyToData", 0] }, // ✅ Add replyTo field
                 forwardedFrom: "$lastMessage.forwardedFrom",
                 listenedBy: "$lastMessage.listenedBy",
                 savedBy: "$lastMessage.savedBy",

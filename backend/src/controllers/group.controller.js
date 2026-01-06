@@ -726,6 +726,14 @@ export const getGroupLastMessages = async (req, res) => {
       .sort({ createdAt: -1 })
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
+      .populate({
+        path: "replyTo",
+        select: "text image audio video file senderId receiverId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
+      })
       .lean();
 
     // Group by groupId and get the most recent message for each group

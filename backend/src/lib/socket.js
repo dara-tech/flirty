@@ -323,17 +323,18 @@ io.on("connection", (socket) => {
 
       // console.log("✅ [SOCKET] Message marked as seen:", messageId);
 
+      const updatePayload = {
+        messageId,
+        seenAt: message.seenAt,
+        senderId: message.senderId?.toString(),
+        receiverId: message.receiverId?.toString(),
+      };
+
+      // ✅ CRITICAL FIX: Emit to BOTH sender and receiver for real-time sync
+      // Sender (original message author) needs to see ✓✓ checkmarks
       const senderSocketId = getReceiverSocketId(senderId);
       if (senderSocketId) {
-        const updatePayload = {
-          messageId,
-          seenAt: message.seenAt,
-          senderId: message.senderId?.toString(),
-          receiverId: message.receiverId?.toString(),
-        };
-
         io.to(senderSocketId).emit("messageSeenUpdate", updatePayload);
-
         // console.log("📤 [SOCKET] Emitted messageSeenUpdate to sender:", {
         //   senderId,
         //   socketId: senderSocketId,
@@ -341,6 +342,21 @@ io.on("connection", (socket) => {
         // });
       } else {
         console.log("⚠️ [SOCKET] Sender socket not found:", senderId);
+      }
+
+      // ✅ CRITICAL FIX: Also emit to receiver (person who marked as seen)
+      // This ensures their chat list updates immediately after marking as seen
+      const receiverIdStr = message.receiverId?.toString();
+      if (receiverIdStr) {
+        const receiverSocketId = getReceiverSocketId(receiverIdStr);
+        if (receiverSocketId && receiverSocketId !== senderSocketId) {
+          io.to(receiverSocketId).emit("messageSeenUpdate", updatePayload);
+          // console.log("📤 [SOCKET] Emitted messageSeenUpdate to receiver:", {
+          //   receiverId: receiverIdStr,
+          //   socketId: receiverSocketId,
+          //   messageId,
+          // });
+        }
       }
     } catch (error) {
       console.error("❌ [SOCKET] Error updating message seen status:", error);
@@ -595,11 +611,11 @@ io.on("connection", (socket) => {
   // Group message seen status
   socket.on("groupMessageSeen", async ({ messageId, groupId }) => {
     try {
-      // console.log("📥 [GROUP_SEEN] Received event:", {
-      //   messageId,
-      //   groupId,
-      //   userId: userId.toString(),
-      // });
+      console.log("📥 [GROUP_SEEN] Received event:", {
+        messageId,
+        groupId,
+        userId: userId.toString(),
+      });
 
       const message = await Message.findById(messageId).populate(
         "senderId",
@@ -635,12 +651,12 @@ io.on("connection", (socket) => {
         return seenUserId === userIdStr;
       });
 
-      // console.log("🔍 [GROUP_SEEN] Check:", {
-      //   messageId,
-      //   userId: userIdStr,
-      //   currentSeenBy: message.seenBy.length,
-      //   alreadySeen,
-      // });
+      console.log("🔍 [GROUP_SEEN] Check:", {
+        messageId,
+        userId: userIdStr,
+        currentSeenBy: message.seenBy.length,
+        alreadySeen,
+      });
 
       if (!alreadySeen) {
         message.seenBy.push({
@@ -649,10 +665,10 @@ io.on("connection", (socket) => {
         });
         await message.save();
 
-        // console.log("✅ [GROUP_SEEN] Database updated:", {
-        //   messageId,
-        //   newSeenByCount: message.seenBy.length,
-        // });
+        console.log("✅ [GROUP_SEEN] Database updated:", {
+          messageId,
+          newSeenByCount: message.seenBy.length,
+        });
 
         // Populate seenBy for sending to clients
         await message.populate("seenBy.userId", "fullname profilePic");
@@ -688,7 +704,7 @@ io.on("connection", (socket) => {
           }
         });
       } else {
-        // console.log("⏭️  [GROUP_SEEN] Already seen by user, skipping");
+        console.log("⏭️  [GROUP_SEEN] Already seen by user, skipping");
       }
     } catch (error) {
       console.error(
