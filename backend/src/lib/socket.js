@@ -659,6 +659,7 @@ io.on("connection", (socket) => {
       });
 
       if (!alreadySeen) {
+        // User hasn't seen this message yet - update database
         message.seenBy.push({
           userId: userId,
           seenAt: new Date(),
@@ -669,43 +670,47 @@ io.on("connection", (socket) => {
           messageId,
           newSeenByCount: message.seenBy.length,
         });
-
-        // Populate seenBy for sending to clients
-        await message.populate("seenBy.userId", "fullname profilePic");
-
-        // Deduplicate seenBy before sending (in case of any duplicates from population)
-        const seenByMap = new Map();
-        message.seenBy.forEach((seen) => {
-          const seenUserId =
-            seen.userId?._id?.toString() || seen.userId?.toString();
-          if (seenUserId && !seenByMap.has(seenUserId)) {
-            seenByMap.set(seenUserId, seen);
-          }
-        });
-        const deduplicatedSeenBy = Array.from(seenByMap.values());
-
-        console.log("📤 [GROUP_SEEN] Broadcasting to group members:", {
-          memberCount: [group.admin, ...group.members].length,
-          seenByCount: deduplicatedSeenBy.length,
-        });
-
-        // Notify all group members about the seen update
-        const allMembers = [group.admin, ...group.members];
-        allMembers.forEach((memberId) => {
-          const memberIdStr = memberId.toString();
-          const memberSocketId = getReceiverSocketId(memberIdStr);
-          if (memberSocketId) {
-            io.to(memberSocketId).emit("groupMessageSeenUpdate", {
-              messageId,
-              groupId,
-              seenBy: deduplicatedSeenBy,
-              userId: userId,
-            });
-          }
-        });
       } else {
-        console.log("⏭️  [GROUP_SEEN] Already seen by user, skipping");
+        console.log(
+          "⏭️  [GROUP_SEEN] Already seen by user, but will send current seenBy status"
+        );
       }
+
+      // Populate seenBy for sending to clients (do this for both new and existing)
+      await message.populate("seenBy.userId", "fullname profilePic");
+
+      // Deduplicate seenBy before sending (in case of any duplicates from population)
+      const seenByMap = new Map();
+      message.seenBy.forEach((seen) => {
+        const seenUserId =
+          seen.userId?._id?.toString() || seen.userId?.toString();
+        if (seenUserId && !seenByMap.has(seenUserId)) {
+          seenByMap.set(seenUserId, seen);
+        }
+      });
+      const deduplicatedSeenBy = Array.from(seenByMap.values());
+
+      console.log("📤 [GROUP_SEEN] Broadcasting to group members:", {
+        memberCount: [group.admin, ...group.members].length,
+        seenByCount: deduplicatedSeenBy.length,
+        isNewSeen: !alreadySeen,
+      });
+
+      // Notify all group members about the seen update
+      // Even if alreadySeen=true, other members need to know the current seenBy status
+      const allMembers = [group.admin, ...group.members];
+      allMembers.forEach((memberId) => {
+        const memberIdStr = memberId.toString();
+        const memberSocketId = getReceiverSocketId(memberIdStr);
+        if (memberSocketId) {
+          io.to(memberSocketId).emit("groupMessageSeenUpdate", {
+            messageId,
+            groupId,
+            seenBy: deduplicatedSeenBy,
+            userId: userId,
+          });
+        }
+      });
     } catch (error) {
       console.error(
         "❌ [GROUP_SEEN] Error updating group message seen status:",
