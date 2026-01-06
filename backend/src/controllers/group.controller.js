@@ -12,14 +12,22 @@ const areContacts = async (userId, memberIds) => {
 
   // Convert all IDs to ObjectId for proper comparison
   const userIdObj = new mongoose.Types.ObjectId(userId);
-  const memberIdsObj = memberIds.map(id => new mongoose.Types.ObjectId(id));
+  const memberIdsObj = memberIds.map((id) => new mongoose.Types.ObjectId(id));
 
   // Check if all memberIds are contacts (have accepted contact requests)
   const contactRequests = await ContactRequest.find({
     $or: [
-      { senderId: userIdObj, receiverId: { $in: memberIdsObj }, status: "accepted" },
-      { receiverId: userIdObj, senderId: { $in: memberIdsObj }, status: "accepted" }
-    ]
+      {
+        senderId: userIdObj,
+        receiverId: { $in: memberIdsObj },
+        status: "accepted",
+      },
+      {
+        receiverId: userIdObj,
+        senderId: { $in: memberIdsObj },
+        status: "accepted",
+      },
+    ],
   });
 
   const contactUserIds = new Set();
@@ -32,8 +40,8 @@ const areContacts = async (userId, memberIds) => {
   });
 
   // Check if all memberIds are in contacts
-  const memberIdStrings = memberIds.map(id => id.toString());
-  return memberIdStrings.every(id => contactUserIds.has(id));
+  const memberIdStrings = memberIds.map((id) => id.toString());
+  return memberIdStrings.every((id) => contactUserIds.has(id));
 };
 
 // Create a new group
@@ -49,15 +57,16 @@ export const createGroup = async (req, res) => {
     // Validate that all memberIds are valid users (no contact requirement)
     if (memberIds && Array.isArray(memberIds) && memberIds.length > 0) {
       // Remove duplicates and filter out admin
-      const uniqueMemberIds = [...new Set(memberIds)]
-        .filter(id => id.toString() !== adminId.toString());
-      
+      const uniqueMemberIds = [...new Set(memberIds)].filter(
+        (id) => id.toString() !== adminId.toString()
+      );
+
       if (uniqueMemberIds.length > 0) {
         // Validate that all memberIds are valid users
         const validUsers = await User.find({ _id: { $in: uniqueMemberIds } });
         if (validUsers.length !== uniqueMemberIds.length) {
-          return res.status(400).json({ 
-            error: "Some user IDs are invalid" 
+          return res.status(400).json({
+            error: "Some user IDs are invalid",
           });
         }
       }
@@ -75,7 +84,10 @@ export const createGroup = async (req, res) => {
       // Add other members, avoiding duplicates and excluding admin
       memberIds.forEach((id) => {
         const idStr = id.toString();
-        if (idStr !== adminId.toString() && !members.some(m => m.toString() === idStr)) {
+        if (
+          idStr !== adminId.toString() &&
+          !members.some((m) => m.toString() === idStr)
+        ) {
           members.push(id);
         }
       });
@@ -93,10 +105,23 @@ export const createGroup = async (req, res) => {
     await newGroup.populate("admin", "fullname profilePic");
     await newGroup.populate("members", "fullname profilePic");
 
-    // Notify all members via socket
+    // Notify all members via socket (targeted)
+    // console.log("\n════════════════════════════════════════");
+    // console.log("🆕 [GROUP] Group created:", newGroup.name);
+    // console.log("════════════════════════════════════════");
+    let notifiedCount = 0;
     members.forEach((memberId) => {
-      io.emit("groupCreated", { group: newGroup, memberId });
+      const memberSocketId = getReceiverSocketId(memberId.toString());
+      if (memberSocketId) {
+        io.to(memberSocketId).emit("groupCreated", {
+          group: newGroup,
+          memberId,
+        });
+        notifiedCount++;
+      }
     });
+    console.log("✅ Notified", notifiedCount, "members ⚡");
+    console.log("════════════════════════════════════════\n");
 
     res.status(201).json(newGroup);
   } catch (error) {
@@ -111,10 +136,7 @@ export const getMyGroups = async (req, res) => {
     const userId = req.user._id;
 
     const groups = await Group.find({
-      $or: [
-        { admin: userId },
-        { members: userId },
-      ],
+      $or: [{ admin: userId }, { members: userId }],
     })
       .populate("admin", "fullname profilePic")
       .populate("members", "fullname profilePic")
@@ -123,8 +145,8 @@ export const getMyGroups = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Groups retrieved successfully',
-      data: groups
+      message: "Groups retrieved successfully",
+      data: groups,
     });
   } catch (error) {
     console.error("Error in getMyGroups: ", error.message);
@@ -140,10 +162,7 @@ export const getGroup = async (req, res) => {
 
     const group = await Group.findOne({
       _id: id,
-      $or: [
-        { admin: userId },
-        { members: userId },
-      ],
+      $or: [{ admin: userId }, { members: userId }],
     })
       .populate("admin", "fullname profilePic")
       .populate("members", "fullname profilePic");
@@ -184,8 +203,9 @@ export const addMembersToGroup = async (req, res) => {
     // Validate that all new members are contacts
     const existingMemberIds = group.members.map((m) => m.toString());
     const newMemberIds = memberIds.filter(
-      (id) => !existingMemberIds.includes(id.toString()) && 
-              id.toString() !== group.admin.toString()
+      (id) =>
+        !existingMemberIds.includes(id.toString()) &&
+        id.toString() !== group.admin.toString()
     );
 
     if (newMemberIds.length === 0) {
@@ -195,8 +215,8 @@ export const addMembersToGroup = async (req, res) => {
     // Validate that all memberIds are valid users
     const validUsers = await User.find({ _id: { $in: newMemberIds } });
     if (validUsers.length !== newMemberIds.length) {
-      return res.status(400).json({ 
-        error: "Some user IDs are invalid" 
+      return res.status(400).json({
+        error: "Some user IDs are invalid",
       });
     }
 
@@ -205,22 +225,32 @@ export const addMembersToGroup = async (req, res) => {
     await group.populate("admin", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify new members via socket
+    // Notify new members via socket (targeted)
+    // console.log("\n════════════════════════════════════════");
+    // console.log("➕ [GROUP] Members added to:", group.name);
+    // console.log("════════════════════════════════════════");
+    let notifiedCount = 0;
     newMemberIds.forEach((memberId) => {
-      io.emit("addedToGroup", { group, memberId });
+      const memberSocketId = getReceiverSocketId(memberId.toString());
+      if (memberSocketId) {
+        io.to(memberSocketId).emit("addedToGroup", { group, memberId });
+        notifiedCount++;
+      }
     });
+    console.log("✅ Notified", notifiedCount, "new members ⚡");
+    console.log("════════════════════════════════════════\n");
 
     res.status(200).json({
       success: true,
       message: "Members added successfully",
-      data: group
+      data: group,
     });
   } catch (error) {
     console.error("Error in addMembersToGroup: ", error.message);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: "Internal server error",
-      message: error.message 
+      message: error.message,
     });
   }
 };
@@ -247,15 +277,23 @@ export const removeMemberFromGroup = async (req, res) => {
       return res.status(400).json({ error: "Cannot remove admin from group" });
     }
 
-    group.members = group.members.filter(
-      (m) => m.toString() !== memberId
-    );
+    group.members = group.members.filter((m) => m.toString() !== memberId);
     await group.save();
     await group.populate("admin", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify removed member via socket
-    io.emit("removedFromGroup", { group, memberId });
+    // Notify removed member via socket (targeted)
+    console.log("\n════════════════════════════════════════");
+    console.log("➖ [GROUP] Member removed from:", group.name);
+    console.log("════════════════════════════════════════");
+    const memberSocketId = getReceiverSocketId(memberId);
+    if (memberSocketId) {
+      io.to(memberSocketId).emit("removedFromGroup", { group, memberId });
+      console.log("✅ Notified member ⚡");
+    } else {
+      console.log("⚠️ Member offline");
+    }
+    console.log("════════════════════════════════════════\n");
 
     res.status(200).json(group);
   } catch (error) {
@@ -271,8 +309,10 @@ export const getGroupMessagesByType = async (req, res) => {
     const { type } = req.query; // 'media', 'files', 'links', 'voice'
     const userId = req.user._id;
 
-    if (!type || !['media', 'files', 'links', 'voice'].includes(type)) {
-      return res.status(400).json({ error: "Invalid type. Must be 'media', 'files', 'links', or 'voice'" });
+    if (!type || !["media", "files", "links", "voice"].includes(type)) {
+      return res.status(400).json({
+        error: "Invalid type. Must be 'media', 'files', 'links', or 'voice'",
+      });
     }
 
     // Check if user is a member of the group
@@ -286,7 +326,9 @@ export const getGroupMessagesByType = async (req, res) => {
       group.members.some((m) => m.toString() === userId.toString());
 
     if (!isMember) {
-      return res.status(403).json({ error: "You are not a member of this group" });
+      return res
+        .status(403)
+        .json({ error: "You are not a member of this group" });
     }
 
     // Build base query for group
@@ -295,16 +337,16 @@ export const getGroupMessagesByType = async (req, res) => {
     // Add type-specific filter
     let typeQuery = {};
     switch (type) {
-      case 'media':
+      case "media":
         typeQuery = { image: { $exists: true, $ne: null } };
         break;
-      case 'files':
+      case "files":
         typeQuery = { file: { $exists: true, $ne: null } };
         break;
-      case 'links':
+      case "links":
         typeQuery = { link: { $exists: true, $ne: null } };
         break;
-      case 'voice':
+      case "voice":
         typeQuery = { audio: { $exists: true, $ne: null } };
         break;
     }
@@ -322,8 +364,8 @@ export const getGroupMessagesByType = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Group messages retrieved successfully',
-      data: messages
+      message: "Group messages retrieved successfully",
+      data: messages,
     });
   } catch (error) {
     console.error("Error in getGroupMessagesByType: ", error.message);
@@ -352,12 +394,14 @@ export const getGroupMessages = async (req, res) => {
       group.members.some((m) => m.toString() === userId.toString());
 
     if (!isMember) {
-      return res.status(403).json({ error: "You are not a member of this group" });
+      return res
+        .status(403)
+        .json({ error: "You are not a member of this group" });
     }
 
     // Build query
     const query = { groupId: id };
-    
+
     // If 'before' is provided, load messages older than that message
     if (before) {
       try {
@@ -407,9 +451,38 @@ const extractUrl = (text) => {
 // Send message to group
 export const sendGroupMessage = async (req, res) => {
   try {
-    const { text, image, audio, video, file, fileName, fileSize, fileType, forwardedFrom } = req.body;
+    // console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    // console.log("📨 [GROUP] Send group message request");
+    // console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    const {
+      text,
+      image,
+      audio,
+      video,
+      file,
+      fileName,
+      fileSize,
+      fileType,
+      forwardedFrom,
+      replyTo,
+    } = req.body;
     const { id: groupId } = req.params;
     const senderId = req.user._id;
+
+    // console.log("📝 Request data:");
+    // console.log("   ├─ groupId:", groupId);
+    // console.log("   ├─ senderId:", senderId.toString());
+    // console.log(
+    //   "   ├─ text:",
+    //   text ? text.substring(0, 50) + (text.length > 50 ? "..." : "") : "null"
+    // );
+    // console.log("   ├─ hasImage:", !!image);
+    // console.log("   ├─ hasVideo:", !!video);
+    // console.log("   ├─ hasAudio:", !!audio);
+    // console.log("   ├─ hasFile:", !!file);
+    // console.log("   ├─ replyTo:", replyTo || "null");
+    // console.log("   └─ forwardedFrom:", forwardedFrom ? "yes" : "no");
 
     // Normalize inputs to arrays (supports both single values and arrays for backward compatibility)
     const images = normalizeToArray(image);
@@ -421,14 +494,16 @@ export const sendGroupMessage = async (req, res) => {
     const fileTypes = normalizeToArray(fileType);
 
     // Validate that at least one of text, image, audio, video, or file is provided
-    const hasText = text && typeof text === 'string' && text.trim().length > 0;
+    const hasText = text && typeof text === "string" && text.trim().length > 0;
     const hasImage = images.length > 0;
     const hasAudio = audios.length > 0;
     const hasVideo = videos.length > 0;
     const hasFile = files.length > 0;
-    
+
     if (!hasText && !hasImage && !hasAudio && !hasVideo && !hasFile) {
-      return res.status(400).json({ error: "Message must contain either text, image, audio, video, or file" });
+      return res.status(400).json({
+        error: "Message must contain either text, image, audio, video, or file",
+      });
     }
 
     // Check if user is a member of the group
@@ -442,7 +517,9 @@ export const sendGroupMessage = async (req, res) => {
       group.members.some((m) => m.toString() === senderId.toString());
 
     if (!isMember) {
-      return res.status(403).json({ error: "You are not a member of this group" });
+      return res
+        .status(403)
+        .json({ error: "You are not a member of this group" });
     }
 
     // Client already uploaded to OSS, just pass through the URLs/data
@@ -486,13 +563,13 @@ export const sendGroupMessage = async (req, res) => {
       const originalMessage = await Message.findById(forwardedFrom.messageId)
         .populate("senderId", "fullname")
         .populate("receiverId", "fullname");
-      
+
       if (originalMessage) {
         const Group = (await import("../model/group.model.js")).default;
         let chatName = null;
         let chatType = null;
         let chatId = null;
-        
+
         if (originalMessage.groupId) {
           const group = await Group.findById(originalMessage.groupId);
           chatName = group?.name || "Group";
@@ -504,7 +581,7 @@ export const sendGroupMessage = async (req, res) => {
           chatType = "user";
           chatId = originalMessage.receiverId._id || originalMessage.receiverId;
         }
-        
+
         forwardedFromData = {
           messageId: originalMessage._id,
           senderId: originalMessage.senderId._id || originalMessage.senderId,
@@ -531,28 +608,76 @@ export const sendGroupMessage = async (req, res) => {
       link: linkUrl,
       linkPreview: linkPreview,
       forwardedFrom: forwardedFromData,
+      replyTo: replyTo || undefined,
     });
 
     await newMessage.save();
     await newMessage.populate("senderId", "fullname profilePic");
     await newMessage.populate("seenBy.userId", "fullname profilePic");
 
+    // Populate replyTo if present (for reply messages)
+    if (newMessage.replyTo) {
+      await newMessage.populate({
+        path: "replyTo",
+        select: "text image audio video file senderId groupId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
+      });
+    }
+
     // Convert Mongoose document to plain object for socket emit
     const messageObj = newMessage.toObject ? newMessage.toObject() : newMessage;
 
-    // Emit to all group members
+    // Prepare list of all group members (admin + members)
     const allMembers = [group.admin, ...group.members];
+
+    // console.log("\n📤 [SOCKET] Emitting newMessage to group members");
+    // console.log("   ├─ Event: 'newMessage' (same as personal)");
+    // console.log("   ├─ groupId:", groupId.toString());
+    // console.log("   ├─ messageId:", messageObj._id.toString());
+    // console.log("   ├─ senderId:", messageObj.senderId._id.toString());
+    // console.log("   ├─ senderName:", messageObj.senderId.fullname);
+    // console.log(
+    //   "   ├─ text:",
+    //   text ? text.substring(0, 50) + (text.length > 50 ? "..." : "") : "null"
+    // );
+    // console.log(
+    //   "   ├─ replyTo:",
+    //   messageObj.replyTo ? messageObj.replyTo._id.toString() : "null"
+    // );
+    // console.log("   └─ members count:", allMembers.length);
+
+    // Emit to all group members using same event as personal messages
     allMembers.forEach((memberId) => {
-      io.emit("newGroupMessage", {
-        message: messageObj,
-        groupId,
-        memberId: memberId.toString(),
-      });
+      const memberSocketId = getReceiverSocketId(memberId.toString());
+      if (memberSocketId) {
+        io.to(memberSocketId).emit("newMessage", messageObj);
+        // console.log("   ✅ Emitted to member:", memberId.toString());
+      } else {
+        // console.log("   ⚠️ Member offline:", memberId.toString());
+      }
     });
 
-    res.status(201).json(newMessage);
+    // console.log("\n✅ [GROUP] Message sent successfully");
+    // console.log("   ├─ messageId:", messageObj._id.toString());
+    // console.log(
+    //   "   ├─ Emitted to:",
+    //   allMembers.filter((m) => getReceiverSocketId(m.toString())).length,
+    //   "online members"
+    // );
+    // console.log(
+    //   "   └─ Offline:",
+    //   allMembers.filter((m) => !getReceiverSocketId(m.toString())).length,
+    //   "members"
+    // );
+    // console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    res.status(201).json(messageObj);
   } catch (error) {
-    console.error("Error in sendGroupMessage: ", error.message);
+    console.error("\n❌ [GROUP] Error in sendGroupMessage:", error.message);
+    console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -564,10 +689,7 @@ export const getGroupLastMessages = async (req, res) => {
 
     // Get all groups user is part of
     const groups = await Group.find({
-      $or: [
-        { admin: userId },
-        { members: userId },
-      ],
+      $or: [{ admin: userId }, { members: userId }],
     }).select("_id");
 
     const groupIds = groups.map((g) => g._id);
@@ -575,8 +697,8 @@ export const getGroupLastMessages = async (req, res) => {
     if (groupIds.length === 0) {
       return res.status(200).json({
         success: true,
-        message: 'No group messages found',
-        data: []
+        message: "No group messages found",
+        data: [],
       });
     }
 
@@ -606,16 +728,16 @@ export const getGroupLastMessages = async (req, res) => {
 
     // Get messages in the order of groupIds
     const populatedMessages = groupIds
-      .map(id => {
+      .map((id) => {
         const idStr = id.toString();
         return messagesByGroup.get(idStr);
       })
-      .filter(msg => msg !== undefined);
+      .filter((msg) => msg !== undefined);
 
     res.status(200).json({
       success: true,
-      message: 'Group last messages retrieved successfully',
-      data: populatedMessages
+      message: "Group last messages retrieved successfully",
+      data: populatedMessages,
     });
   } catch (error) {
     console.error("Error in getGroupLastMessages: ", error.message);
@@ -637,7 +759,9 @@ export const deleteGroup = async (req, res) => {
 
     // Check if user is the admin/owner of the group
     if (group.admin.toString() !== userId.toString()) {
-      return res.status(403).json({ error: "Only the group owner can delete the group" });
+      return res
+        .status(403)
+        .json({ error: "Only the group owner can delete the group" });
     }
 
     // Get all members before deletion for socket notification
@@ -688,7 +812,9 @@ export const updateGroupInfo = async (req, res) => {
 
     // Check if user is admin
     if (group.admin.toString() !== userId.toString()) {
-      return res.status(403).json({ error: "Only admin can update group info" });
+      return res
+        .status(403)
+        .json({ error: "Only admin can update group info" });
     }
 
     // Update name if provided
@@ -711,15 +837,27 @@ export const updateGroupInfo = async (req, res) => {
     await group.populate("admin", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify all members via socket
+    // Notify all members via socket (targeted)
+    // console.log("\n════════════════════════════════════════");
+    // console.log("ℹ️ [GROUP] Group info updated:", group.name);
+    // console.log("════════════════════════════════════════");
     const allMembers = [group.admin, ...group.members];
+    let notifiedCount = 0;
     allMembers.forEach((memberId) => {
-      const memberIdStr = memberId._id ? memberId._id.toString() : memberId.toString();
-      io.emit("groupInfoUpdated", {
-        group,
-        memberId: memberIdStr,
-      });
+      const memberIdStr = memberId._id
+        ? memberId._id.toString()
+        : memberId.toString();
+      const memberSocketId = getReceiverSocketId(memberIdStr);
+      if (memberSocketId) {
+        io.to(memberSocketId).emit("groupInfoUpdated", {
+          group,
+          memberId: memberIdStr,
+        });
+        notifiedCount++;
+      }
     });
+    console.log("✅ Notified", notifiedCount, "members ⚡");
+    console.log("════════════════════════════════════════\n");
 
     res.status(200).json(group);
   } catch (error) {
@@ -742,35 +880,53 @@ export const leaveGroup = async (req, res) => {
 
     // Check if user is a member
     const isAdmin = group.admin.toString() === userId.toString();
-    const isMember = isAdmin || group.members.some((m) => m.toString() === userId.toString());
+    const isMember =
+      isAdmin || group.members.some((m) => m.toString() === userId.toString());
 
     if (!isMember) {
-      return res.status(403).json({ error: "You are not a member of this group" });
+      return res
+        .status(403)
+        .json({ error: "You are not a member of this group" });
     }
 
     // Admin cannot leave - must transfer admin or delete group
     if (isAdmin) {
-      return res.status(400).json({ 
-        error: "Admin cannot leave group. Please transfer admin role or delete the group." 
+      return res.status(400).json({
+        error:
+          "Admin cannot leave group. Please transfer admin role or delete the group.",
       });
     }
 
     // Remove member from group
-    group.members = group.members.filter((m) => m.toString() !== userId.toString());
+    group.members = group.members.filter(
+      (m) => m.toString() !== userId.toString()
+    );
     await group.save();
     await group.populate("admin", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify all remaining members via socket
+    // Notify all remaining members via socket (targeted)
+    // console.log("\n════════════════════════════════════════");
+    // console.log("🚻 [GROUP] Member left:", group.name);
+    // console.log("════════════════════════════════════════");
     const allMembers = [group.admin, ...group.members];
+    let notifiedCount = 0;
     allMembers.forEach((memberId) => {
-      const memberIdStr = memberId._id ? memberId._id.toString() : memberId.toString();
-      io.emit("memberLeftGroup", {
-        group,
-        memberId: memberIdStr,
-        leftMemberId: userId.toString(),
-      });
+      const memberIdStr = memberId._id
+        ? memberId._id.toString()
+        : memberId.toString();
+      const memberSocketId = getReceiverSocketId(memberIdStr);
+      if (memberSocketId) {
+        io.to(memberSocketId).emit("memberLeftGroup", {
+          group,
+          memberId: memberIdStr,
+          leftMemberId: userId.toString(),
+        });
+        notifiedCount++;
+      }
     });
+    console.log("✅ Notified", notifiedCount, "remaining members ⚡");
+    console.log("════════════════════════════════════════\n");
 
     // Notify the user who left
     const userSocketId = getReceiverSocketId(userId.toString());
@@ -786,4 +942,3 @@ export const leaveGroup = async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 };
-
