@@ -358,6 +358,14 @@ export const getGroupMessagesByType = async (req, res) => {
     const messages = await Message.find(query)
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
+      .populate({
+        path: "replyTo",
+        select: "text image audio video file senderId receiverId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
+      })
       .sort({ createdAt: -1 })
       .limit(100) // Limit to 100 most recent
       .lean(); // Use lean() for read-only queries (faster)
@@ -419,6 +427,14 @@ export const getGroupMessages = async (req, res) => {
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
       .populate("reactions.userId", "fullname profilePic")
+      .populate({
+        path: "replyTo",
+        select: "text image audio video file senderId receiverId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
+      })
       .sort({ createdAt: -1 }) // Newest first (Telegram-style)
       .limit(limit)
       .lean(); // Use lean() for read-only queries (faster)
