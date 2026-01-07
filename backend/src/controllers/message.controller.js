@@ -804,28 +804,28 @@ export const sendMessage = async (req, res) => {
       //   messageId: newMessage._id,
       // });
     } else {
-      console.log("❌ [SOCKET EMIT] Receiver socket NOT FOUND:", receiverId);
+      // console.log("❌ [SOCKET EMIT] Receiver socket NOT FOUND:", receiverId); // [DEBUG - Removed for production]
     }
 
     // Also emit to sender so they see their own message in real-time
     const senderSocketId = getReceiverSocketId(senderId.toString());
-    console.log("🔍 [SOCKET EMIT] Looking up sender socket:", {
-      senderId: senderId.toString(),
-      senderSocketId,
-      found: !!senderSocketId,
-    });
+    // console.log("🔍 [SOCKET EMIT] Looking up sender socket:", {
+    //   senderId: senderId.toString(),
+    //   senderSocketId,
+    //   found: !!senderSocketId,
+    // });
     if (senderSocketId) {
       io.to(senderSocketId).emit("newMessage", messageObj);
-      console.log("📤 [SOCKET EMIT] Emitted newMessage to sender:", {
-        senderId: senderId.toString(),
-        socketId: senderSocketId,
-        messageId: newMessage._id,
-      });
+      // console.log("📤 [SOCKET EMIT] Emitted newMessage to sender:", {
+      //   senderId: senderId.toString(),
+      //   socketId: senderSocketId,
+      //   messageId: newMessage._id,
+      // });
     } else {
-      console.log(
-        "❌ [SOCKET EMIT] Sender socket NOT FOUND:",
-        senderId.toString()
-      );
+      // console.log( // [DEBUG - Removed for production]
+      // "❌ [SOCKET EMIT] Sender socket NOT FOUND:",
+      // senderId.toString()
+      // );
     }
 
     logger.info("Message sent successfully", {
@@ -895,7 +895,7 @@ export const editMessage = async (req, res) => {
     message.editedAt = new Date();
     await message.save();
 
-    console.log(`✅ [EDIT] Message text/caption updated successfully`);
+    // console.log(`✅ [EDIT] Message text/caption updated successfully`); // [DEBUG - Removed for production]
 
     // Populate message with user data before emitting
     await message.populate("senderId", "fullname profilePic email");
@@ -910,7 +910,7 @@ export const editMessage = async (req, res) => {
           select: "fullname profilePic email",
         },
       });
-      console.log(`   ├─ Populated replyTo: ${message.replyTo._id}`);
+      // console.log(`   ├─ Populated replyTo: ${message.replyTo._id}`); // [DEBUG - Removed for production]
     }
 
     // Populate seenBy for group messages
@@ -942,11 +942,11 @@ export const editMessage = async (req, res) => {
 
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("messageEdited", messageObj);
-        console.log(
-          `✅ Emitted messageEdited to receiver: ${receiverSocketId}`
-        );
+        // console.log( // [DEBUG - Removed for production]
+        // `✅ Emitted messageEdited to receiver: ${receiverSocketId}`
+        // );
       } else {
-        console.log(`⚠️ Receiver ${receiverIdStr} is offline`);
+        // console.log(`⚠️ Receiver ${receiverIdStr} is offline`); // [DEBUG - Removed for production]
       }
 
       // Also notify sender
@@ -956,9 +956,9 @@ export const editMessage = async (req, res) => {
 
       if (senderSocketId) {
         io.to(senderSocketId).emit("messageEdited", messageObj);
-        console.log(`✅ Emitted messageEdited to sender: ${senderSocketId}`);
+        // console.log(`✅ Emitted messageEdited to sender: ${senderSocketId}`); // [DEBUG - Removed for production]
       } else {
-        console.log(`⚠️ Sender ${senderIdStr} socket not found`);
+        // console.log(`⚠️ Sender ${senderIdStr} socket not found`); // [DEBUG - Removed for production]
       }
     } else if (message.groupId) {
       // Group message - notify all group members
@@ -982,10 +982,10 @@ export const editMessage = async (req, res) => {
 
       if (group) {
         const allMembers = [group.admin, ...group.members];
-        console.log(
-          "\n📤 [SOCKET] Emitting groupMessageEdited to ALL group members"
-        );
-        console.log("   └─ Total members:", allMembers.length);
+        // console.log( // [DEBUG - Removed for production]
+        // "\n📤 [SOCKET] Emitting groupMessageEdited to ALL group members"
+        // );
+        // console.log("   └─ Total members:", allMembers.length); // [DEBUG - Removed for production]
 
         let onlineCount = 0;
         let offlineCount = 0;
@@ -1019,8 +1019,8 @@ export const editMessage = async (req, res) => {
         // console.log("   └─ No refresh needed: 0ms latency ⚡");
         // console.log("══════════════════════════════════════\n");
       } else {
-        console.log("❌ [EDIT] Group not found:", groupIdStr);
-        console.log("══════════════════════════════════════\n");
+        // console.log("❌ [EDIT] Group not found:", groupIdStr); // [DEBUG - Removed for production]
+        // console.log("══════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     }
 
@@ -1039,9 +1039,9 @@ export const editMessage = async (req, res) => {
           select: "fullname profilePic email",
         },
       });
-      console.log(`   ├─ Including replyTo in response`);
+      // console.log(`   ├─ Including replyTo in response`); // [DEBUG - Removed for production]
     } else {
-      console.log(`   ├─ No replyTo to populate (standalone message)`);
+      // console.log(`   ├─ No replyTo to populate (standalone message)`); // [DEBUG - Removed for production]
     }
 
     const populatedMessage = await query.exec();
@@ -1143,13 +1143,13 @@ export const deleteMessage = async (req, res) => {
             newLastMessage: newLastMessage, // Send new last message if exists
             conversationDeleted: !newLastMessage, // Flag if conversation is now empty
           });
-          console.log("   ✅ Emitted to RECEIVER:", receiverIdStr);
-          console.log("      └─ socketId:", receiverSocketId);
+          // console.log("   ✅ Emitted to RECEIVER:", receiverIdStr); // [DEBUG - Removed for production]
+          // console.log("      └─ socketId:", receiverSocketId); // [DEBUG - Removed for production]
         } else {
-          console.log(
-            "⚠️ [SOCKET] Receiver not connected (offline):",
-            receiverIdStr
-          );
+          // console.log( // [DEBUG - Removed for production]
+          // "⚠️ [SOCKET] Receiver not connected (offline):",
+          // receiverIdStr
+          // );
         }
 
         // Also notify sender
@@ -1174,7 +1174,7 @@ export const deleteMessage = async (req, res) => {
           // console.log("   └─ No refresh needed: 0ms latency ⚡");
           // console.log("════════════════════════════════════════\n");
         } else {
-          console.log("⚠️ [SOCKET] Sender not connected:", senderIdStr);
+          // console.log("⚠️ [SOCKET] Sender not connected:", senderIdStr); // [DEBUG - Removed for production]
         }
       } else if (message.groupId) {
         // Group message - notify all group members
@@ -1215,7 +1215,7 @@ export const deleteMessage = async (req, res) => {
                 groupId: groupIdStr,
                 deleteType: "forEveryone",
               });
-              console.log("   ✅ Emitted to member:", memberIdStr, "(online)");
+              // console.log("   ✅ Emitted to member:", memberIdStr, "(online)"); // [DEBUG - Removed for production]
               onlineCount++;
             } else {
               // console.log("   ⚠️ Member offline:", memberIdStr);
@@ -1237,8 +1237,8 @@ export const deleteMessage = async (req, res) => {
           // console.log("   └─ No refresh needed: 0ms latency ⚡");
           // console.log("════════════════════════════════════════\n");
         } else {
-          console.log("❌ [DELETE] Group not found:", groupIdStr);
-          console.log("════════════════════════════════════════\n");
+          // console.log("❌ [DELETE] Group not found:", groupIdStr); // [DEBUG - Removed for production]
+          // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
         }
       }
     } else {
@@ -1589,9 +1589,9 @@ export const pinMessage = async (req, res) => {
       const group = await Group.findById(message.groupId);
       if (group) {
         const allMembers = [group.admin, ...group.members];
-        console.log("\n════════════════════════════════════════");
-        console.log("📌 [PIN] Group message pinned");
-        console.log("════════════════════════════════════════");
+        // console.log("\n════════════════════════════════════════"); // [DEBUG - Removed for production]
+        // console.log("📌 [PIN] Group message pinned"); // [DEBUG - Removed for production]
+        // console.log("════════════════════════════════════════"); // [DEBUG - Removed for production]
         let notifiedCount = 0;
         allMembers.forEach((memberId) => {
           const memberSocketId = getReceiverSocketId(memberId.toString());
@@ -1608,8 +1608,8 @@ export const pinMessage = async (req, res) => {
             notifiedCount++;
           }
         });
-        console.log("✅ Notified", notifiedCount, "members ⚡");
-        console.log("════════════════════════════════════════\n");
+        // console.log("✅ Notified", notifiedCount, "members ⚡"); // [DEBUG - Removed for production]
+        // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
@@ -1690,14 +1690,14 @@ export const unpinMessage = async (req, res) => {
         const allMembers = [group.admin, ...group.members];
         const messageObj = message.toObject();
 
-        console.log("\n══════════════════════════════════════");
-        console.log("📌❌ [UNPIN] Group message unpin");
-        console.log("══════════════════════════════════════");
-        console.log("📝 Message details:");
-        console.log("   ├─ messageId:", message._id.toString());
-        console.log("   ├─ senderId:", message.senderId.toString());
-        console.log("   └─ groupId:", message.groupId.toString());
-        console.log("\n📤 [SOCKET] Emitting to members");
+        // console.log("\n══════════════════════════════════════"); // [DEBUG - Removed for production]
+        // console.log("📌❌ [UNPIN] Group message unpin"); // [DEBUG - Removed for production]
+        // console.log("══════════════════════════════════════"); // [DEBUG - Removed for production]
+        // console.log("📝 Message details:"); // [DEBUG - Removed for production]
+        // console.log("   ├─ messageId:", message._id.toString()); // [DEBUG - Removed for production]
+        // console.log("   ├─ senderId:", message.senderId.toString()); // [DEBUG - Removed for production]
+        // console.log("   └─ groupId:", message.groupId.toString()); // [DEBUG - Removed for production]
+        // console.log("\n📤 [SOCKET] Emitting to members"); // [DEBUG - Removed for production]
 
         let onlineCount = 0;
         let offlineCount = 0;
@@ -1712,9 +1712,9 @@ export const unpinMessage = async (req, res) => {
           }
         });
 
-        console.log("✅ Notified", onlineCount, "online members ⚡");
-        console.log("⚫ Skipped", offlineCount, "offline members");
-        console.log("══════════════════════════════════════\n");
+        // console.log("✅ Notified", onlineCount, "online members ⚡"); // [DEBUG - Removed for production]
+        // console.log("⚫ Skipped", offlineCount, "offline members"); // [DEBUG - Removed for production]
+        // console.log("══════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
@@ -1812,12 +1812,12 @@ export const addReaction = async (req, res) => {
           }
         });
 
-        console.log(
-          "✅ [REACTION] Emitted to",
-          onlineCount,
-          "online members ⚡"
-        );
-        console.log("════════════════════════════════════════\n");
+        // console.log( // [DEBUG - Removed for production]
+        // "✅ [REACTION] Emitted to",
+        // onlineCount,
+        // "online members ⚡"
+        // );
+        // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
       // Personal message - emit to sender and receiver
@@ -1928,12 +1928,12 @@ export const removeReaction = async (req, res) => {
           }
         });
 
-        console.log(
-          "✅ [REACTION] Emitted to",
-          onlineCount,
-          "online members ⚡"
-        );
-        console.log("════════════════════════════════════════\n");
+        // console.log( // [DEBUG - Removed for production]
+        // "✅ [REACTION] Emitted to",
+        // onlineCount,
+        // "online members ⚡"
+        // );
+        // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
       // Personal message - emit to sender and receiver
@@ -1955,24 +1955,24 @@ export const removeReaction = async (req, res) => {
       const receiverSocketId = getReceiverSocketId(receiverIdStr);
       const senderSocketId = getReceiverSocketId(senderIdStr);
 
-      console.log("🔍 Socket IDs:");
-      console.log("   ├─ receiverSocketId:", receiverSocketId || "❌ OFFLINE");
-      console.log("   └─ senderSocketId:", senderSocketId || "❌ OFFLINE");
+      // console.log("🔍 Socket IDs:"); // [DEBUG - Removed for production]
+      // console.log("   ├─ receiverSocketId:", receiverSocketId || "❌ OFFLINE"); // [DEBUG - Removed for production]
+      // console.log("   └─ senderSocketId:", senderSocketId || "❌ OFFLINE"); // [DEBUG - Removed for production]
 
       let emitCount = 0;
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("messageReactionRemoved", messageObj);
-        console.log("   ├─ ✅ Emitted to receiver");
+        // console.log("   ├─ ✅ Emitted to receiver"); // [DEBUG - Removed for production]
         emitCount++;
       }
       if (senderSocketId) {
         io.to(senderSocketId).emit("messageReactionRemoved", messageObj);
-        console.log("   ├─ ✅ Emitted to sender");
+        // console.log("   ├─ ✅ Emitted to sender"); // [DEBUG - Removed for production]
         emitCount++;
       }
 
-      console.log("✅ [REACTION] Emitted to", emitCount, "online users ⚡");
-      console.log("════════════════════════════════════════\n");
+      // console.log("✅ [REACTION] Emitted to", emitCount, "online users ⚡"); // [DEBUG - Removed for production]
+      // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
     }
 
     res.status(200).json(message);
@@ -2134,7 +2134,7 @@ export const deleteIndividualMediaItem = async (req, res) => {
       !mediaType ||
       !["image", "video", "audio", "file"].includes(mediaType)
     ) {
-      console.log("❌ Invalid media type:", mediaType);
+      // console.log("❌ Invalid media type:", mediaType); // [DEBUG - Removed for production]
       return res.status(400).json({
         success: false,
         error:
@@ -2143,7 +2143,7 @@ export const deleteIndividualMediaItem = async (req, res) => {
     }
 
     if (index === undefined || index === null || index < 0) {
-      console.log("❌ Invalid index:", index);
+      // console.log("❌ Invalid index:", index); // [DEBUG - Removed for production]
       return res.status(400).json({
         success: false,
         error: "Invalid index. Must be a non-negative number",
@@ -2152,7 +2152,7 @@ export const deleteIndividualMediaItem = async (req, res) => {
 
     const message = await Message.findById(messageId);
     if (!message) {
-      console.log("❌ Message not found");
+      // console.log("❌ Message not found"); // [DEBUG - Removed for production]
       return res
         .status(404)
         .json({ success: false, error: "Message not found" });
@@ -2160,7 +2160,7 @@ export const deleteIndividualMediaItem = async (req, res) => {
 
     // Only sender can delete media
     if (message.senderId.toString() !== userId.toString()) {
-      console.log("❌ Permission denied - not sender");
+      // console.log("❌ Permission denied - not sender"); // [DEBUG - Removed for production]
       return res.status(403).json({
         success: false,
         error: "You can only delete media from your own messages",
@@ -2181,7 +2181,7 @@ export const deleteIndividualMediaItem = async (req, res) => {
 
     // Check if message has this media type
     if (!mediaArray) {
-      console.log("❌ Message does not have this media type");
+      // console.log("❌ Message does not have this media type"); // [DEBUG - Removed for production]
       return res.status(400).json({
         success: false,
         error: `Message does not have ${mediaType}`,
@@ -2191,25 +2191,25 @@ export const deleteIndividualMediaItem = async (req, res) => {
     // Handle array media
     if (Array.isArray(mediaArray)) {
       if (index >= mediaArray.length) {
-        console.log("❌ Index out of bounds");
+        // console.log("❌ Index out of bounds"); // [DEBUG - Removed for production]
         return res.status(400).json({
           success: false,
           error: `Index ${index} out of bounds. Array has ${mediaArray.length} items`,
         });
       }
 
-      console.log("🔪 Removing item at index", index);
-      console.log("   Before:", JSON.stringify(mediaArray));
+      // console.log("🔪 Removing item at index", index); // [DEBUG - Removed for production]
+      // console.log("   Before:", JSON.stringify(mediaArray)); // [DEBUG - Removed for production]
 
       // Remove item at index
       mediaArray.splice(index, 1);
 
-      console.log("   After:", JSON.stringify(mediaArray));
-      console.log("   New length:", mediaArray.length);
+      // console.log("   After:", JSON.stringify(mediaArray)); // [DEBUG - Removed for production]
+      // console.log("   New length:", mediaArray.length); // [DEBUG - Removed for production]
 
       // If array is now empty, remove the field entirely
       if (mediaArray.length === 0) {
-        console.log("📭 Array now empty, removing field");
+        // console.log("📭 Array now empty, removing field"); // [DEBUG - Removed for production]
         message[mediaType] = null;
 
         // Also remove file metadata if applicable
@@ -2264,7 +2264,7 @@ export const deleteIndividualMediaItem = async (req, res) => {
       }
     } else {
       // Single media item (not array) - delete entire field
-      console.log("📭 Single media item, removing field");
+      // console.log("📭 Single media item, removing field"); // [DEBUG - Removed for production]
       message[mediaType] = null;
       if (mediaType === "file") {
         message.fileName = null;
@@ -2362,16 +2362,16 @@ export const deleteIndividualMediaItem = async (req, res) => {
 
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("messageEdited", messageObj);
-        console.log("   ├─ Receiver notified ✅");
+        // console.log("   ├─ Receiver notified ✅"); // [DEBUG - Removed for production]
       } else {
-        console.log("   ├─ Receiver offline");
+        // console.log("   ├─ Receiver offline"); // [DEBUG - Removed for production]
       }
 
       if (senderSocketId) {
         io.to(senderSocketId).emit("messageEdited", messageObj);
-        console.log("   └─ Sender notified ✅");
+        // console.log("   └─ Sender notified ✅"); // [DEBUG - Removed for production]
       } else {
-        console.log("   └─ Sender offline");
+        // console.log("   └─ Sender offline"); // [DEBUG - Removed for production]
       }
     }
 

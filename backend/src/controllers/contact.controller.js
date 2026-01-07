@@ -1,5 +1,6 @@
 import ContactRequest from "../model/contactRequest.model.js";
 import User from "../model/user.model.js";
+import Message from "../model/message.model.js";
 import { io, getReceiverSocketId } from "../lib/socket.js";
 
 // Send contact request
@@ -19,7 +20,9 @@ export const sendContactRequest = async (req, res) => {
     }
 
     if (receiver._id.toString() === senderId.toString()) {
-      return res.status(400).json({ message: "Cannot send request to yourself" });
+      return res
+        .status(400)
+        .json({ message: "Cannot send request to yourself" });
     }
 
     // Check if request already exists
@@ -36,7 +39,12 @@ export const sendContactRequest = async (req, res) => {
         if (existingRequest.senderId.toString() === senderId.toString()) {
           return res.status(400).json({ message: "Request already sent" });
         } else {
-          return res.status(400).json({ message: "This user has already sent you a request. Please check your requests." });
+          return res
+            .status(400)
+            .json({
+              message:
+                "This user has already sent you a request. Please check your requests.",
+            });
         }
       }
       if (existingRequest.status === "accepted") {
@@ -61,7 +69,7 @@ export const sendContactRequest = async (req, res) => {
       await request.save();
     } catch (error) {
       // Handle duplicate key error (MongoDB unique index violation)
-      if (error.code === 11000 || error.codeName === 'DuplicateKey') {
+      if (error.code === 11000 || error.codeName === "DuplicateKey") {
         // Re-check the existing request to get the current status
         const duplicateRequest = await ContactRequest.findOne({
           $or: [
@@ -69,13 +77,18 @@ export const sendContactRequest = async (req, res) => {
             { senderId: receiver._id, receiverId: senderId },
           ],
         });
-        
+
         if (duplicateRequest) {
           if (duplicateRequest.status === "pending") {
             if (duplicateRequest.senderId.toString() === senderId.toString()) {
               return res.status(400).json({ message: "Request already sent" });
             } else {
-              return res.status(400).json({ message: "This user has already sent you a request. Please check your requests." });
+              return res
+                .status(400)
+                .json({
+                  message:
+                    "This user has already sent you a request. Please check your requests.",
+                });
             }
           }
           if (duplicateRequest.status === "accepted") {
@@ -91,12 +104,14 @@ export const sendContactRequest = async (req, res) => {
               status: "pending",
             });
             await request.save();
-            
+
             // Populate sender info for socket event
             await request.populate("senderId", "fullname email profilePic");
-            
+
             // Emit socket event to receiver
-            const receiverSocketId = getReceiverSocketId(receiver._id.toString());
+            const receiverSocketId = getReceiverSocketId(
+              receiver._id.toString()
+            );
             if (receiverSocketId) {
               io.to(receiverSocketId).emit("newContactRequest", {
                 requestId: request._id,
@@ -109,8 +124,10 @@ export const sendContactRequest = async (req, res) => {
                 createdAt: request.createdAt,
               });
             }
-            
-            return res.status(201).json({ message: "Contact request sent", request });
+
+            return res
+              .status(201)
+              .json({ message: "Contact request sent", request });
           }
         }
         return res.status(400).json({ message: "Request already exists" });
@@ -121,7 +138,7 @@ export const sendContactRequest = async (req, res) => {
 
     // Populate sender info for socket event
     await request.populate("senderId", "fullname email profilePic");
-    
+
     // Emit socket event to receiver
     const receiverSocketId = getReceiverSocketId(receiver._id.toString());
     if (receiverSocketId) {
@@ -157,8 +174,8 @@ export const getPendingRequests = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Pending requests retrieved successfully',
-      data: requests
+      message: "Pending requests retrieved successfully",
+      data: requests,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: "Internal server error" });
@@ -191,19 +208,23 @@ export const acceptContactRequest = async (req, res) => {
 
     request.status = "accepted";
     await request.save();
-    
+
     // Populate sender and receiver info
     await request.populate("senderId", "fullname email profilePic");
     await request.populate("receiverId", "fullname email profilePic");
-    
+
     // Add each other to contacts list
-    await User.findByIdAndUpdate(userId, { $addToSet: { contacts: request.senderId } });
-    await User.findByIdAndUpdate(request.senderId, { $addToSet: { contacts: userId } });
-    
+    await User.findByIdAndUpdate(userId, {
+      $addToSet: { contacts: request.senderId },
+    });
+    await User.findByIdAndUpdate(request.senderId, {
+      $addToSet: { contacts: userId },
+    });
+
     // Emit socket events to both users
     const senderSocketId = getReceiverSocketId(request.senderId.toString());
     const receiverSocketId = getReceiverSocketId(userId.toString());
-    
+
     if (senderSocketId) {
       io.to(senderSocketId).emit("contactRequestAccepted", {
         requestId: request._id,
@@ -215,7 +236,7 @@ export const acceptContactRequest = async (req, res) => {
         },
       });
     }
-    
+
     if (receiverSocketId) {
       io.to(receiverSocketId).emit("contactRequestAccepted", {
         requestId: request._id,
@@ -260,10 +281,10 @@ export const rejectContactRequest = async (req, res) => {
 
     request.status = "rejected";
     await request.save();
-    
+
     // Populate sender info
     await request.populate("senderId", "fullname email profilePic");
-    
+
     // Emit socket event to sender
     const senderSocketId = getReceiverSocketId(request.senderId.toString());
     if (senderSocketId) {
@@ -272,7 +293,7 @@ export const rejectContactRequest = async (req, res) => {
         receiverId: userId.toString(),
       });
     }
-    
+
     // Also notify receiver that the request was rejected
     const receiverSocketId = getReceiverSocketId(userId.toString());
     if (receiverSocketId) {
@@ -311,8 +332,8 @@ export const getContacts = async (req, res) => {
     // Use standardized response
     res.status(200).json({
       success: true,
-      message: 'Contacts retrieved successfully',
-      data: contactUsers
+      message: "Contacts retrieved successfully",
+      data: contactUsers,
     });
   } catch (error) {
     res.status(500).json({ message: "Internal server error" });
@@ -342,3 +363,60 @@ export const getContactStatus = async (req, res) => {
   }
 };
 
+// Search ALL users by name or email (matches frontend ALLUSERS endpoint)
+export const searchContacts = async (req, res) => {
+  try {
+    const { query, limit = 20 } = req.query;
+    const userId = req.user._id;
+
+    if (!query || query.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Search query is required",
+      });
+    }
+
+    // Performance: Use lean() for faster queries (no mongoose document overhead)
+    // Security: Exclude current user from results
+    // Best Practice: Only select needed fields to reduce payload size
+    const allUsers = await User.find({
+      _id: { $ne: userId },
+    })
+      .select("fullname email profilePic")
+      .lean();
+
+    // Performance: Case-insensitive substring matching
+    // UX: Character-by-character filtering (like WhatsApp/Telegram)
+    const searchQuery = query.toLowerCase().trim();
+    const filteredContacts = allUsers.filter((user) => {
+      const fullname = (user.fullname || "").toLowerCase();
+      const email = (user.email || "").toLowerCase();
+      return fullname.includes(searchQuery) || email.includes(searchQuery);
+    });
+
+    // Production log: Only log search stats (not individual results)
+    // console.log( // [DEBUG - Removed for production]
+    // `🔍 Contact search: "${query}" → ${filteredContacts.length}/${allUsers.length} results`
+    // );
+
+    // Apply limit
+    const limitedResults = filteredContacts.slice(0, parseInt(limit));
+
+    res.status(200).json({
+      success: true,
+      message: "Contacts search completed successfully",
+      data: limitedResults,
+      pagination: {
+        total: filteredContacts.length,
+        returned: limitedResults.length,
+        limit: parseInt(limit),
+      },
+    });
+  } catch (error) {
+    console.error("Search contacts error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};

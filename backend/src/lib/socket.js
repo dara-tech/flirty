@@ -189,11 +189,11 @@ io.on("connection", (socket) => {
                 startedAt: callInfo.startedAt || callInfo.createdAt,
                 endedAt: new Date(),
               });
-              console.log("✅ Missed call record saved to database:", {
-                callId: savedCall._id,
-                callerId: callInfo.callerId,
-                receiverId: callInfo.receiverId,
-              });
+              // console.log("✅ Missed call record saved to database:", { // [DEBUG - Removed for production]
+              // callId: savedCall._id,
+              // callerId: callInfo.callerId,
+              // receiverId: callInfo.receiverId,
+              // });
             } catch (saveError) {
               console.error("❌ Error saving missed call record:", saveError);
             }
@@ -308,12 +308,12 @@ io.on("connection", (socket) => {
 
       const message = await Message.findById(messageId);
       if (!message) {
-        console.log("❌ [SOCKET] Message not found:", messageId);
+        // console.log("❌ [SOCKET] Message not found:", messageId); // [DEBUG - Removed for production]
         return;
       }
 
       if (message.seen) {
-        console.log("⏭️ [SOCKET] Message already seen:", messageId);
+        // console.log("⏭️ [SOCKET] Message already seen:", messageId); // [DEBUG - Removed for production]
         return;
       }
 
@@ -341,7 +341,7 @@ io.on("connection", (socket) => {
         //   messageId,
         // });
       } else {
-        console.log("⚠️ [SOCKET] Sender socket not found:", senderId);
+        // console.log("⚠️ [SOCKET] Sender socket not found:", senderId); // [DEBUG - Removed for production]
       }
 
       // ✅ CRITICAL FIX: Also emit to receiver (person who marked as seen)
@@ -611,24 +611,24 @@ io.on("connection", (socket) => {
   // Group message seen status
   socket.on("groupMessageSeen", async ({ messageId, groupId }) => {
     try {
-      console.log("📥 [GROUP_SEEN] Received event:", {
-        messageId,
-        groupId,
-        userId: userId.toString(),
-      });
+      // console.log("📥 [GROUP_SEEN] Received event:", {
+      //   messageId,
+      //   groupId,
+      //   userId: userId.toString(),
+      // });
 
       const message = await Message.findById(messageId).populate(
         "senderId",
         "fullname"
       );
       if (!message || !message.groupId) {
-        console.log("❌ [GROUP_SEEN] Message not found or not a group message");
+        // console.log("❌ [GROUP_SEEN] Message not found or not a group message"); // [DEBUG - Removed for production]
         return;
       }
 
       const group = await Group.findById(groupId);
       if (!group) {
-        console.log("❌ [GROUP_SEEN] Group not found");
+        // console.log("❌ [GROUP_SEEN] Group not found"); // [DEBUG - Removed for production]
         return;
       }
 
@@ -638,7 +638,7 @@ io.on("connection", (socket) => {
         group.admin.toString() === userIdStr ||
         group.members.some((m) => m.toString() === userIdStr);
       if (!isMember) {
-        console.log("❌ [GROUP_SEEN] User not a member");
+        // console.log("❌ [GROUP_SEEN] User not a member"); // [DEBUG - Removed for production]
         return;
       }
 
@@ -651,12 +651,12 @@ io.on("connection", (socket) => {
         return seenUserId === userIdStr;
       });
 
-      console.log("🔍 [GROUP_SEEN] Check:", {
-        messageId,
-        userId: userIdStr,
-        currentSeenBy: message.seenBy.length,
-        alreadySeen,
-      });
+      // console.log("🔍 [GROUP_SEEN] Check:", {
+      //   messageId,
+      //   userId: userIdStr,
+      //   currentSeenBy: message.seenBy.length,
+      //   alreadySeen,
+      // });
 
       if (!alreadySeen) {
         // User hasn't seen this message yet - update database
@@ -666,14 +666,14 @@ io.on("connection", (socket) => {
         });
         await message.save();
 
-        console.log("✅ [GROUP_SEEN] Database updated:", {
-          messageId,
-          newSeenByCount: message.seenBy.length,
-        });
+        // console.log("✅ [GROUP_SEEN] Database updated:", { // [DEBUG - Removed for production]
+        // messageId,
+        // newSeenByCount: message.seenBy.length,
+        // });
       } else {
-        console.log(
-          "⏭️  [GROUP_SEEN] Already seen by user, but will send current seenBy status"
-        );
+        // console.log(
+        //   "⏭️  [GROUP_SEEN] Already seen by user, but will send current seenBy status"
+        // );
       }
 
       // Populate seenBy for sending to clients (do this for both new and existing)
@@ -690,11 +690,11 @@ io.on("connection", (socket) => {
       });
       const deduplicatedSeenBy = Array.from(seenByMap.values());
 
-      console.log("📤 [GROUP_SEEN] Broadcasting to group members:", {
-        memberCount: [group.admin, ...group.members].length,
-        seenByCount: deduplicatedSeenBy.length,
-        isNewSeen: !alreadySeen,
-      });
+      // console.log("📤 [GROUP_SEEN] Broadcasting to group members:", {
+      //   memberCount: [group.admin, ...group.members].length,
+      //   seenByCount: deduplicatedSeenBy.length,
+      //   isNewSeen: !alreadySeen,
+      // });
 
       // Notify all group members about the seen update
       // Even if alreadySeen=true, other members need to know the current seenBy status
@@ -749,14 +749,14 @@ io.on("connection", (socket) => {
                   startedAt: pendingCall.startedAt || pendingCall.createdAt,
                   endedAt: new Date(),
                 });
-                console.log(
-                  "✅ Offline missed call record saved to database:",
-                  {
-                    callId: savedCall._id,
-                    callerId: pendingCall.callerId,
-                    receiverId: pendingCall.receiverId,
-                  }
-                );
+                // console.log( // [DEBUG - Removed for production]
+                // "✅ Offline missed call record saved to database:",
+                // {
+                // callId: savedCall._id,
+                // callerId: pendingCall.callerId,
+                // receiverId: pendingCall.receiverId,
+                // }
+                // );
               } catch (saveError) {
                 console.error(
                   "❌ Error saving offline missed call record:",
@@ -936,11 +936,11 @@ io.on("connection", (socket) => {
           startedAt: callInfo.startedAt || callInfo.createdAt,
           endedAt: new Date(),
         });
-        console.log("✅ Rejected call record saved to database:", {
-          callId: savedCall._id,
-          callerId: callInfo.callerId,
-          receiverId: callInfo.receiverId,
-        });
+        // console.log("✅ Rejected call record saved to database:", { // [DEBUG - Removed for production]
+        // callId: savedCall._id,
+        // callerId: callInfo.callerId,
+        // receiverId: callInfo.receiverId,
+        // });
       } catch (saveError) {
         console.error("❌ Error saving rejected call record:", saveError);
       }
@@ -1003,13 +1003,13 @@ io.on("connection", (socket) => {
           startedAt: callInfo.startedAt || callInfo.createdAt,
           endedAt: endedAt,
         });
-        console.log("✅ Call record saved to database:", {
-          callId: savedCall._id,
-          status: callStatus,
-          duration: callDuration,
-          callerId: callInfo.callerId,
-          receiverId: callInfo.receiverId,
-        });
+        // console.log("✅ Call record saved to database:", { // [DEBUG - Removed for production]
+        // callId: savedCall._id,
+        // status: callStatus,
+        // duration: callDuration,
+        // callerId: callInfo.callerId,
+        // receiverId: callInfo.receiverId,
+        // });
       } catch (saveError) {
         console.error("❌ Error saving call record:", saveError);
         // Don't block the call end process if save fails

@@ -120,8 +120,8 @@ export const createGroup = async (req, res) => {
         notifiedCount++;
       }
     });
-    console.log("✅ Notified", notifiedCount, "members ⚡");
-    console.log("════════════════════════════════════════\n");
+    // console.log("✅ Notified", notifiedCount, "members ⚡"); // [DEBUG - Removed for production]
+    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     res.status(201).json(newGroup);
   } catch (error) {
@@ -237,8 +237,8 @@ export const addMembersToGroup = async (req, res) => {
         notifiedCount++;
       }
     });
-    console.log("✅ Notified", notifiedCount, "new members ⚡");
-    console.log("════════════════════════════════════════\n");
+    // console.log("✅ Notified", notifiedCount, "new members ⚡"); // [DEBUG - Removed for production]
+    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     res.status(200).json({
       success: true,
@@ -283,17 +283,17 @@ export const removeMemberFromGroup = async (req, res) => {
     await group.populate("members", "fullname profilePic");
 
     // Notify removed member via socket (targeted)
-    console.log("\n════════════════════════════════════════");
-    console.log("➖ [GROUP] Member removed from:", group.name);
-    console.log("════════════════════════════════════════");
+    // console.log("\n════════════════════════════════════════"); // [DEBUG - Removed for production]
+    // console.log("➖ [GROUP] Member removed from:", group.name); // [DEBUG - Removed for production]
+    // console.log("════════════════════════════════════════"); // [DEBUG - Removed for production]
     const memberSocketId = getReceiverSocketId(memberId);
     if (memberSocketId) {
       io.to(memberSocketId).emit("removedFromGroup", { group, memberId });
-      console.log("✅ Notified member ⚡");
+      // console.log("✅ Notified member ⚡"); // [DEBUG - Removed for production]
     } else {
-      console.log("⚠️ Member offline");
+      // console.log("⚠️ Member offline"); // [DEBUG - Removed for production]
     }
-    console.log("════════════════════════════════════════\n");
+    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     res.status(200).json(group);
   } catch (error) {
@@ -880,8 +880,8 @@ export const updateGroupInfo = async (req, res) => {
         notifiedCount++;
       }
     });
-    console.log("✅ Notified", notifiedCount, "members ⚡");
-    console.log("════════════════════════════════════════\n");
+    // console.log("✅ Notified", notifiedCount, "members ⚡"); // [DEBUG - Removed for production]
+    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     res.status(200).json(group);
   } catch (error) {
@@ -949,8 +949,8 @@ export const leaveGroup = async (req, res) => {
         notifiedCount++;
       }
     });
-    console.log("✅ Notified", notifiedCount, "remaining members ⚡");
-    console.log("════════════════════════════════════════\n");
+    // console.log("✅ Notified", notifiedCount, "remaining members ⚡"); // [DEBUG - Removed for production]
+    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     // Notify the user who left
     const userSocketId = getReceiverSocketId(userId.toString());
@@ -964,5 +964,64 @@ export const leaveGroup = async (req, res) => {
   } catch (error) {
     console.error("Error in leaveGroup: ", error.message);
     res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// Search groups by name
+export const searchGroups = async (req, res) => {
+  try {
+    const { query, limit = 20 } = req.query;
+    const userId = req.user._id;
+
+    if (!query || query.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Search query is required",
+      });
+    }
+
+    // Get all groups where user is a member
+    const groups = await Group.find({
+      members: userId,
+    })
+      .populate("members", "fullname email profilePic")
+      .populate("createdBy", "fullname email profilePic")
+      .sort({ updatedAt: -1 });
+
+    // Performance: Case-insensitive substring matching
+    // UX: Search both name and description for better discoverability
+    const searchQuery = query.toLowerCase().trim();
+    const filteredGroups = groups.filter((group) => {
+      const groupName = (group.name || "").toLowerCase();
+      const description = (group.description || "").toLowerCase();
+      return (
+        groupName.includes(searchQuery) || description.includes(searchQuery)
+      );
+    });
+
+    // Production log: Only log search stats
+    // console.log( // [DEBUG - Removed for production]
+    // `🔍 Group search: "${query}" → ${filteredGroups.length}/${groups.length} results`
+    // );
+
+    // Apply limit
+    const limitedResults = filteredGroups.slice(0, parseInt(limit));
+
+    res.status(200).json({
+      success: true,
+      message: "Groups search completed successfully",
+      data: limitedResults,
+      pagination: {
+        total: filteredGroups.length,
+        returned: limitedResults.length,
+        limit: parseInt(limit),
+      },
+    });
+  } catch (error) {
+    console.error("Search groups error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
   }
 };
