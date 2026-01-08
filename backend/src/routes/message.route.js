@@ -1,6 +1,27 @@
 import express from "express";
 import { protectRoute } from "../middleware/auth.middleware.js";
-import { getLastMessages, getMessages, getUsersForSidebar, getAllUsers, sendMessage, editMessage, deleteMessage, updateMessageImage, deleteConversation, getMessagesByType, pinMessage, unpinMessage, addReaction, removeReaction, deleteMessageMedia, markVoiceAsListened, saveMessage, unsaveMessage, getSavedMessages } from "../controllers/message.controller.js";
+import {
+  getLastMessages,
+  getMessages,
+  getUsersForSidebar,
+  getAllUsers,
+  sendMessage,
+  editMessage,
+  deleteMessage,
+  updateMessageImage,
+  deleteConversation,
+  getMessagesByType,
+  pinMessage,
+  unpinMessage,
+  addReaction,
+  removeReaction,
+  deleteMessageMedia,
+  deleteIndividualMediaItem,
+  markVoiceAsListened,
+  saveMessage,
+  unsaveMessage,
+  getSavedMessages,
+} from "../controllers/message.controller.js";
 import { messageLimiter, apiLimiter } from "../middleware/rateLimiter.js";
 
 const router = express.Router();
@@ -19,6 +40,7 @@ router.put("/unpin/:id", protectRoute, unpinMessage);
 router.put("/reaction/:id", protectRoute, addReaction);
 router.delete("/reaction/:id", protectRoute, removeReaction);
 router.delete("/media/:id", protectRoute, deleteMessageMedia);
+router.delete("/media-item/:id", protectRoute, deleteIndividualMediaItem); // DELETE individual item from batch
 router.put("/listen/:id", protectRoute, markVoiceAsListened);
 router.put("/save/:id", protectRoute, saveMessage);
 router.delete("/save/:id", protectRoute, unsaveMessage);

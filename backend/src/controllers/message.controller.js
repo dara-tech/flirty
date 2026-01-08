@@ -4,17 +4,16 @@ import { getReceiverSocketId, io } from "../lib/socket.js";
 import { toPlainObject } from "../lib/utils.js";
 import logger from "../lib/logger.js";
 import { paginatedResponse } from "../lib/apiResponse.js";
-
 import mongoose from "mongoose";
 
 export const getLastMessages = async (req, res) => {
   try {
     // Safety check for authenticated user
     if (!req.user || !req.user._id) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
         error: "Authentication required",
-        message: "User not authenticated"
+        message: "User not authenticated",
       });
     }
 
@@ -31,43 +30,36 @@ export const getLastMessages = async (req, res) => {
       // Stage 1: Match messages where user is sender or receiver (exclude group messages)
       {
         $match: {
-          $or: [
-            { senderId: myId },
-            { receiverId: myId }
-          ],
+          $or: [{ senderId: myId }, { receiverId: myId }],
           groupId: { $exists: false }, // Only direct messages
-          receiverId: { $ne: null } // Exclude messages with null receiver
-        }
+          receiverId: { $ne: null }, // Exclude messages with null receiver
+        },
       },
       // Stage 2: Determine the partner and sort by createdAt
       {
         $project: {
           partnerId: {
-            $cond: [
-              { $eq: ["$senderId", myId] },
-              "$receiverId",
-              "$senderId"
-            ]
+            $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
           },
           createdAt: 1,
-          message: "$$ROOT"
-        }
+          message: "$$ROOT",
+        },
       },
       // Stage 3: Sort by createdAt descending (most recent first)
       {
-        $sort: { createdAt: -1 }
+        $sort: { createdAt: -1 },
       },
       // Stage 4: Group by partnerId to get the most recent message for each partner
       {
         $group: {
           _id: "$partnerId",
           lastMessage: { $first: "$message" },
-          lastMessageTime: { $first: "$createdAt" }
-        }
+          lastMessageTime: { $first: "$createdAt" },
+        },
       },
       // Stage 5: Sort by lastMessageTime descending
       {
-        $sort: { lastMessageTime: -1 }
+        $sort: { lastMessageTime: -1 },
       },
       // Stage 6: Use facet to get total count and paginated results in parallel
       {
@@ -89,11 +81,11 @@ export const getLastMessages = async (req, res) => {
                       _id: 1,
                       fullname: 1,
                       profilePic: 1,
-                      email: 1
-                    }
-                  }
-                ]
-              }
+                      email: 1,
+                    },
+                  },
+                ],
+              },
             },
             // Stage 8: Lookup receiver user data
             {
@@ -108,11 +100,63 @@ export const getLastMessages = async (req, res) => {
                       _id: 1,
                       fullname: 1,
                       profilePic: 1,
-                      email: 1
-                    }
-                  }
-                ]
-              }
+                      email: 1,
+                    },
+                  },
+                ],
+              },
+            },
+            // Stage 8.5: Lookup replyTo message data (for reply UI context)
+            {
+              $lookup: {
+                from: "messages",
+                localField: "lastMessage.replyTo",
+                foreignField: "_id",
+                as: "replyToData",
+                pipeline: [
+                  {
+                    $project: {
+                      _id: 1,
+                      text: 1,
+                      image: 1,
+                      audio: 1,
+                      video: 1,
+                      file: 1,
+                      senderId: 1,
+                      receiverId: 1,
+                      createdAt: 1,
+                    },
+                  },
+                  // Populate senderId in replyTo message
+                  {
+                    $lookup: {
+                      from: "users",
+                      localField: "senderId",
+                      foreignField: "_id",
+                      as: "senderInfo",
+                      pipeline: [
+                        {
+                          $project: {
+                            _id: 1,
+                            fullname: 1,
+                            profilePic: 1,
+                          },
+                        },
+                      ],
+                    },
+                  },
+                  {
+                    $addFields: {
+                      senderId: { $arrayElemAt: ["$senderInfo", 0] },
+                    },
+                  },
+                  {
+                    $project: {
+                      senderInfo: 0,
+                    },
+                  },
+                ],
+              },
             },
             // Stage 9: Reshape the document to match expected format
             {
@@ -122,15 +166,15 @@ export const getLastMessages = async (req, res) => {
                   $cond: [
                     { $gt: [{ $size: "$senderData" }, 0] },
                     { $arrayElemAt: ["$senderData", 0] },
-                    { _id: "$lastMessage.senderId" }
-                  ]
+                    { _id: "$lastMessage.senderId" },
+                  ],
                 },
                 receiverId: {
                   $cond: [
                     { $gt: [{ $size: "$receiverData" }, 0] },
                     { $arrayElemAt: ["$receiverData", 0] },
-                    { _id: "$lastMessage.receiverId" }
-                  ]
+                    { _id: "$lastMessage.receiverId" },
+                  ],
                 },
                 text: "$lastMessage.text",
                 image: "$lastMessage.image",
@@ -151,27 +195,28 @@ export const getLastMessages = async (req, res) => {
                 pinnedAt: "$lastMessage.pinnedAt",
                 pinnedBy: "$lastMessage.pinnedBy",
                 reactions: "$lastMessage.reactions",
+                replyTo: { $arrayElemAt: ["$replyToData", 0] }, // ✅ Add replyTo field
                 forwardedFrom: "$lastMessage.forwardedFrom",
                 listenedBy: "$lastMessage.listenedBy",
                 savedBy: "$lastMessage.savedBy",
                 createdAt: "$lastMessage.createdAt",
-                updatedAt: "$lastMessage.updatedAt"
-              }
-            }
-          ]
-        }
+                updatedAt: "$lastMessage.updatedAt",
+              },
+            },
+          ],
+        },
       },
       // Stage 10: Unwind and format the result
       {
         $project: {
           total: { $ifNull: [{ $arrayElemAt: ["$totalCount.count", 0] }, 0] },
-          messages: "$paginatedResults"
-        }
-      }
+          messages: "$paginatedResults",
+        },
+      },
     ];
 
     const result = await Message.aggregate(pipeline, { allowDiskUse: true });
-    
+
     const total = result[0]?.total || 0;
     const lastMessages = result[0]?.messages || [];
     const totalPages = Math.ceil(total / limit);
@@ -199,9 +244,10 @@ export const getLastMessages = async (req, res) => {
       userId: req?.user?._id,
     });
     console.error("Full error in getLastMessages:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Internal server error",
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message:
+        process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -261,28 +307,31 @@ export const getUsersForSidebar = async (req, res) => {
     ]);
 
     // Get total count
-    const totalCount = await Message.aggregate([
-      {
-        $match: {
-          $or: [{ senderId: myId }, { receiverId: myId }],
-        },
-      },
-      {
-        $project: {
-          otherUserId: {
-            $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
+    const totalCount = await Message.aggregate(
+      [
+        {
+          $match: {
+            $or: [{ senderId: myId }, { receiverId: myId }],
           },
         },
-      },
-      {
-        $group: {
-          _id: "$otherUserId",
+        {
+          $project: {
+            otherUserId: {
+              $cond: [{ $eq: ["$senderId", myId] }, "$receiverId", "$senderId"],
+            },
+          },
         },
-      },
-      {
-        $count: "total",
-      },
-    ], { allowDiskUse: true });
+        {
+          $group: {
+            _id: "$otherUserId",
+          },
+        },
+        {
+          $count: "total",
+        },
+      ],
+      { allowDiskUse: true }
+    );
 
     const total = totalCount[0]?.total || 0;
     const totalPages = Math.ceil(total / limit);
@@ -320,18 +369,18 @@ export const getAllUsers = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 200; // Default 200 users per page
     const skip = (page - 1) * limit;
-    
+
     // Get search query parameter
     const searchQuery = req.query.search?.trim() || "";
 
     // Build query
     const query = { _id: { $ne: loggedInUserId } };
-    
+
     // Add search filter if search query exists
     if (searchQuery) {
       query.$or = [
         { fullname: { $regex: searchQuery, $options: "i" } },
-        { email: { $regex: searchQuery, $options: "i" } }
+        { email: { $regex: searchQuery, $options: "i" } },
       ];
     }
 
@@ -358,8 +407,10 @@ export const getAllUsers = async (req, res) => {
         totalPages,
         hasMore,
       },
-      searchQuery 
-        ? `Found ${users.length} user${users.length !== 1 ? 's' : ''} matching "${searchQuery}"`
+      searchQuery
+        ? `Found ${users.length} user${
+            users.length !== 1 ? "s" : ""
+          } matching "${searchQuery}"`
         : "All users retrieved successfully"
     );
   } catch (error) {
@@ -422,7 +473,15 @@ export const getMessages = async (req, res) => {
     const messages = await Message.find(query)
       .populate({
         path: "reactions.userId",
-        select: "fullname profilePic"
+        select: "fullname profilePic",
+      })
+      .populate({
+        path: "replyTo",
+        select: "text image audio video file senderId receiverId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
       })
       .sort({ createdAt: -1 }) // Newest first (Telegram-style) - uses compound index
       .limit(limit + 1) // Fetch one extra to check if there are more
@@ -509,6 +568,7 @@ export const sendMessage = async (req, res) => {
       fileSize,
       fileType,
       forwardedFrom,
+      replyTo, // Reply message ID
     } = req.body;
     const { id: receiverId } = req.params;
     const senderId = req.user._id;
@@ -532,9 +592,39 @@ export const sendMessage = async (req, res) => {
         isImageArray: Array.isArray(image),
         isVideoArray: Array.isArray(video),
         isFileArray: Array.isArray(file),
-        imageUrls: images.length > 0 ? images.map((img, idx) => `[${idx}]: ${typeof img === 'string' ? img.substring(0, 50) + '...' : 'non-string'}`) : [],
-        videoUrls: videos.length > 0 ? videos.map((vid, idx) => `[${idx}]: ${typeof vid === 'string' ? vid.substring(0, 50) + '...' : 'non-string'}`) : [],
-        fileUrls: files.length > 0 ? files.map((f, idx) => `[${idx}]: ${typeof f === 'string' ? f.substring(0, 50) + '...' : 'non-string'}`) : [],
+        imageUrls:
+          images.length > 0
+            ? images.map(
+                (img, idx) =>
+                  `[${idx}]: ${
+                    typeof img === "string"
+                      ? img.substring(0, 50) + "..."
+                      : "non-string"
+                  }`
+              )
+            : [],
+        videoUrls:
+          videos.length > 0
+            ? videos.map(
+                (vid, idx) =>
+                  `[${idx}]: ${
+                    typeof vid === "string"
+                      ? vid.substring(0, 50) + "..."
+                      : "non-string"
+                  }`
+              )
+            : [],
+        fileUrls:
+          files.length > 0
+            ? files.map(
+                (f, idx) =>
+                  `[${idx}]: ${
+                    typeof f === "string"
+                      ? f.substring(0, 50) + "..."
+                      : "non-string"
+                  }`
+              )
+            : [],
       });
     }
 
@@ -546,12 +636,9 @@ export const sendMessage = async (req, res) => {
     const hasFile = files.length > 0;
 
     if (!hasText && !hasImage && !hasAudio && !hasVideo && !hasFile) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Message must contain either text, image, audio, video, or file",
-        });
+      return res.status(400).json({
+        error: "Message must contain either text, image, audio, video, or file",
+      });
     }
 
     // Client already uploaded to OSS, just pass through the URLs/data
@@ -640,6 +727,7 @@ export const sendMessage = async (req, res) => {
       link: linkUrl,
       linkPreview: linkPreview,
       forwardedFrom: forwardedFromData,
+      replyTo: replyTo || undefined, // Add reply tracking
     });
 
     // Log what we're saving for debugging
@@ -656,33 +744,88 @@ export const sendMessage = async (req, res) => {
     }
 
     await newMessage.save();
-    
+
     // Log what was actually saved
     if (imageUrls.length > 1 || videoUrls.length > 1 || fileUrls.length > 1) {
       logger.info("Message saved with files", {
         requestId: req?.requestId,
         messageId: newMessage._id,
-        savedImageCount: Array.isArray(newMessage.image) ? newMessage.image.length : (newMessage.image ? 1 : 0),
-        savedVideoCount: Array.isArray(newMessage.video) ? newMessage.video.length : (newMessage.video ? 1 : 0),
-        savedFileCount: Array.isArray(newMessage.file) ? newMessage.file.length : (newMessage.file ? 1 : 0),
+        savedImageCount: Array.isArray(newMessage.image)
+          ? newMessage.image.length
+          : newMessage.image
+          ? 1
+          : 0,
+        savedVideoCount: Array.isArray(newMessage.video)
+          ? newMessage.video.length
+          : newMessage.video
+          ? 1
+          : 0,
+        savedFileCount: Array.isArray(newMessage.file)
+          ? newMessage.file.length
+          : newMessage.file
+          ? 1
+          : 0,
       });
     }
     await newMessage.populate("senderId", "fullname profilePic");
     await newMessage.populate("receiverId", "fullname profilePic");
+
+    // Populate replyTo if present (for reply messages)
+    if (newMessage.replyTo) {
+      await newMessage.populate({
+        path: "replyTo",
+        select: "text image audio video file senderId receiverId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
+      });
+    }
+
+    // CRITICAL: Add delay to ensure MongoDB write is fully committed and indexed
+    // This prevents race condition where Socket.IO triggers client GET before write is visible
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     // Convert Mongoose document to plain object for socket emit
     const messageObj = newMessage.toObject ? newMessage.toObject() : newMessage;
 
     // Emit to both sender and receiver for real-time updates
     const receiverSocketId = getReceiverSocketId(receiverId);
+    // console.log("🔍 [SOCKET EMIT] Looking up receiver socket:", {
+    //   receiverId,
+    //   receiverSocketId,
+    //   found: !!receiverSocketId,
+    // });
     if (receiverSocketId) {
       io.to(receiverSocketId).emit("newMessage", messageObj);
+      // console.log("📤 [SOCKET EMIT] Emitted newMessage to receiver:", {
+      //   receiverId,
+      //   socketId: receiverSocketId,
+      //   messageId: newMessage._id,
+      // });
+    } else {
+      // console.log("❌ [SOCKET EMIT] Receiver socket NOT FOUND:", receiverId); // [DEBUG - Removed for production]
     }
 
     // Also emit to sender so they see their own message in real-time
     const senderSocketId = getReceiverSocketId(senderId.toString());
+    // console.log("🔍 [SOCKET EMIT] Looking up sender socket:", {
+    //   senderId: senderId.toString(),
+    //   senderSocketId,
+    //   found: !!senderSocketId,
+    // });
     if (senderSocketId) {
       io.to(senderSocketId).emit("newMessage", messageObj);
+      // console.log("📤 [SOCKET EMIT] Emitted newMessage to sender:", {
+      //   senderId: senderId.toString(),
+      //   socketId: senderSocketId,
+      //   messageId: newMessage._id,
+      // });
+    } else {
+      // console.log( // [DEBUG - Removed for production]
+      // "❌ [SOCKET EMIT] Sender socket NOT FOUND:",
+      // senderId.toString()
+      // );
     }
 
     logger.info("Message sent successfully", {
@@ -690,6 +833,8 @@ export const sendMessage = async (req, res) => {
       messageId: newMessage._id,
       senderId: senderId.toString(),
       receiverId,
+      receiverSocketId: receiverSocketId || "NOT_FOUND",
+      senderSocketId: senderSocketId || "NOT_FOUND",
     });
 
     res.status(201).json(newMessage);
@@ -733,20 +878,40 @@ export const editMessage = async (req, res) => {
         .json({ error: "You can only edit your own messages" });
     }
 
-    // Only allow editing text messages (not images)
-    if (message.image) {
-      return res.status(400).json({ error: "Cannot edit image messages" });
-    }
+    // 🔥 FIXED: Allow editing text/caption for media messages
+    // Users can add or edit captions for images, videos, audio, and files
+    // This matches Telegram/WhatsApp behavior where captions are editable
+    // console.log(`📝 [EDIT] Editing message ${messageId}:`);
+    // console.log(`   ├─ Has image: ${!!message.image}`);
+    // console.log(`   ├─ Has video: ${!!message.video}`);
+    // console.log(`   ├─ Has audio: ${!!message.audio}`);
+    // console.log(`   ├─ Has file: ${!!message.file}`);
+    // console.log(`   ├─ Old text: "${message.text || "<no caption>"}"`);
+    // console.log(`   └─ New text: "${text.trim()}"`);
 
-    // Update message
+    // Update message text (caption for media messages)
     message.text = text.trim();
     message.edited = true;
     message.editedAt = new Date();
     await message.save();
 
+    // console.log(`✅ [EDIT] Message text/caption updated successfully`); // [DEBUG - Removed for production]
+
     // Populate message with user data before emitting
     await message.populate("senderId", "fullname profilePic email");
     await message.populate("receiverId", "fullname profilePic email");
+
+    // 🔥 CRITICAL: Populate replyTo to preserve reply UI in edited messages
+    if (message.replyTo) {
+      await message.populate({
+        path: "replyTo",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic email",
+        },
+      });
+      // console.log(`   ├─ Populated replyTo: ${message.replyTo._id}`); // [DEBUG - Removed for production]
+    }
 
     // Populate seenBy for group messages
     if (message.groupId) {
@@ -769,38 +934,117 @@ export const editMessage = async (req, res) => {
           : message.receiverId.toString();
 
       const receiverSocketId = getReceiverSocketId(receiverIdStr);
+      // console.log(`📝 Editing message ${messageId}:`);
+      // console.log(`   Sender: ${userId.toString()}`);
+      // console.log(`   Receiver: ${receiverIdStr}`);
+      // console.log(`   Receiver socket: ${receiverSocketId || "OFFLINE"}`);
+      // console.log(`   New text: "${text.trim()}"`);
+
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("messageEdited", messageObj);
+        // console.log( // [DEBUG - Removed for production]
+        // `✅ Emitted messageEdited to receiver: ${receiverSocketId}`
+        // );
       } else {
+        // console.log(`⚠️ Receiver ${receiverIdStr} is offline`); // [DEBUG - Removed for production]
       }
 
       // Also notify sender
       const senderIdStr = userId.toString();
       const senderSocketId = getReceiverSocketId(senderIdStr);
+      // console.log(`   Sender socket: ${senderSocketId || "OFFLINE"}`);
+
       if (senderSocketId) {
         io.to(senderSocketId).emit("messageEdited", messageObj);
+        // console.log(`✅ Emitted messageEdited to sender: ${senderSocketId}`); // [DEBUG - Removed for production]
       } else {
+        // console.log(`⚠️ Sender ${senderIdStr} socket not found`); // [DEBUG - Removed for production]
       }
     } else if (message.groupId) {
       // Group message - notify all group members
+      const groupIdStr = message.groupId.toString();
+      const senderIdStr = userId.toString();
+
+      // console.log("\n══════════════════════════════════════");
+      // console.log("✏️ [EDIT] Group message edit");
+      // console.log("══════════════════════════════════════");
+      // console.log("📝 Message details:");
+      // console.log("   ├─ messageId:", messageId);
+      // console.log("   ├─ senderId (editor):", senderIdStr);
+      // console.log("   ├─ groupId:", groupIdStr);
+      // console.log(
+      //   "   └─ new text:",
+      //   text.trim().substring(0, 50) + (text.trim().length > 50 ? "..." : "")
+      // );
+
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
+
       if (group) {
         const allMembers = [group.admin, ...group.members];
+        // console.log( // [DEBUG - Removed for production]
+        // "\n📤 [SOCKET] Emitting groupMessageEdited to ALL group members"
+        // );
+        // console.log("   └─ Total members:", allMembers.length); // [DEBUG - Removed for production]
+
+        let onlineCount = 0;
+        let offlineCount = 0;
+
         allMembers.forEach((memberId) => {
-          io.emit("groupMessageEdited", {
-            message: messageObj,
-            groupId: message.groupId,
-            memberId: memberId.toString(),
-          });
+          const memberIdStr = memberId.toString();
+          const memberSocketId = getReceiverSocketId(memberIdStr);
+
+          if (memberSocketId) {
+            // FIXED: Targeted emission instead of broadcast
+            io.to(memberSocketId).emit("groupMessageEdited", messageObj);
+            // console.log("   ✅ Emitted to member:", memberIdStr, "(online)");
+            onlineCount++;
+          } else {
+            // console.log("   ⚠️ Member offline:", memberIdStr);
+            offlineCount++;
+          }
         });
+
+        // console.log(
+        //   "\n✅ [EDIT] Group message edited for ALL members in real-time"
+        // );
+        // console.log("   ├─ Online members notified:", onlineCount, "✅");
+        // console.log(
+        //   "   ├─ Offline members:",
+        //   offlineCount,
+        //   "(will see on reconnect)"
+        // );
+        // console.log("   ├─ Editor sees update: YES ✅");
+        // console.log("   ├─ All members see update: YES ✅");
+        // console.log("   └─ No refresh needed: 0ms latency ⚡");
+        // console.log("══════════════════════════════════════\n");
+      } else {
+        // console.log("❌ [EDIT] Group not found:", groupIdStr); // [DEBUG - Removed for production]
+        // console.log("══════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     }
 
     // Return populated message for response
-    const populatedMessage = await Message.findById(message._id)
+    // 🔥 CRITICAL: Build populate query conditionally based on what fields exist
+    let query = Message.findById(message._id)
       .populate("senderId", "fullname profilePic email")
       .populate("receiverId", "fullname profilePic email");
+
+    // Only populate replyTo if the message actually has one (not null/undefined)
+    if (message.replyTo) {
+      query = query.populate({
+        path: "replyTo",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic email",
+        },
+      });
+      // console.log(`   ├─ Including replyTo in response`); // [DEBUG - Removed for production]
+    } else {
+      // console.log(`   ├─ No replyTo to populate (standalone message)`); // [DEBUG - Removed for production]
+    }
+
+    const populatedMessage = await query.exec();
 
     res.status(200).json(populatedMessage);
   } catch (error) {
@@ -823,11 +1067,9 @@ export const deleteMessage = async (req, res) => {
     if (deleteType === "forEveryone") {
       // Only sender can delete for everyone
       if (message.senderId.toString() !== userId.toString()) {
-        return res
-          .status(403)
-          .json({
-            error: "You can only delete your own messages for everyone",
-          });
+        return res.status(403).json({
+          error: "You can only delete your own messages for everyone",
+        });
       }
 
       // Save message info before deletion to find new last message
@@ -882,15 +1124,32 @@ export const deleteMessage = async (req, res) => {
             ? message.receiverId._id.toString()
             : message.receiverId.toString();
 
+        // console.log("\n════════════════════════════════════════");
+        // console.log("🗑️ [DELETE] Personal message deletion");
+        // console.log("════════════════════════════════════════");
+        // console.log("📝 Message details:");
+        // console.log("   ├─ messageId:", messageIdStr);
+        // console.log("   ├─ senderId (owner):", userId.toString());
+        // console.log("   └─ receiverId:", receiverIdStr);
+        // console.log("\n📤 [SOCKET] Emitting messageDeleted to BOTH users");
+
         const receiverSocketId = getReceiverSocketId(receiverIdStr);
         if (receiverSocketId) {
           io.to(receiverSocketId).emit("messageDeleted", {
             messageId: messageIdStr,
+            senderId: userId.toString(),
+            receiverId: receiverIdStr,
             deleteType: "forEveryone",
             newLastMessage: newLastMessage, // Send new last message if exists
             conversationDeleted: !newLastMessage, // Flag if conversation is now empty
           });
+          // console.log("   ✅ Emitted to RECEIVER:", receiverIdStr); // [DEBUG - Removed for production]
+          // console.log("      └─ socketId:", receiverSocketId); // [DEBUG - Removed for production]
         } else {
+          // console.log( // [DEBUG - Removed for production]
+          // "⚠️ [SOCKET] Receiver not connected (offline):",
+          // receiverIdStr
+          // );
         }
 
         // Also notify sender
@@ -899,27 +1158,87 @@ export const deleteMessage = async (req, res) => {
         if (senderSocketId) {
           io.to(senderSocketId).emit("messageDeleted", {
             messageId: messageIdStr,
+            senderId: senderIdStr,
+            receiverId: receiverIdStr,
             deleteType: "forEveryone",
             newLastMessage: newLastMessage, // Send new last message if exists
             conversationDeleted: !newLastMessage, // Flag if conversation is now empty
           });
+          // console.log("   ✅ Emitted to SENDER (owner):", senderIdStr);
+          // console.log("      └─ socketId:", senderSocketId);
+          // console.log(
+          //   "\n✅ [DELETE] Message deleted for BOTH users in real-time"
+          // );
+          // console.log("   ├─ Receiver sees deletion: YES ✅");
+          // console.log("   ├─ Sender sees deletion: YES ✅");
+          // console.log("   └─ No refresh needed: 0ms latency ⚡");
+          // console.log("════════════════════════════════════════\n");
         } else {
+          // console.log("⚠️ [SOCKET] Sender not connected:", senderIdStr); // [DEBUG - Removed for production]
         }
       } else if (message.groupId) {
         // Group message - notify all group members
         const messageIdStr = messageId.toString();
+        const groupIdStr = message.groupId.toString();
+        const senderIdStr = userId.toString();
+
+        // console.log("\n════════════════════════════════════════");
+        // console.log("🗑️ [DELETE] Group message deletion");
+        // console.log("════════════════════════════════════════");
+        // console.log("📝 Message details:");
+        // console.log("   ├─ messageId:", messageIdStr);
+        // console.log("   ├─ senderId (owner):", senderIdStr);
+        // console.log("   └─ groupId:", groupIdStr);
+
         const Group = (await import("../model/group.model.js")).default;
         const group = await Group.findById(message.groupId);
+
         if (group) {
           const allMembers = [group.admin, ...group.members];
+          // console.log(
+          //   "\n📤 [SOCKET] Emitting groupMessageDeleted to ALL group members"
+          // );
+          // console.log("   └─ Total members:", allMembers.length);
+
+          let onlineCount = 0;
+          let offlineCount = 0;
+
           allMembers.forEach((memberId) => {
-            io.emit("groupMessageDeleted", {
-              messageId: messageIdStr,
-              groupId: message.groupId,
-              memberId: memberId.toString(),
-              deleteType: "forEveryone",
-            });
+            const memberIdStr = memberId.toString();
+            const memberSocketId = getReceiverSocketId(memberIdStr);
+
+            if (memberSocketId) {
+              // Targeted emission to specific member
+              io.to(memberSocketId).emit("groupMessageDeleted", {
+                messageId: messageIdStr,
+                senderId: senderIdStr,
+                groupId: groupIdStr,
+                deleteType: "forEveryone",
+              });
+              // console.log("   ✅ Emitted to member:", memberIdStr, "(online)"); // [DEBUG - Removed for production]
+              onlineCount++;
+            } else {
+              // console.log("   ⚠️ Member offline:", memberIdStr);
+              offlineCount++;
+            }
           });
+
+          // console.log(
+          //   "\n✅ [DELETE] Group message deleted for ALL members in real-time"
+          // );
+          // console.log("   ├─ Online members notified:", onlineCount, "✅");
+          // console.log(
+          //   "   ├─ Offline members:",
+          //   offlineCount,
+          //   "(will see on reconnect)"
+          // );
+          // console.log("   ├─ Owner sees deletion: YES ✅");
+          // console.log("   ├─ All members see deletion: YES ✅");
+          // console.log("   └─ No refresh needed: 0ms latency ⚡");
+          // console.log("════════════════════════════════════════\n");
+        } else {
+          // console.log("❌ [DELETE] Group not found:", groupIdStr); // [DEBUG - Removed for production]
+          // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
         }
       }
     } else {
@@ -1025,21 +1344,8 @@ export const updateMessageImage = async (req, res) => {
       if (senderSocketId) {
         io.to(senderSocketId).emit("messageEdited", messageObj);
       }
-    } else if (message.groupId) {
-      // Group message - notify all group members
-      const Group = (await import("../model/group.model.js")).default;
-      const group = await Group.findById(message.groupId);
-      if (group) {
-        const allMembers = [group.admin, ...group.members];
-        allMembers.forEach((memberId) => {
-          io.emit("groupMessageEdited", {
-            message: messageObj,
-            groupId: message.groupId,
-            memberId: memberId.toString(),
-          });
-        });
-      }
     }
+    // Note: Group message edit handled above with comprehensive logging
 
     res.status(200).json(message);
   } catch (error) {
@@ -1123,11 +1429,9 @@ export const getMessagesByType = async (req, res) => {
     const myId = req.user._id;
 
     if (!type || !["media", "files", "links", "voice"].includes(type)) {
-      return res
-        .status(400)
-        .json({
-          error: "Invalid type. Must be 'media', 'files', 'links', or 'voice'",
-        });
+      return res.status(400).json({
+        error: "Invalid type. Must be 'media', 'files', 'links', or 'voice'",
+      });
     }
 
     const myObjectId = new mongoose.Types.ObjectId(myId);
@@ -1285,15 +1589,27 @@ export const pinMessage = async (req, res) => {
       const group = await Group.findById(message.groupId);
       if (group) {
         const allMembers = [group.admin, ...group.members];
+        // console.log("\n════════════════════════════════════════"); // [DEBUG - Removed for production]
+        // console.log("📌 [PIN] Group message pinned"); // [DEBUG - Removed for production]
+        // console.log("════════════════════════════════════════"); // [DEBUG - Removed for production]
+        let notifiedCount = 0;
         allMembers.forEach((memberId) => {
-          io.emit("messagePinned", {
-            message: message.toObject(),
-            groupId: message.groupId,
-            memberId: memberId.toString(),
-          });
-          // Emit pin status message
-          io.emit("newMessage", pinStatusMessage.toObject());
+          const memberSocketId = getReceiverSocketId(memberId.toString());
+          if (memberSocketId) {
+            io.to(memberSocketId).emit("messagePinned", {
+              message: message.toObject(),
+              groupId: message.groupId,
+              memberId: memberId.toString(),
+            });
+            io.to(memberSocketId).emit(
+              "newMessage",
+              pinStatusMessage.toObject()
+            );
+            notifiedCount++;
+          }
         });
+        // console.log("✅ Notified", notifiedCount, "members ⚡"); // [DEBUG - Removed for production]
+        // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
@@ -1372,13 +1688,33 @@ export const unpinMessage = async (req, res) => {
       const group = await Group.findById(message.groupId);
       if (group) {
         const allMembers = [group.admin, ...group.members];
+        const messageObj = message.toObject();
+
+        // console.log("\n══════════════════════════════════════"); // [DEBUG - Removed for production]
+        // console.log("📌❌ [UNPIN] Group message unpin"); // [DEBUG - Removed for production]
+        // console.log("══════════════════════════════════════"); // [DEBUG - Removed for production]
+        // console.log("📝 Message details:"); // [DEBUG - Removed for production]
+        // console.log("   ├─ messageId:", message._id.toString()); // [DEBUG - Removed for production]
+        // console.log("   ├─ senderId:", message.senderId.toString()); // [DEBUG - Removed for production]
+        // console.log("   └─ groupId:", message.groupId.toString()); // [DEBUG - Removed for production]
+        // console.log("\n📤 [SOCKET] Emitting to members"); // [DEBUG - Removed for production]
+
+        let onlineCount = 0;
+        let offlineCount = 0;
+
         allMembers.forEach((memberId) => {
-          io.emit("messageUnpinned", {
-            message: message.toObject(),
-            groupId: message.groupId,
-            memberId: memberId.toString(),
-          });
+          const memberSocketId = getReceiverSocketId(memberId.toString());
+          if (memberSocketId) {
+            io.to(memberSocketId).emit("messageUnpinned", messageObj);
+            onlineCount++;
+          } else {
+            offlineCount++;
+          }
         });
+
+        // console.log("✅ Notified", onlineCount, "online members ⚡"); // [DEBUG - Removed for production]
+        // console.log("⚫ Skipped", offlineCount, "offline members"); // [DEBUG - Removed for production]
+        // console.log("══════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
@@ -1427,12 +1763,10 @@ export const addReaction = async (req, res) => {
         })));
 
     if (!isParticipant) {
-      return res
-        .status(403)
-        .json({
-          error:
-            "You can only react to messages in conversations you are part of",
-        });
+      return res.status(403).json({
+        error:
+          "You can only react to messages in conversations you are part of",
+      });
     }
 
     // Remove existing reaction from this user if exists
@@ -1456,28 +1790,85 @@ export const addReaction = async (req, res) => {
 
     // Emit socket event for real-time update
     if (message.groupId) {
+      // Group message - targeted emission to all members
       const group = await Group.findById(message.groupId);
       if (group) {
         const allMembers = [group.admin, ...group.members];
+        // console.log("\n════════════════════════════════════════");
+        // console.log("😍 [REACTION] Group reaction added");
+        // console.log("════════════════════════════════════════");
+        // console.log("📝 Details:");
+        // console.log("   ├─ messageId:", messageId);
+        // console.log("   ├─ userId:", userId.toString());
+        // console.log("   ├─ emoji:", emoji);
+        // console.log("   └─ groupId:", message.groupId.toString());
+
+        let onlineCount = 0;
         allMembers.forEach((memberId) => {
-          io.emit("messageReactionAdded", {
-            message: messageObj,
-            groupId: message.groupId,
-            memberId: memberId.toString(),
-          });
+          const memberSocketId = getReceiverSocketId(memberId.toString());
+          if (memberSocketId) {
+            io.to(memberSocketId).emit("messageReactionAdded", messageObj);
+            onlineCount++;
+          }
         });
+
+        // console.log( // [DEBUG - Removed for production]
+        // "✅ [REACTION] Emitted to",
+        // onlineCount,
+        // "online members ⚡"
+        // );
+        // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
-      const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString()
-      );
-      const senderSocketId = getReceiverSocketId(message.senderId.toString());
+      // Personal message - emit to sender and receiver
+      // console.log("\n════════════════════════════════════════");
+      // console.log("😍 [REACTION] Personal chat reaction added");
+      // console.log("════════════════════════════════════════");
+      // console.log("📝 Details:");
+      // console.log("   ├─ messageId:", messageId);
+      // console.log("   ├─ userId:", userId.toString());
+      // console.log("   ├─ emoji:", emoji);
+
+      // CRITICAL DEBUG: Check if IDs are populated objects
+      // console.log("🔍 Sender/Receiver Types:");
+      // console.log("   ├─ senderId type:", typeof message.senderId);
+      // console.log("   ├─ senderId value:", message.senderId);
+      // console.log("   ├─ receiverId type:", typeof message.receiverId);
+      // console.log("   └─ receiverId value:", message.receiverId);
+
+      // Extract actual IDs (handle both populated and non-populated)
+      const senderIdStr = message.senderId?._id
+        ? message.senderId._id.toString()
+        : message.senderId.toString();
+      const receiverIdStr = message.receiverId?._id
+        ? message.receiverId._id.toString()
+        : message.receiverId.toString();
+
+      // console.log("📝 Extracted IDs:");
+      // console.log("   ├─ senderIdStr:", senderIdStr);
+      // console.log("   └─ receiverIdStr:", receiverIdStr);
+
+      const receiverSocketId = getReceiverSocketId(receiverIdStr);
+      const senderSocketId = getReceiverSocketId(senderIdStr);
+
+      // console.log("🔍 Socket IDs:");
+      // console.log("   ├─ receiverSocketId:", receiverSocketId || "❌ OFFLINE");
+      // console.log("   └─ senderSocketId:", senderSocketId || "❌ OFFLINE");
+
+      let emitCount = 0;
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("messageReactionAdded", messageObj);
+        // console.log("   ├─ ✅ Emitted to receiver");
+        emitCount++;
       }
       if (senderSocketId) {
         io.to(senderSocketId).emit("messageReactionAdded", messageObj);
+        // console.log("   ├─ ✅ Emitted to sender");
+        emitCount++;
       }
+
+      // console.log("✅ [REACTION] Emitted to", emitCount, "online users ⚡");
+      // console.log("════════════════════════════════════════\n");
     }
 
     res.status(200).json(message);
@@ -1515,29 +1906,73 @@ export const removeReaction = async (req, res) => {
 
     // Emit socket event for real-time update
     if (message.groupId) {
+      // Group message - targeted emission to all members
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
         const allMembers = [group.admin, ...group.members];
+        // console.log("\n════════════════════════════════════════");
+        // console.log("🚫 [REACTION] Group reaction removed");
+        // console.log("════════════════════════════════════════");
+        // console.log("📝 Details:");
+        // console.log("   ├─ messageId:", messageId);
+        // console.log("   ├─ userId:", userId.toString());
+        // console.log("   └─ groupId:", message.groupId.toString());
+
+        let onlineCount = 0;
         allMembers.forEach((memberId) => {
-          io.emit("messageReactionRemoved", {
-            message: messageObj,
-            groupId: message.groupId,
-            memberId: memberId.toString(),
-          });
+          const memberSocketId = getReceiverSocketId(memberId.toString());
+          if (memberSocketId) {
+            io.to(memberSocketId).emit("messageReactionRemoved", messageObj);
+            onlineCount++;
+          }
         });
+
+        // console.log( // [DEBUG - Removed for production]
+        // "✅ [REACTION] Emitted to",
+        // onlineCount,
+        // "online members ⚡"
+        // );
+        // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
-      const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString()
-      );
-      const senderSocketId = getReceiverSocketId(message.senderId.toString());
+      // Personal message - emit to sender and receiver
+      // console.log("\n════════════════════════════════════════");
+      // console.log("🚫 [REACTION] Personal chat reaction removed");
+      // console.log("════════════════════════════════════════");
+      // console.log("📝 Details:");
+      // console.log("   ├─ messageId:", messageId);
+      // console.log("   ├─ userId:", userId.toString());
+
+      // Extract actual IDs (handle both populated and non-populated)
+      const senderIdStr = message.senderId?._id
+        ? message.senderId._id.toString()
+        : message.senderId.toString();
+      const receiverIdStr = message.receiverId?._id
+        ? message.receiverId._id.toString()
+        : message.receiverId.toString();
+
+      const receiverSocketId = getReceiverSocketId(receiverIdStr);
+      const senderSocketId = getReceiverSocketId(senderIdStr);
+
+      // console.log("🔍 Socket IDs:"); // [DEBUG - Removed for production]
+      // console.log("   ├─ receiverSocketId:", receiverSocketId || "❌ OFFLINE"); // [DEBUG - Removed for production]
+      // console.log("   └─ senderSocketId:", senderSocketId || "❌ OFFLINE"); // [DEBUG - Removed for production]
+
+      let emitCount = 0;
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("messageReactionRemoved", messageObj);
+        // console.log("   ├─ ✅ Emitted to receiver"); // [DEBUG - Removed for production]
+        emitCount++;
       }
       if (senderSocketId) {
         io.to(senderSocketId).emit("messageReactionRemoved", messageObj);
+        // console.log("   ├─ ✅ Emitted to sender"); // [DEBUG - Removed for production]
+        emitCount++;
       }
+
+      // console.log("✅ [REACTION] Emitted to", emitCount, "online users ⚡"); // [DEBUG - Removed for production]
+      // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
     }
 
     res.status(200).json(message);
@@ -1557,12 +1992,10 @@ export const deleteMessageMedia = async (req, res) => {
       !mediaType ||
       !["image", "video", "audio", "file"].includes(mediaType)
     ) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Invalid media type. Must be 'image', 'video', 'audio', or 'file'",
-        });
+      return res.status(400).json({
+        error:
+          "Invalid media type. Must be 'image', 'video', 'audio', or 'file'",
+      });
     }
 
     const message = await Message.findById(messageId);
@@ -1602,12 +2035,10 @@ export const deleteMessageMedia = async (req, res) => {
       message.link;
     if (!hasContent) {
       await Message.findByIdAndDelete(messageId);
-      return res
-        .status(200)
-        .json({
-          message: "Message deleted (no content remaining)",
-          deleted: true,
-        });
+      return res.status(200).json({
+        message: "Message deleted (no content remaining)",
+        deleted: true,
+      });
     }
 
     message.edited = true;
@@ -1627,13 +2058,32 @@ export const deleteMessageMedia = async (req, res) => {
       const group = await Group.findById(message.groupId);
       if (group) {
         const allMembers = [group.admin, ...group.members];
+
+        // console.log("\n══════════════════════════════════════");
+        // console.log("✏️ [EDIT] Group message edit (media deleted)");
+        // console.log("══════════════════════════════════════");
+        // console.log("📝 Message details:");
+        // console.log("   ├─ messageId:", message._id.toString());
+        // console.log("   ├─ senderId:", message.senderId.toString());
+        // console.log("   └─ groupId:", message.groupId.toString());
+        // console.log("\n📤 [SOCKET] Emitting to members");
+
+        let onlineCount = 0;
+        let offlineCount = 0;
+
         allMembers.forEach((memberId) => {
-          io.emit("groupMessageEdited", {
-            message: messageObj,
-            groupId: message.groupId,
-            memberId: memberId.toString(),
-          });
+          const memberSocketId = getReceiverSocketId(memberId.toString());
+          if (memberSocketId) {
+            io.to(memberSocketId).emit("groupMessageEdited", messageObj);
+            onlineCount++;
+          } else {
+            offlineCount++;
+          }
         });
+
+        // console.log("✅ Notified", onlineCount, "online members ⚡");
+        // console.log("⚫ Skipped", offlineCount, "offline members");
+        // console.log("══════════════════════════════════════\n");
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
@@ -1652,8 +2102,292 @@ export const deleteMessageMedia = async (req, res) => {
       .status(200)
       .json({ message: "Media deleted successfully", message: messageObj });
   } catch (error) {
-    console.error("Error deleting message media:", error);
+    console.error("Error in deleteMessageMedia:", error.message);
     res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/// Delete individual media item from batch (array)
+///
+/// DELETE /api/messages/media-item/:id
+/// Body: { mediaType: 'image'|'video'|'audio'|'file', index: number }
+///
+/// Removes ONE item from media array (e.g., delete 2nd image from batch of 5)
+/// If array becomes empty or no content remains, deletes entire message
+export const deleteIndividualMediaItem = async (req, res) => {
+  try {
+    const { id: messageId } = req.params;
+    const { mediaType, index } = req.body;
+    const userId = req.user._id;
+
+    // console.log("\n🗑️ ========================================");
+    // console.log("🗑️ DELETE INDIVIDUAL MEDIA ITEM");
+    // console.log("🗑️ ========================================");
+    // console.log("📋 Request details:");
+    // console.log("   ├─ Message ID:", messageId);
+    // console.log("   ├─ Media Type:", mediaType);
+    // console.log("   ├─ Index:", index);
+    // console.log("   └─ User ID:", userId.toString());
+
+    // Validate input
+    if (
+      !mediaType ||
+      !["image", "video", "audio", "file"].includes(mediaType)
+    ) {
+      // console.log("❌ Invalid media type:", mediaType); // [DEBUG - Removed for production]
+      return res.status(400).json({
+        success: false,
+        error:
+          "Invalid media type. Must be 'image', 'video', 'audio', or 'file'",
+      });
+    }
+
+    if (index === undefined || index === null || index < 0) {
+      // console.log("❌ Invalid index:", index); // [DEBUG - Removed for production]
+      return res.status(400).json({
+        success: false,
+        error: "Invalid index. Must be a non-negative number",
+      });
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      // console.log("❌ Message not found"); // [DEBUG - Removed for production]
+      return res
+        .status(404)
+        .json({ success: false, error: "Message not found" });
+    }
+
+    // Only sender can delete media
+    if (message.senderId.toString() !== userId.toString()) {
+      // console.log("❌ Permission denied - not sender"); // [DEBUG - Removed for production]
+      return res.status(403).json({
+        success: false,
+        error: "You can only delete media from your own messages",
+      });
+    }
+
+    // Get the media array
+    const mediaArray = message[mediaType];
+
+    // console.log("📊 Current state:");
+    // console.log("   ├─ Media type:", mediaType);
+    // console.log("   ├─ Is array:", Array.isArray(mediaArray));
+    // console.log(
+    //   "   ├─ Array length:",
+    //   Array.isArray(mediaArray) ? mediaArray.length : "N/A"
+    // );
+    // console.log("   └─ Target index:", index);
+
+    // Check if message has this media type
+    if (!mediaArray) {
+      // console.log("❌ Message does not have this media type"); // [DEBUG - Removed for production]
+      return res.status(400).json({
+        success: false,
+        error: `Message does not have ${mediaType}`,
+      });
+    }
+
+    // Handle array media
+    if (Array.isArray(mediaArray)) {
+      if (index >= mediaArray.length) {
+        // console.log("❌ Index out of bounds"); // [DEBUG - Removed for production]
+        return res.status(400).json({
+          success: false,
+          error: `Index ${index} out of bounds. Array has ${mediaArray.length} items`,
+        });
+      }
+
+      // console.log("🔪 Removing item at index", index); // [DEBUG - Removed for production]
+      // console.log("   Before:", JSON.stringify(mediaArray)); // [DEBUG - Removed for production]
+
+      // Remove item at index
+      mediaArray.splice(index, 1);
+
+      // console.log("   After:", JSON.stringify(mediaArray)); // [DEBUG - Removed for production]
+      // console.log("   New length:", mediaArray.length); // [DEBUG - Removed for production]
+
+      // If array is now empty, remove the field entirely
+      if (mediaArray.length === 0) {
+        // console.log("📭 Array now empty, removing field"); // [DEBUG - Removed for production]
+        message[mediaType] = null;
+
+        // Also remove file metadata if applicable
+        if (mediaType === "file") {
+          if (
+            Array.isArray(message.fileName) &&
+            message.fileName.length > index
+          ) {
+            message.fileName.splice(index, 1);
+            if (message.fileName.length === 0) message.fileName = null;
+          }
+          if (
+            Array.isArray(message.fileSize) &&
+            message.fileSize.length > index
+          ) {
+            message.fileSize.splice(index, 1);
+            if (message.fileSize.length === 0) message.fileSize = null;
+          }
+          if (
+            Array.isArray(message.fileType) &&
+            message.fileType.length > index
+          ) {
+            message.fileType.splice(index, 1);
+            if (message.fileType.length === 0) message.fileType = null;
+          }
+        }
+      } else {
+        // Update the array with the item removed
+        message[mediaType] = mediaArray;
+
+        // Also update file metadata arrays if applicable
+        if (mediaType === "file") {
+          if (
+            Array.isArray(message.fileName) &&
+            message.fileName.length > index
+          ) {
+            message.fileName.splice(index, 1);
+          }
+          if (
+            Array.isArray(message.fileSize) &&
+            message.fileSize.length > index
+          ) {
+            message.fileSize.splice(index, 1);
+          }
+          if (
+            Array.isArray(message.fileType) &&
+            message.fileType.length > index
+          ) {
+            message.fileType.splice(index, 1);
+          }
+        }
+      }
+    } else {
+      // Single media item (not array) - delete entire field
+      // console.log("📭 Single media item, removing field"); // [DEBUG - Removed for production]
+      message[mediaType] = null;
+      if (mediaType === "file") {
+        message.fileName = null;
+        message.fileSize = null;
+        message.fileType = null;
+      }
+    }
+
+    // Check if message still has content
+    const hasContent =
+      message.text ||
+      message.image ||
+      message.video ||
+      message.audio ||
+      message.file ||
+      message.link;
+
+    // console.log("🔍 Checking remaining content:");
+    // console.log("   ├─ Text:", !!message.text);
+    // console.log("   ├─ Image:", !!message.image);
+    // console.log("   ├─ Video:", !!message.video);
+    // console.log("   ├─ Audio:", !!message.audio);
+    // console.log("   ├─ File:", !!message.file);
+    // console.log("   ├─ Link:", !!message.link);
+    // console.log("   └─ Has content:", hasContent);
+
+    if (!hasContent) {
+      // console.log("🗑️ No content remaining, deleting entire message");
+      await Message.findByIdAndDelete(messageId);
+
+      // console.log("✅ Message deleted successfully");
+      // console.log("🗑️ ========================================\n");
+
+      return res.status(200).json({
+        success: true,
+        message: "Message deleted (no content remaining)",
+        deleted: true,
+      });
+    }
+
+    // Mark as edited and save
+    message.edited = true;
+    message.editedAt = new Date();
+    await message.save();
+
+    // console.log("💾 Message saved with changes");
+
+    await message.populate("senderId", "fullname profilePic");
+    await message.populate("receiverId", "fullname profilePic");
+    if (message.groupId) {
+      await message.populate("seenBy.userId", "fullname profilePic");
+    }
+
+    const messageObj = message.toObject ? message.toObject() : message;
+
+    // console.log("📤 Emitting socket events...");
+    // console.log("   ├─ Sender ID:", message.senderId._id || message.senderId);
+    // console.log(
+    //   "   ├─ Receiver ID:",
+    //   message.receiverId ? message.receiverId._id || message.receiverId : "N/A"
+    // );
+    // console.log("   ├─ Group ID:", message.groupId || "N/A");
+    // console.log(
+    //   "   └─ Updated image array length:",
+    //   Array.isArray(messageObj.image) ? messageObj.image.length : "N/A"
+    // );
+
+    // Emit socket event for real-time updates
+    if (message.groupId) {
+      const Group = (await import("../model/group.model.js")).default;
+      const group = await Group.findById(message.groupId);
+      if (group) {
+        const allMembers = [group.admin, ...group.members];
+        let onlineCount = 0;
+        let offlineCount = 0;
+
+        allMembers.forEach((memberId) => {
+          const memberSocketId = getReceiverSocketId(memberId.toString());
+          if (memberSocketId) {
+            io.to(memberSocketId).emit("groupMessageEdited", messageObj);
+            onlineCount++;
+          } else {
+            offlineCount++;
+          }
+        });
+
+        // console.log("   ├─ Online members notified:", onlineCount);
+        // console.log("   └─ Offline members:", offlineCount);
+      }
+    } else {
+      const receiverSocketId = getReceiverSocketId(
+        message.receiverId.toString()
+      );
+      const senderSocketId = getReceiverSocketId(message.senderId.toString());
+
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("messageEdited", messageObj);
+        // console.log("   ├─ Receiver notified ✅"); // [DEBUG - Removed for production]
+      } else {
+        // console.log("   ├─ Receiver offline"); // [DEBUG - Removed for production]
+      }
+
+      if (senderSocketId) {
+        io.to(senderSocketId).emit("messageEdited", messageObj);
+        // console.log("   └─ Sender notified ✅"); // [DEBUG - Removed for production]
+      } else {
+        // console.log("   └─ Sender offline"); // [DEBUG - Removed for production]
+      }
+    }
+
+    // console.log("✅ Individual media item deleted successfully");
+    // console.log("🗑️ ========================================\n");
+
+    res.status(200).json({
+      success: true,
+      message: "Individual media item deleted successfully",
+      deleted: false,
+      updatedMessage: messageObj,
+    });
+  } catch (error) {
+    console.error("❌ Error in deleteIndividualMediaItem:", error.message);
+    console.error("Stack:", error.stack);
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 };
 
@@ -1699,13 +2433,32 @@ export const markVoiceAsListened = async (req, res) => {
       const group = await Group.findById(message.groupId);
       if (group) {
         const allMembers = [group.admin, ...group.members];
+
+        // console.log("\n══════════════════════════════════════");
+        // console.log("🎤👂 [VOICE] Voice message listened");
+        // console.log("══════════════════════════════════════");
+        // console.log("📝 Message details:");
+        // console.log("   ├─ messageId:", message._id.toString());
+        // console.log("   ├─ senderId:", message.senderId.toString());
+        // console.log("   └─ groupId:", message.groupId.toString());
+        // console.log("\n📤 [SOCKET] Emitting to members");
+
+        let onlineCount = 0;
+        let offlineCount = 0;
+
         allMembers.forEach((memberId) => {
-          io.emit("voiceMessageListened", {
-            message: messageObj,
-            groupId: message.groupId,
-            memberId: memberId.toString(),
-          });
+          const memberSocketId = getReceiverSocketId(memberId.toString());
+          if (memberSocketId) {
+            io.to(memberSocketId).emit("voiceMessageListened", messageObj);
+            onlineCount++;
+          } else {
+            offlineCount++;
+          }
         });
+
+        // console.log("✅ Notified", onlineCount, "online members ⚡");
+        // console.log("⚫ Skipped", offlineCount, "offline members");
+        // console.log("══════════════════════════════════════\n");
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
