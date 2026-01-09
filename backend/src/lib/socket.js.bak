@@ -5,11 +5,6 @@ import Message from "../model/message.model.js";
 import Group from "../model/group.model.js";
 import User from "../model/user.model.js";
 import { createCallRecord } from "../controllers/call.controller.js";
-import {
-  checkSocketRateLimit,
-  trackSocketDisconnection,
-} from "../middleware/rateLimiter.js";
-import logger from "./logger.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -119,143 +114,114 @@ export function getReceiverSocketId(userId) {
 io.on("connection", (socket) => {
   const userId = socket.handshake.query.userId;
 
-  // Rate limit check for Socket.IO connections
-  checkSocketRateLimit(socket, (result) => {
-    if (!result.allowed) {
-      logger.warn("Socket connection rejected due to rate limit", {
-        userId,
-        socketId: socket.id,
-        reason: result.reason,
-        retryAfter: result.retryAfter,
-      });
+  if (userId) {
+    // Ensure userId is stored as string for consistent lookup
+    const userIdStr = typeof userId === "string" ? userId : userId.toString();
+    // console.log("✅ [SOCKET] User connected:", {
+    //   userId: userIdStr,
+    //   socketId: socket.id,
+    //   previousSocketId: userSockets.get(userIdStr),
+    //   wasAlreadyConnected: userSockets.has(userIdStr),
+    // });
 
-      // Emit error to client before disconnecting
-      socket.emit("error", {
-        message: result.reason,
-        retryAfter: result.retryAfter,
-        code: "RATE_LIMIT_EXCEEDED",
-      });
-
-      // Disconnect the socket
-      socket.disconnect(true);
-      return;
+    if (userSockets.has(userIdStr)) {
+      // console.log(
+      //   "⚠️ [SOCKET] User already had a socket, replacing old connection"
+      // );
     }
+    userSockets.set(userIdStr, socket.id);
+    // console.log("📝 [SOCKET] Stored mapping:", {
+    //   userId: userIdStr,
+    //   socketId: socket.id,
+    //   totalConnections: userSockets.size,
+    // });
 
-    // Connection allowed, proceed with normal flow
-    if (userId) {
-      // Ensure userId is stored as string for consistent lookup
-      const userIdStr = typeof userId === "string" ? userId : userId.toString();
+    // Check for pending calls when user comes online
+    // Deliver any pending calls that were waiting for this user
+    for (const [callId, pendingCall] of pendingCalls.entries()) {
+      if (pendingCall.receiverId.toString() === userIdStr) {
+        // Clear the timeout since user is now online
+        clearTimeout(pendingCall.timeoutId);
 
-      logger.debug("Socket user connected", {
-        userId: userIdStr,
-        socketId: socket.id,
-        wasAlreadyConnected: userSockets.has(userIdStr),
-      });
-
-      // Handle duplicate connections (e.g., multiple tabs/devices)
-      const existingSocketId = userSockets.get(userIdStr);
-      if (existingSocketId && existingSocketId !== socket.id) {
-        logger.info("Replacing existing socket connection", {
-          userId: userIdStr,
-          oldSocketId: existingSocketId,
-          newSocketId: socket.id,
+        // Move from pending to active
+        activeCalls.set(callId, {
+          callerId: pendingCall.callerId,
+          receiverId: pendingCall.receiverId,
+          callType: pendingCall.callType,
+          status: "ringing",
+          createdAt: pendingCall.createdAt,
         });
 
-        // Notify old socket about replacement (optional)
-        io.to(existingSocketId).emit("connection:replaced", {
-          message: "Your session has been replaced by a new connection",
+        // Send call invitation to receiver (now online)
+        io.to(socket.id).emit("call:incoming", {
+          callId,
+          callerId: pendingCall.callerId,
+          callerInfo: pendingCall.callerInfo,
+          callType: pendingCall.callType,
         });
-      }
 
-      userSockets.set(userIdStr, socket.id);
-
-      // Check for pending calls when user comes online
-      // Deliver any pending calls that were waiting for this user
-      for (const [callId, pendingCall] of pendingCalls.entries()) {
-        if (pendingCall.receiverId.toString() === userIdStr) {
-          // Clear the timeout since user is now online
-          clearTimeout(pendingCall.timeoutId);
-
-          // Move from pending to active
-          activeCalls.set(callId, {
-            callerId: pendingCall.callerId,
-            receiverId: pendingCall.receiverId,
-            callType: pendingCall.callType,
-            status: "ringing",
-            createdAt: pendingCall.createdAt,
-          });
-
-          // Send call invitation to receiver (now online)
-          io.to(socket.id).emit("call:incoming", {
+        // Notify caller that receiver is now online and call is ringing
+        const callerSocketId = getReceiverSocketId(pendingCall.callerId);
+        if (callerSocketId) {
+          io.to(callerSocketId).emit("call:ringing", {
             callId,
-            callerId: pendingCall.callerId,
-            callerInfo: pendingCall.callerInfo,
-            callType: pendingCall.callType,
+            receiverId: userIdStr,
           });
-
-          // Notify caller that receiver is now online and call is ringing
-          const callerSocketId = getReceiverSocketId(pendingCall.callerId);
-          if (callerSocketId) {
-            io.to(callerSocketId).emit("call:ringing", {
-              callId,
-              receiverId: userIdStr,
-            });
-          }
-
-          // Remove from pending
-          pendingCalls.delete(callId);
-
-          // Set timeout for this call (60 seconds from now)
-          setTimeout(async () => {
-            const callInfo = activeCalls.get(callId);
-            if (callInfo && callInfo.status === "ringing") {
-              // Call not answered after 60 seconds
-              // Save missed call to database
-              try {
-                const savedCall = await createCallRecord({
-                  callerId: callInfo.callerId,
-                  receiverId: callInfo.receiverId,
-                  groupId: null,
-                  callType: callInfo.callType,
-                  status: "missed",
-                  duration: 0,
-                  startedAt: callInfo.startedAt || callInfo.createdAt,
-                  endedAt: new Date(),
-                });
-                // console.log("✅ Missed call record saved to database:", { // [DEBUG - Removed for production]
-                // callId: savedCall._id,
-                // callerId: callInfo.callerId,
-                // receiverId: callInfo.receiverId,
-                // });
-              } catch (saveError) {
-                console.error("❌ Error saving missed call record:", saveError);
-              }
-
-              activeCalls.delete(callId);
-
-              // Notify caller
-              const callerSocketId = getReceiverSocketId(callInfo.callerId);
-              if (callerSocketId) {
-                io.to(callerSocketId).emit("call:failed", {
-                  callId,
-                  reason: "No answer",
-                });
-              }
-
-              // Notify receiver
-              const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
-              if (receiverSocketId) {
-                io.to(receiverSocketId).emit("call:missed", {
-                  callId,
-                  callerId: callInfo.callerId,
-                });
-              }
-            }
-          }, 60000); // 60 seconds timeout
         }
+
+        // Remove from pending
+        pendingCalls.delete(callId);
+
+        // Set timeout for this call (60 seconds from now)
+        setTimeout(async () => {
+          const callInfo = activeCalls.get(callId);
+          if (callInfo && callInfo.status === "ringing") {
+            // Call not answered after 60 seconds
+            // Save missed call to database
+            try {
+              const savedCall = await createCallRecord({
+                callerId: callInfo.callerId,
+                receiverId: callInfo.receiverId,
+                groupId: null,
+                callType: callInfo.callType,
+                status: "missed",
+                duration: 0,
+                startedAt: callInfo.startedAt || callInfo.createdAt,
+                endedAt: new Date(),
+              });
+              console.log("✅ Missed call record saved to database:", {
+                callId: savedCall._id,
+                callerId: callInfo.callerId,
+                receiverId: callInfo.receiverId,
+              });
+            } catch (saveError) {
+              console.error("❌ Error saving missed call record:", saveError);
+            }
+
+            activeCalls.delete(callId);
+
+            // Notify caller
+            const callerSocketId = getReceiverSocketId(callInfo.callerId);
+            if (callerSocketId) {
+              io.to(callerSocketId).emit("call:failed", {
+                callId,
+                reason: "No answer",
+              });
+            }
+
+            // Notify receiver
+            const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
+            if (receiverSocketId) {
+              io.to(receiverSocketId).emit("call:missed", {
+                callId,
+                callerId: callInfo.callerId,
+              });
+            }
+          }
+        }, 60000); // 60 seconds timeout
       }
     }
-  }); // Close checkSocketRateLimit callback
+  }
 
   io.emit("getOnlineUsers", Array.from(userSockets.keys()));
 
@@ -342,12 +308,12 @@ io.on("connection", (socket) => {
 
       const message = await Message.findById(messageId);
       if (!message) {
-        // console.log("❌ [SOCKET] Message not found:", messageId); // [DEBUG - Removed for production]
+        console.log("❌ [SOCKET] Message not found:", messageId);
         return;
       }
 
       if (message.seen) {
-        // console.log("⏭️ [SOCKET] Message already seen:", messageId); // [DEBUG - Removed for production]
+        console.log("⏭️ [SOCKET] Message already seen:", messageId);
         return;
       }
 
@@ -375,7 +341,7 @@ io.on("connection", (socket) => {
         //   messageId,
         // });
       } else {
-        // console.log("⚠️ [SOCKET] Sender socket not found:", senderId); // [DEBUG - Removed for production]
+        console.log("⚠️ [SOCKET] Sender socket not found:", senderId);
       }
 
       // ✅ CRITICAL FIX: Also emit to receiver (person who marked as seen)
@@ -656,13 +622,13 @@ io.on("connection", (socket) => {
         "fullname"
       );
       if (!message || !message.groupId) {
-        // console.log("❌ [GROUP_SEEN] Message not found or not a group message"); // [DEBUG - Removed for production]
+        console.log("❌ [GROUP_SEEN] Message not found or not a group message");
         return;
       }
 
       const group = await Group.findById(groupId);
       if (!group) {
-        // console.log("❌ [GROUP_SEEN] Group not found"); // [DEBUG - Removed for production]
+        console.log("❌ [GROUP_SEEN] Group not found");
         return;
       }
 
@@ -672,7 +638,7 @@ io.on("connection", (socket) => {
         group.admin.toString() === userIdStr ||
         group.members.some((m) => m.toString() === userIdStr);
       if (!isMember) {
-        // console.log("❌ [GROUP_SEEN] User not a member"); // [DEBUG - Removed for production]
+        console.log("❌ [GROUP_SEEN] User not a member");
         return;
       }
 
@@ -700,10 +666,10 @@ io.on("connection", (socket) => {
         });
         await message.save();
 
-        // console.log("✅ [GROUP_SEEN] Database updated:", { // [DEBUG - Removed for production]
-        // messageId,
-        // newSeenByCount: message.seenBy.length,
-        // });
+        console.log("✅ [GROUP_SEEN] Database updated:", {
+          messageId,
+          newSeenByCount: message.seenBy.length,
+        });
       } else {
         // console.log(
         //   "⏭️  [GROUP_SEEN] Already seen by user, but will send current seenBy status"
@@ -783,14 +749,14 @@ io.on("connection", (socket) => {
                   startedAt: pendingCall.startedAt || pendingCall.createdAt,
                   endedAt: new Date(),
                 });
-                // console.log( // [DEBUG - Removed for production]
-                // "✅ Offline missed call record saved to database:",
-                // {
-                // callId: savedCall._id,
-                // callerId: pendingCall.callerId,
-                // receiverId: pendingCall.receiverId,
-                // }
-                // );
+                console.log(
+                  "✅ Offline missed call record saved to database:",
+                  {
+                    callId: savedCall._id,
+                    callerId: pendingCall.callerId,
+                    receiverId: pendingCall.receiverId,
+                  }
+                );
               } catch (saveError) {
                 console.error(
                   "❌ Error saving offline missed call record:",
@@ -970,11 +936,11 @@ io.on("connection", (socket) => {
           startedAt: callInfo.startedAt || callInfo.createdAt,
           endedAt: new Date(),
         });
-        // console.log("✅ Rejected call record saved to database:", { // [DEBUG - Removed for production]
-        // callId: savedCall._id,
-        // callerId: callInfo.callerId,
-        // receiverId: callInfo.receiverId,
-        // });
+        console.log("✅ Rejected call record saved to database:", {
+          callId: savedCall._id,
+          callerId: callInfo.callerId,
+          receiverId: callInfo.receiverId,
+        });
       } catch (saveError) {
         console.error("❌ Error saving rejected call record:", saveError);
       }
@@ -1037,13 +1003,13 @@ io.on("connection", (socket) => {
           startedAt: callInfo.startedAt || callInfo.createdAt,
           endedAt: endedAt,
         });
-        // console.log("✅ Call record saved to database:", { // [DEBUG - Removed for production]
-        // callId: savedCall._id,
-        // status: callStatus,
-        // duration: callDuration,
-        // callerId: callInfo.callerId,
-        // receiverId: callInfo.receiverId,
-        // });
+        console.log("✅ Call record saved to database:", {
+          callId: savedCall._id,
+          status: callStatus,
+          duration: callDuration,
+          callerId: callInfo.callerId,
+          receiverId: callInfo.receiverId,
+        });
       } catch (saveError) {
         console.error("❌ Error saving call record:", saveError);
         // Don't block the call end process if save fails
@@ -1595,15 +1561,11 @@ io.on("connection", (socket) => {
   });
 
   // Cleanup active calls on disconnect
-  socket.on("disconnect", (reason) => {
-    // Track disconnection for rate limit metrics
-    trackSocketDisconnection(socket);
-
-    logger.debug("Socket user disconnected", {
-      socketId: socket.id,
-      userId: userId,
-      reason,
-    });
+  socket.on("disconnect", () => {
+    // console.log("🔌 [SOCKET] User disconnecting:", {
+    //   socketId: socket.id,
+    //   userId: userId,
+    // });
 
     // Clean up any pending calls where this user was the caller
     if (userId) {
@@ -1612,10 +1574,6 @@ io.on("connection", (socket) => {
         if (pendingCall.callerId.toString() === userIdStr) {
           clearTimeout(pendingCall.timeoutId);
           pendingCalls.delete(callId);
-          logger.debug("Cleaned up pending call on disconnect", {
-            callId,
-            userId: userIdStr,
-          });
         }
       }
     }
@@ -1625,11 +1583,11 @@ io.on("connection", (socket) => {
       if (socketId === socket.id) {
         disconnectedUserId = userId;
         userSockets.delete(userId);
-        logger.debug("Removed socket mapping", {
-          userId,
-          socketId: socket.id,
-          remainingConnections: userSockets.size,
-        });
+        // console.log("❌ [SOCKET] Removed user mapping:", {
+        //   userId,
+        //   socketId: socket.id,
+        //   remainingConnections: userSockets.size,
+        // });
         break;
       }
     }
