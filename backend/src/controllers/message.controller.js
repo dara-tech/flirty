@@ -478,7 +478,7 @@ export const getMessages = async (req, res) => {
       })
       .populate({
         path: "replyTo",
-        select: "text image audio video file senderId receiverId createdAt",
+        select: "text image audio video file sticker senderId receiverId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic",
@@ -787,7 +787,7 @@ export const sendMessage = async (req, res) => {
     if (newMessage.replyTo) {
       await newMessage.populate({
         path: "replyTo",
-        select: "text image audio video file senderId receiverId createdAt",
+        select: "text image audio video file sticker senderId receiverId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic",
@@ -918,6 +918,7 @@ export const editMessage = async (req, res) => {
     if (message.replyTo) {
       await message.populate({
         path: "replyTo",
+        select: "text image audio video file sticker senderId receiverId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic email",

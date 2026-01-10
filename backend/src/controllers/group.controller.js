@@ -429,7 +429,7 @@ export const getGroupMessages = async (req, res) => {
       .populate("reactions.userId", "fullname profilePic")
       .populate({
         path: "replyTo",
-        select: "text image audio video file senderId receiverId createdAt",
+        select: "text image audio video file sticker senderId receiverId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic",
@@ -647,7 +647,7 @@ export const sendGroupMessage = async (req, res) => {
     if (newMessage.replyTo) {
       await newMessage.populate({
         path: "replyTo",
-        select: "text image audio video file senderId groupId createdAt",
+        select: "text image audio video file sticker senderId groupId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic",
