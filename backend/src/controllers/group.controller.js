@@ -480,6 +480,7 @@ export const sendGroupMessage = async (req, res) => {
       fileName,
       fileSize,
       fileType,
+      sticker,
       forwardedFrom,
       replyTo,
     } = req.body;
@@ -509,16 +510,26 @@ export const sendGroupMessage = async (req, res) => {
     const fileSizes = normalizeToArray(fileSize);
     const fileTypes = normalizeToArray(fileType);
 
-    // Validate that at least one of text, image, audio, video, or file is provided
+    // Validate that at least one of text, image, audio, video, file, or sticker is provided
     const hasText = text && typeof text === "string" && text.trim().length > 0;
     const hasImage = images.length > 0;
     const hasAudio = audios.length > 0;
     const hasVideo = videos.length > 0;
     const hasFile = files.length > 0;
+    const hasSticker =
+      sticker && typeof sticker === "string" && sticker.trim().length > 0;
 
-    if (!hasText && !hasImage && !hasAudio && !hasVideo && !hasFile) {
+    if (
+      !hasText &&
+      !hasImage &&
+      !hasAudio &&
+      !hasVideo &&
+      !hasFile &&
+      !hasSticker
+    ) {
       return res.status(400).json({
-        error: "Message must contain either text, image, audio, video, or file",
+        error:
+          "Message must contain either text, image, audio, video, file, or sticker",
       });
     }
 
@@ -621,6 +632,7 @@ export const sendGroupMessage = async (req, res) => {
       fileName: fileNames.length > 0 ? fileNames : undefined,
       fileSize: fileSizes.length > 0 ? fileSizes : undefined,
       fileType: fileTypes.length > 0 ? fileTypes : undefined,
+      sticker: sticker || undefined,
       link: linkUrl,
       linkPreview: linkPreview,
       forwardedFrom: forwardedFromData,

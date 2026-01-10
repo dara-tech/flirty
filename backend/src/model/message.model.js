@@ -26,7 +26,7 @@ const messageSchema = new mongoose.Schema(
     },
     text: {
       type: String,
-      // Only require text if there's no image, audio, video, file, or link
+      // Only require text if there's no image, audio, video, file, sticker, or link
       required: function () {
         const hasImage = Array.isArray(this.image)
           ? this.image.length > 0
@@ -40,7 +40,14 @@ const messageSchema = new mongoose.Schema(
         const hasFile = Array.isArray(this.file)
           ? this.file.length > 0
           : this.file;
-        return !hasImage && !hasAudio && !hasVideo && !hasFile && !this.link;
+        return (
+          !hasImage &&
+          !hasAudio &&
+          !hasVideo &&
+          !hasFile &&
+          !this.sticker &&
+          !this.link
+        );
       },
     },
     image: {
@@ -69,6 +76,10 @@ const messageSchema = new mongoose.Schema(
     },
     fileType: {
       type: [String], // Support multiple MIME types (array)
+      default: undefined,
+    },
+    sticker: {
+      type: String, // Asset path to sticker (e.g., "assets/stickers/sticker_1.png")
       default: undefined,
     },
     link: {
