@@ -803,8 +803,41 @@ export const sendMessage = async (req, res) => {
       //   socketId: receiverSocketId,
       //   messageId: newMessage._id,
       // });
-    } else {
-      // console.log("❌ [SOCKET EMIT] Receiver socket NOT FOUND:", receiverId); // [DEBUG - Removed for production]
+    }
+    
+    // Always attempt to send push notification (even if user is online)
+    // The frontend will suppress duplicate notifications if user is viewing the chat
+    // This ensures notifications work when app is closed or in background
+    try {
+      const { sendMessageNotification } = await import("../services/pushNotification.service.js");
+      const pushResult = await sendMessageNotification(receiverId, messageObj);
+      if (pushResult.success) {
+        logger.info("Push notification sent", {
+          requestId: req.requestId,
+          receiverId,
+          messageId: newMessage._id,
+          sent: pushResult.sent,
+          failed: pushResult.failed,
+          total: pushResult.total,
+          userOnline: !!receiverSocketId,
+        });
+      } else {
+        logger.debug("Push notification not sent (no active subscriptions or error)", {
+          requestId: req.requestId,
+          receiverId,
+          messageId: newMessage._id,
+          error: pushResult.error,
+          userOnline: !!receiverSocketId,
+        });
+      }
+    } catch (pushError) {
+      logger.error("Failed to send push notification:", {
+        error: pushError.message,
+        stack: pushError.stack,
+        receiverId,
+        messageId: newMessage._id,
+      });
+      // Don't fail the request if push notification fails
     }
 
     // Also emit to sender so they see their own message in real-time

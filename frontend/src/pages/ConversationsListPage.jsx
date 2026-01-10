@@ -222,7 +222,7 @@ const ConversationsListPage = () => {
   };
 
   const conversationsInFolders = getConversationsInFolders();
-  
+
   // Filter conversations based on search query
   const filteredConversations = sortedConversations.filter((conv) => {
     const matchesSearch = conv.user.fullname.toLowerCase().includes(searchQuery.toLowerCase());
@@ -1120,7 +1120,7 @@ const ConversationsListPage = () => {
             </>
           ) : null}
         </div>
-      </div>
+        </div>
 
       {/* Create Group Modal */}
       <CreateGroupModal

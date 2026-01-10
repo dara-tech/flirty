@@ -155,6 +155,60 @@ const ChatPage = () => {
     };
   }, [authUser, getUsers, getGroups, subscribeToContactRequests, unsubscribeFromContactRequests, subscribeToMessages, unsubscribeFromMessages, subscribeToTyping, unsubscribeFromTyping, subscribeToGroups, unsubscribeFromGroups]);
 
+  // Listen for service worker messages (notification actions)
+  useEffect(() => {
+    if (!authUser) return;
+
+    const handleServiceWorkerMessage = async (event) => {
+      if (!event.data) return;
+
+      const { type, action, data } = event.data;
+
+      if (type === 'notification-action') {
+        if (action === 'reply') {
+          // Open chat with the sender and focus on input
+          if (data.type === 'group_message' && data.groupId) {
+            // For group messages, we'd need to set the selected group
+            // This will be handled by the notification click handler
+            window.location.href = `/chat?groupId=${data.groupId}&focus=input`;
+          } else if (data.type === 'message' && data.senderId) {
+            // For direct messages, set selected user
+            const senderId = typeof data.senderId === 'string' ? data.senderId : data.senderId.toString();
+            setSelectedUser({ _id: senderId });
+            // Focus on input after a short delay
+            setTimeout(() => {
+              const input = document.querySelector('textarea[placeholder*="message"], input[placeholder*="message"]');
+              if (input) input.focus();
+            }, 100);
+          }
+        } else if (action === 'mark-read') {
+          // Mark message as read
+          if (data.messageId) {
+            // You can add a markAsRead function to useChatStore if needed
+            // For now, we'll just log it
+            console.log('Marking message as read:', data.messageId);
+          }
+        }
+      } else if (type === 'notification-clicked') {
+        // Handle notification body click - open the chat
+        if (data.type === 'message' && data.senderId) {
+          const senderId = typeof data.senderId === 'string' ? data.senderId : data.senderId.toString();
+          setSelectedUser({ _id: senderId });
+        } else if (data.type === 'group_message' && data.groupId) {
+          const groupId = typeof data.groupId === 'string' ? data.groupId : data.groupId.toString();
+          setSelectedGroup({ _id: groupId });
+        }
+      }
+    };
+
+    // Listen for messages from service worker
+    navigator.serviceWorker?.addEventListener('message', handleServiceWorkerMessage);
+
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleServiceWorkerMessage);
+    };
+  }, [authUser, setSelectedUser, setSelectedGroup]);
+
   useEffect(() => {
     // Clear selected chat when showing settings or theme
     if (showSettings || showTheme) {

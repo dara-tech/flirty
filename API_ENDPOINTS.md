@@ -969,6 +969,228 @@ image: [File]
 
 ---
 
+## Folder Endpoints (`/api/folders`)
+
+### Get Data
+
+#### `GET /api/folders` - Get all folders for user
+**Response:**
+```json
+{
+  "success": true,
+  "folders": [
+    {
+      "_id": "507f1f77bcf86cd799439070",
+      "userId": "507f1f77bcf86cd799439011",
+      "name": "Work",
+      "icon": "📁",
+      "color": "#3b82f6",
+      "order": 0,
+      "isExpanded": true,
+      "conversations": [
+        {
+          "type": "user",
+          "id": "507f1f77bcf86cd799439012",
+          "addedAt": "2024-01-15T10:30:00Z"
+        }
+      ],
+      "createdAt": "2024-01-15T10:30:00Z",
+      "updatedAt": "2024-01-15T10:30:00Z"
+    }
+  ]
+}
+```
+
+### Create/Update
+
+#### `POST /api/folders` - Create new folder
+**Request:**
+```json
+{
+  "name": "Work",
+  "icon": "📁",
+  "color": "#3b82f6"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "folder": {
+    "_id": "507f1f77bcf86cd799439070",
+    "userId": "507f1f77bcf86cd799439011",
+    "name": "Work",
+    "icon": "📁",
+    "color": "#3b82f6",
+    "order": 0,
+    "conversations": [],
+    "createdAt": "2024-01-15T10:30:00Z",
+    "updatedAt": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+#### `PUT /api/folders/:id` - Update folder
+**Params:** `id` = folder ID
+
+**Request:**
+```json
+{
+  "name": "Updated Folder Name",
+  "icon": "📂",
+  "color": "#10b981",
+  "isExpanded": false,
+  "order": 1
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "folder": {
+    "_id": "507f1f77bcf86cd799439070",
+    "name": "Updated Folder Name",
+    "icon": "📂",
+    "color": "#10b981",
+    "isExpanded": false,
+    "order": 1
+  }
+}
+```
+
+#### `PUT /api/folders/reorder` - Reorder folders
+**Request:**
+```json
+{
+  "folderOrders": [
+    {
+      "folderId": "507f1f77bcf86cd799439070",
+      "order": 0
+    },
+    {
+      "folderId": "507f1f77bcf86cd799439071",
+      "order": 1
+    }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "folders": [
+    {
+      "_id": "507f1f77bcf86cd799439070",
+      "name": "Work",
+      "order": 0
+    },
+    {
+      "_id": "507f1f77bcf86cd799439071",
+      "name": "Personal",
+      "order": 1
+    }
+  ]
+}
+```
+
+#### `POST /api/folders/:id/conversations` - Add conversation to folder
+**Params:** `id` = folder ID
+
+**Request:**
+```json
+{
+  "type": "user",
+  "conversationId": "507f1f77bcf86cd799439012"
+}
+```
+
+*Note: `type` can be "user" or "group"*
+
+**Response:**
+```json
+{
+  "success": true,
+  "folder": {
+    "_id": "507f1f77bcf86cd799439070",
+    "conversations": [
+      {
+        "type": "user",
+        "id": "507f1f77bcf86cd799439012",
+        "addedAt": "2024-01-15T10:30:00Z"
+      }
+    ]
+  }
+}
+```
+
+### Delete
+
+#### `DELETE /api/folders/:id` - Delete folder
+**Params:** `id` = folder ID
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Folder deleted successfully"
+}
+```
+
+#### `DELETE /api/folders/:id/conversations` - Remove conversation from folder
+**Params:** `id` = folder ID
+
+**Request:**
+```json
+{
+  "type": "user",
+  "conversationId": "507f1f77bcf86cd799439012"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "folder": {
+    "_id": "507f1f77bcf86cd799439070",
+    "conversations": []
+  }
+}
+```
+
+---
+
+## Health Check Endpoint
+
+#### `GET /health` - Health check
+**Request:** No body required (public endpoint)
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "uptime": 3600.5,
+  "environment": "production",
+  "database": {
+    "status": "connected",
+    "readyState": 1
+  },
+  "memory": {
+    "used": "150 MB",
+    "total": "200 MB",
+    "rss": "180 MB"
+  }
+}
+```
+
+*Note: Returns 200 if healthy, 503 if degraded (database disconnected)*
+
+---
+
 ## Response Format
 
 ### Success Response

@@ -666,13 +666,54 @@ export const sendGroupMessage = async (req, res) => {
     // console.log("   └─ members count:", allMembers.length);
 
     // Emit to all group members using same event as personal messages
-    allMembers.forEach((memberId) => {
-      const memberSocketId = getReceiverSocketId(memberId.toString());
+    // Also send push notifications to offline members
+    const { sendGroupMessageNotification } = await import("../services/pushNotification.service.js");
+    
+    allMembers.forEach(async (memberId) => {
+      const memberIdStr = memberId.toString();
+      // Skip sender (don't notify yourself)
+      if (memberIdStr === senderId.toString()) {
+        return;
+      }
+      
+      const memberSocketId = getReceiverSocketId(memberIdStr);
       if (memberSocketId) {
         io.to(memberSocketId).emit("newMessage", messageObj);
-        // console.log("   ✅ Emitted to member:", memberId.toString());
-      } else {
-        // console.log("   ⚠️ Member offline:", memberId.toString());
+        // console.log("   ✅ Emitted to member:", memberIdStr);
+      }
+      
+      // Always attempt to send push notification (even if user is online)
+      // The frontend will suppress duplicate notifications if user is viewing the chat
+      // This ensures notifications work when app is closed or in background
+      try {
+        const pushResult = await sendGroupMessageNotification(memberIdStr, messageObj, group);
+        if (pushResult.success) {
+          logger.info("Push notification sent for group member", {
+            memberId: memberIdStr,
+            groupId: groupId,
+            messageId: messageObj._id,
+            sent: pushResult.sent,
+            failed: pushResult.failed,
+            total: pushResult.total,
+            userOnline: !!memberSocketId,
+          });
+        } else {
+          logger.debug("Push notification not sent for group member (no active subscriptions or error)", {
+            memberId: memberIdStr,
+            groupId: groupId,
+            messageId: messageObj._id,
+            error: pushResult.error,
+            userOnline: !!memberSocketId,
+          });
+        }
+      } catch (pushError) {
+        logger.error("Failed to send push notification to group member:", {
+          error: pushError.message,
+          memberId: memberIdStr,
+          groupId: groupId,
+          messageId: messageObj._id,
+        });
+        // Don't fail the request if push notification fails
       }
     });
 

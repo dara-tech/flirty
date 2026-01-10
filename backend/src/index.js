@@ -5,6 +5,7 @@ import groupRoute from "./routes/group.route.js";
 import contactRoute from "./routes/contact.route.js";
 import callRoute from "./routes/call.route.js";
 import folderRoute from "./routes/folder.route.js";
+import pushSubscriptionRoute from "./routes/pushSubscription.route.js";
 import dotenv from "dotenv";
 import { connectDB } from "./lib/db.js";
 import mongoose from "mongoose";
@@ -220,6 +221,7 @@ app.use("/api/groups", groupRoute);
 app.use("/api/contacts", contactRoute);
 app.use("/api/calls", callRoute);
 app.use("/api/folders", folderRoute);
+app.use("/api/push", pushSubscriptionRoute);
 
 // Health check endpoint with rate limiter metrics
 app.get("/api/health", (req, res) => {
