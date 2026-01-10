@@ -3,6 +3,7 @@ import { axiosInstance } from "../lib/axois";
 import toast from "react-hot-toast";
 import { io } from "socket.io-client";
 import { setAuthToken, clearAuthToken, isSafari, detectSafariCookieIssue, safeSessionStorage } from "../lib/safariUtils";
+import { setupPushNotifications } from "../lib/pushNotifications";
 
 // Get Socket.IO server URL from environment variable
 // For separate hosting: use VITE_API_URL (without /api suffix)
@@ -37,6 +38,8 @@ export const useAuthStore = create((set, get) => ({
   socket: null,
   typingTimeout: null, // To handle typing timeout
   _checkAuthPromise: null, // Prevent duplicate simultaneous calls
+  _pushNotificationSetupUserId: null, // Track which user has push notifications set up
+  _socketConnecting: false, // Prevent duplicate socket connections
 
   // ✅ Check Authentication Status
   checkAuth: async () => {
@@ -55,6 +58,16 @@ export const useAuthStore = create((set, get) => ({
         if (userData && userData._id) {
           set({ authUser: userData });
           get().connectSocket(); // ✅ Connect to socket after authentication
+          // Setup push notifications for offline notifications (only if not already set up for this user)
+          const currentUserId = userData._id?.toString();
+          const lastSetupUserId = get()._pushNotificationSetupUserId;
+          if (currentUserId && currentUserId !== lastSetupUserId) {
+            setupPushNotifications(userData._id).then(() => {
+              set({ _pushNotificationSetupUserId: currentUserId });
+            }).catch(err => {
+              console.warn('Failed to setup push notifications:', err);
+            });
+          }
         } else {
           set({ authUser: null });
         }
@@ -148,6 +161,16 @@ export const useAuthStore = create((set, get) => ({
         }
         
         get().connectSocket(); // ✅ Connect socket after signup
+        // Setup push notifications for offline notifications (only if not already set up for this user)
+        const currentUserId = userData._id?.toString();
+        const lastSetupUserId = get()._pushNotificationSetupUserId;
+        if (currentUserId && currentUserId !== lastSetupUserId) {
+          setupPushNotifications(userData._id).then(() => {
+            set({ _pushNotificationSetupUserId: currentUserId });
+          }).catch(err => {
+            console.warn('Failed to setup push notifications:', err);
+          });
+        }
       } else {
         // More detailed error message
         console.error("Invalid user data structure:", {
@@ -257,6 +280,16 @@ export const useAuthStore = create((set, get) => ({
         }
         
         get().connectSocket(); // ✅ Connect socket after login
+        // Setup push notifications for offline notifications (only if not already set up for this user)
+        const currentUserId = userData._id?.toString();
+        const lastSetupUserId = get()._pushNotificationSetupUserId;
+        if (currentUserId && currentUserId !== lastSetupUserId) {
+          setupPushNotifications(userData._id).then(() => {
+            set({ _pushNotificationSetupUserId: currentUserId });
+          }).catch(err => {
+            console.warn('Failed to setup push notifications:', err);
+          });
+        }
       } else {
         throw new Error("Invalid user data received from server");
       }
@@ -327,6 +360,16 @@ export const useAuthStore = create((set, get) => ({
         }, 200);
         
         get().connectSocket(); // ✅ Connect socket after Google auth
+        // Setup push notifications for offline notifications (only if not already set up for this user)
+        const currentUserId = userData._id?.toString();
+        const lastSetupUserId = get()._pushNotificationSetupUserId;
+        if (currentUserId && currentUserId !== lastSetupUserId) {
+          setupPushNotifications(userData._id).then(() => {
+            set({ _pushNotificationSetupUserId: currentUserId });
+          }).catch(err => {
+            console.warn('Failed to setup push notifications:', err);
+          });
+        }
       } else {
         throw new Error("Invalid user data received from server");
       }
@@ -361,6 +404,8 @@ export const useAuthStore = create((set, get) => ({
       clearAuthToken(); // Clear token from storage
       toast.success("Logged out successfully");
       get().disconnectSocket(); // ✅ Disconnect socket on logout
+      // Reset push notification setup tracking
+      set({ _pushNotificationSetupUserId: null });
     } catch (error) {
       const errorData = error.response?.data;
       // Clear token even if logout request fails
@@ -442,9 +487,20 @@ export const useAuthStore = create((set, get) => ({
 
   // ✅ Connect to Socket.IO
   connectSocket: () => {
-    const { authUser, socket } = get();
+    // Prevent duplicate connections
+    const state = get();
+    if (state._socketConnecting || (state.socket && state.socket.connected)) {
+      console.log('⏳ Socket already connecting or connected, skipping...');
+      return;
+    }
+    
+    const { authUser } = state;
     // Only connect if we have a valid authUser with an _id
-    if (!authUser || !authUser._id || socket?.connected) return;
+    if (!authUser || !authUser._id) {
+      return;
+    }
+    
+    set({ _socketConnecting: true });
 
     const newSocket = io(BASE_URL, {
       query: { userId: authUser._id.toString() }, // Ensure userId is string
@@ -457,10 +513,14 @@ export const useAuthStore = create((set, get) => ({
     });
 
     newSocket.on("connect", () => {
-      // Socket connected
+      // Socket connected - reset connecting flag
+      set({ _socketConnecting: false });
     });
+    
     newSocket.on("getOnlineUsers", (userIds) => set({ onlineUsers: userIds }));
+    
     newSocket.on("disconnect", (reason) => {
+      set({ _socketConnecting: false });
       if (reason === "io server disconnect") {
         // Server disconnected, manually reconnect
         newSocket.connect();
@@ -469,6 +529,7 @@ export const useAuthStore = create((set, get) => ({
     
     // Suppress connection error logs (Socket.IO handles reconnection automatically)
     newSocket.on("connect_error", (error) => {
+      set({ _socketConnecting: false });
       // Only log if not a connection refused error (which is expected when backend is down)
       if (error.message && !error.message.includes("ECONNREFUSED") && !error.message.includes("Network")) {
       }
@@ -482,7 +543,7 @@ export const useAuthStore = create((set, get) => ({
     const { socket } = get();
     if (socket) {
       socket.disconnect();
-      set({ socket: null, onlineUsers: [] });
+      set({ socket: null, onlineUsers: [], _socketConnecting: false, _pushNotificationSetupUserId: null });
     }
   },
 

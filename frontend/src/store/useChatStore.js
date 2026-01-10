@@ -5,6 +5,7 @@ import { useAuthStore } from "./useAuthStore";
 import { getAuthToken } from "../lib/safariUtils";
 import { normalizeId } from "../lib/utils";
 import { useNotificationStore } from "./useNotificationStore";
+import pushNotificationService from "../services/pushNotificationService";
 import { isDuplicateMessage } from "./chatStore/utils";
 import { initialState } from "./chatStore/state";
 import { createSelectors } from "./chatStore/selectors";
@@ -933,6 +934,49 @@ export const useChatStore = create((set, get) => ({
         
         if (isIncomingMessage && !isSelectedChat) {
           updatedUnreadMessages[targetIdStr] = (updatedUnreadMessages[targetIdStr] || 0) + 1;
+        }
+
+        // Show browser notification for incoming messages when user is online
+        // Only show if: incoming message, not viewing this chat, and notification permission granted
+        if (isIncomingMessage && !isSelectedChat && targetUser) {
+          setTimeout(() => {
+            try {
+              const senderName = targetUser.fullname || "Someone";
+              let body = "";
+              
+              if (newMessage.text) {
+                body = newMessage.text.length > 100 
+                  ? newMessage.text.substring(0, 100) + "..." 
+                  : newMessage.text;
+              } else if (newMessage.image && newMessage.image.length > 0) {
+                body = "📷 Sent a photo";
+              } else if (newMessage.audio && newMessage.audio.length > 0) {
+                body = "🎵 Sent an audio message";
+              } else if (newMessage.video && newMessage.video.length > 0) {
+                body = "🎥 Sent a video";
+              } else if (newMessage.file && newMessage.file.length > 0) {
+                body = "📎 Sent a file";
+              } else {
+                body = "Sent a message";
+              }
+
+              // Show browser notification (when user is online)
+              pushNotificationService.showBrowserNotification(senderName, {
+                body: body,
+                icon: targetUser.profilePic || "/favicon.ico",
+                badge: "/favicon.ico",
+                tag: `message-${newMessage._id}`,
+                data: {
+                  type: "message",
+                  messageId: newMessage._id,
+                  senderId: senderId,
+                  receiverId: receiverId,
+                },
+              });
+            } catch (err) {
+              console.error("Failed to show browser notification:", err);
+            }
+          }, 100);
         }
 
         // Clear upload status if this is a message from current user (upload completed)
@@ -1922,22 +1966,57 @@ export const useChatStore = create((set, get) => ({
           updatedUnreadMessages[groupIdStr] = 0;
         }
         
-        // Add push notification for incoming group messages (if not viewing or not from self)
+        // Add browser notification for incoming group messages (if not viewing or not from self)
         if (isIncomingMessage && !isViewingThisGroup) {
           setTimeout(() => {
             try {
               const senderName = message.senderId?.fullname || "Someone";
               const groupName = state.groups.find(g => normalizeId(g._id) === groupIdStr)?.name || "Group";
               
+              // In-app notification
               useNotificationStore.getState().addNotification({
                 type: 'group_message_received',
                 message: `${senderName} in ${groupName}: ${message.text || (message.image ? 'sent a photo' : message.audio ? 'sent an audio' : 'sent a message')}`,
                 data: { message, groupId, sender: message.senderId }
               });
+
+              // Browser notification (when user is online)
+              let body = "";
+              if (message.text) {
+                body = message.text.length > 100 
+                  ? message.text.substring(0, 100) + "..." 
+                  : message.text;
+              } else if (message.image && message.image.length > 0) {
+                body = "📷 Sent a photo";
+              } else if (message.audio && message.audio.length > 0) {
+                body = "🎵 Sent an audio message";
+              } else if (message.video && message.video.length > 0) {
+                body = "🎥 Sent a video";
+              } else if (message.file && message.file.length > 0) {
+                body = "📎 Sent a file";
+              } else {
+                body = "Sent a message";
+              }
+
+              pushNotificationService.showBrowserNotification(
+                `${senderName} in ${groupName}`,
+                {
+                  body: body,
+                  icon: message.senderId?.profilePic || "/favicon.ico",
+                  badge: "/favicon.ico",
+                  tag: `group-message-${message._id}`,
+                  data: {
+                    type: "group_message",
+                    messageId: message._id,
+                    senderId: message.senderId?._id || message.senderId,
+                    groupId: groupId,
+                  },
+                }
+              );
             } catch (err) {
-              console.error("Failed to add group notification:", err);
+              console.error("Failed to show group notification:", err);
             }
-          }, 0);
+          }, 100);
         }
         
         return {

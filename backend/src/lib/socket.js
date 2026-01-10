@@ -791,6 +791,18 @@ io.on("connection", (socket) => {
                 // receiverId: pendingCall.receiverId,
                 // }
                 // );
+                
+                // Send push notification for missed call
+                try {
+                  const { sendMissedCallNotification } = await import("../services/pushNotification.service.js");
+                  await sendMissedCallNotification(pendingCall.receiverId, {
+                    callId: savedCall._id,
+                    callerId: pendingCall.callerId,
+                    callType: pendingCall.callType,
+                  });
+                } catch (pushError) {
+                  console.error("Failed to send missed call push notification:", pushError);
+                }
               } catch (saveError) {
                 console.error(
                   "❌ Error saving offline missed call record:",
@@ -820,6 +832,18 @@ io.on("connection", (socket) => {
             startedAt: new Date(), // When call was initiated
             timeoutId,
           });
+
+          // Send push notification for incoming call (receiver is offline)
+          try {
+            const { sendCallNotification } = await import("../services/pushNotification.service.js");
+            await sendCallNotification(receiverId, {
+              callId,
+              callerId: userId,
+              callType,
+            });
+          } catch (pushError) {
+            console.error("Failed to send call push notification:", pushError);
+          }
 
           // Notify caller that call is ringing (even though user is offline)
           // This allows the UI to show "calling" state

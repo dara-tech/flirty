@@ -1,0 +1,201 @@
+Content-Type: application/pdf<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test OSS Direct Upload (V2)</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 20px auto; padding: 0 20px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input, select { width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; border-radius: 4px; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #status { margin-top: 20px; padding: 15px; border: 1px solid #ccc; background: #f9f9f9; white-space: pre-wrap; font-family: monospace; font-size: 12px; max-height: 400px; overflow-y: auto; }
+        .success { background: #d4edda; border-color: #c3e6cb; }
+        .error { background: #f8d7da; border-color: #f5c6cb; }
+        .info { background: #d1ecf1; border-color: #bee5eb; }
+    </style>
+</head>
+<body>
+    <h1>🚀 Test OSS Direct Upload (V2)</h1>
+    <p><strong>Zero Bottleneck:</strong> Files upload directly to Aliyun OSS, bypassing your server entirely.</p>
+    
+    <div class="form-group">
+        <label>API Key:</label>
+        <input type="text" id="apiKey" value="q4LAwXQ4r4zGTKJHof" placeholder="Enter x-api-key">
+    </div>
+
+    <div class="form-group">
+        <label>Server URL:</label>
+        <select id="serverUrl">
+            <option value="https://file-l2-sg.sre999.com/">Production - https://file-l2-sg.sre999.com/</option>
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label>Select File(s):</label>
+        <input type="file" id="fileInput" multiple>
+        <small style="color: #666;">Hold Ctrl/Cmd to select multiple files (max 50)</small>
+    </div>
+
+    <div class="form-group">
+        <label>Company Code:</label>
+        <select id="companyCode">
+            <option value="sre">sre</option>
+            <option value="sre-kp">sre-kp</option>
+            <option value="srm">srm</option>
+            <option value="risk">risk</option>
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label>Branch Code:</label>
+        <input type="text" id="branchCode" value="test01" maxlength="10">
+    </div>
+
+    <div class="form-group">
+        <label>Upload Type:</label>
+        <select id="uploadType">
+            <option value="image-upload">image-upload</option>
+            <option value="voice-upload">voice-upload</option>
+            <option value="video-upload">video-upload</option>
+            <option value="apk-upload">apk-upload</option>
+            <option value="file-upload" selected>file-upload</option>
+        </select>
+    </div>
+
+    <button id="uploadBtn" onclick="startUpload()">Upload File(s)</button>
+
+    <div id="status" class="info">Ready to upload...</div>
+
+    <script>
+        function log(msg, type = 'info') {
+            const el = document.getElementById('status');
+            const time = new Date().toLocaleTimeString();
+            el.innerHTML += `\n[${time}] ${msg}`;
+            el.className = type;
+            el.scrollTop = el.scrollHeight;
+            console.log(`[${time}] ${msg}`);
+        }
+
+        function clearLog() {
+            document.getElementById('status').innerHTML = '';
+        }
+
+        async function startUpload() {
+            const fileInput = document.getElementById('fileInput');
+            const files = Array.from(fileInput.files);
+            const apiKey = document.getElementById('apiKey').value;
+            const serverUrl = document.getElementById('serverUrl').value.replace(/\/$/, '');
+            const uploadBtn = document.getElementById('uploadBtn');
+            
+            if (files.length === 0) {
+                alert("Please select at least one file");
+                return;
+            }
+
+            if (files.length > 50) {
+                alert("Maximum 50 files allowed per batch");
+                return;
+            }
+
+            clearLog();
+            uploadBtn.disabled = true;
+            log(`🚀 Starting upload for ${files.length} file(s)...`, "info");
+            
+            try {
+                // STEP 1: Get all upload URLs (same endpoint for 1 or many files)
+                log(`📤 Step 1: Requesting ${files.length} upload URL(s)...`);
+                
+                const filesMetadata = files.map(f => ({
+                    filename: f.name,
+                    content_type: f.type || 'application/octet-stream'
+                }));
+
+                log(`\n📨 REQUEST SENT TO SERVER:`);
+                log(JSON.stringify({
+                    files: filesMetadata,
+                    company_code: document.getElementById('companyCode').value,
+                    branch_code: document.getElementById('branchCode').value,
+                    upload_type: document.getElementById('uploadType').value
+                }, null, 2));
+
+                const getUrlResponse = await fetch(`${serverUrl}/get-upload-url`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': apiKey
+                    },
+                    body: JSON.stringify({
+                        files: filesMetadata,
+                        company_code: document.getElementById('companyCode').value,
+                        branch_code: document.getElementById('branchCode').value,
+                        upload_type: document.getElementById('uploadType').value
+                    })
+                });
+
+                if (!getUrlResponse.ok) {
+                    const err = await getUrlResponse.json();
+                    throw new Error(`Server error: ${err.error || getUrlResponse.statusText}`);
+                }
+
+                const data = await getUrlResponse.json();
+                
+                log(`\n📥 RESPONSE FROM SERVER:`);
+                log(JSON.stringify(data, null, 2));
+                
+                log(`\n✅ Step 1 Success! Got ${data.count} upload URL(s)`);
+
+                // STEP 2: Upload all files in parallel
+                log(`\n☁️  Step 2: Uploading ${files.length} file(s) to OSS...`);
+                const startTime = Date.now();
+                
+                const uploadPromises = files.map(async (file, index) => {
+                    const uploadInfo = data.uploads[index];
+                    
+                    log(`\n📨 PUT REQUEST TO OSS (${uploadInfo.original_filename}):`);
+                    log(`URL: ${uploadInfo.upload_url.substring(0, 100)}...`);
+                    log(`Headers: ${JSON.stringify(uploadInfo.headers)}`);
+                    
+                    const response = await fetch(uploadInfo.upload_url, {
+                        method: 'PUT',
+                        headers: { 
+                            'Content-Type': file.type || 'application/octet-stream'
+                        },
+                        body: file
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`Failed to upload ${file.name}: ${response.status} ${response.statusText}`);
+                    }
+                    
+                    log(`   ✓ ${response.status} ${response.statusText} - Uploaded: ${uploadInfo.final_filename}`);
+                    return uploadInfo.final_filename;
+                });
+
+                const results = await Promise.all(uploadPromises);
+                
+                const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+                const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+                const avgSpeed = (totalSize / 1024 / 1024 / totalTime).toFixed(2);
+
+                log(`\n✅ All ${results.length} file(s) uploaded successfully!`, "success");
+                log(`   Total time: ${totalTime}s`);
+                log(`   Total size: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+                log(`   Average speed: ${avgSpeed} MB/s`);
+                log(`\n🎉 UPLOAD COMPLETE!`);
+                
+            } catch (err) {
+                log(`\n❌ ERROR: ${err.message}`, "error");
+                if (err.message.includes('Failed to fetch')) {
+                    log(`\n💡 This is likely a CORS issue.`, "error");
+                }
+            } finally {
+                uploadBtn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
