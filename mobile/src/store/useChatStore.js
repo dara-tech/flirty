@@ -1,36 +1,327 @@
-import { create } from 'zustand';
-import * as FileSystem from 'expo-file-system/legacy';
-import axiosInstance from '../lib/api';
-import { useAuthStore } from './useAuthStore';
+import { create } from "zustand";
+import * as FileSystem from "expo-file-system/legacy";
+import axiosInstance from "../lib/api";
+import { useAuthStore } from "./useAuthStore";
 
-// Get base64 encoding constant - handle different expo-file-system versions
-const getBase64Encoding = () => {
-  try {
-    // Try to access EncodingType.Base64
-    if (FileSystem.EncodingType && FileSystem.EncodingType.Base64 !== undefined && FileSystem.EncodingType.Base64 !== null) {
-      return FileSystem.EncodingType.Base64;
-    }
-  } catch (e) {
-    // EncodingType might not exist
-  }
-  
-  // Try alternative: FileSystem.EncodingType might be an object with Base64 property
-  try {
-    if (FileSystem.EncodingType?.Base64 !== undefined && FileSystem.EncodingType?.Base64 !== null) {
-      return FileSystem.EncodingType.Base64;
-    }
-  } catch (e) {
-    // Fall through
-  }
-  
-  // Last resort: use string literal (works in most expo-file-system versions)
-  if (__DEV__) {
-    console.warn('FileSystem.EncodingType.Base64 not found, using string fallback');
-  }
-  return 'base64';
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+/** Safety timeout for loading states (ms) */
+const LOADING_SAFETY_TIMEOUT = 12000;
+
+/** Supported audio formats with their MIME types and codecs */
+const AUDIO_FORMATS = {
+  m4a: { format: "m4a", codecs: "mp4a.40.2" },
+  webm: { format: "webm", codecs: "opus" },
+  mp3: { format: "mp3", codecs: "mp3" },
+  aac: { format: "aac", codecs: "mp4a.40.2" },
 };
 
-export const useChatStore = create((set, get) => ({
+/** Default MIME types for media */
+const DEFAULT_MIME_TYPES = {
+  image: "image/jpeg",
+  video: "video/mp4",
+  file: "application/octet-stream",
+  audio: "audio/webm",
+};
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Get base64 encoding constant - handles different expo-file-system versions
+ * @returns {string} The base64 encoding constant
+ */
+const getBase64Encoding = () => {
+  try {
+    if (FileSystem.EncodingType?.Base64 != null) {
+      return FileSystem.EncodingType.Base64;
+    }
+  } catch (e) {
+    // Fall through to default
+  }
+  if (__DEV__) {
+    console.warn(
+      "FileSystem.EncodingType.Base64 not found, using string fallback"
+    );
+  }
+  return "base64";
+};
+
+/**
+ * Normalize MongoDB ObjectId to string format
+ * @param {string|object} id - The ID to normalize
+ * @returns {string|null} Normalized ID string or null
+ */
+const normalizeId = (id) => {
+  if (!id) return null;
+  if (typeof id === "string") return id;
+  if (typeof id === "object" && id._id) return id._id.toString();
+  return id?.toString() ?? null;
+};
+
+/**
+ * Check if error is a network-related error
+ * @param {Error} error - The error to check
+ * @returns {boolean} True if network error
+ */
+const isNetworkError = (error) => {
+  const networkErrorCodes = [
+    "ECONNABORTED",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "ERR_NETWORK",
+    "NETWORK_ERROR",
+  ];
+  const networkErrorMessages = [
+    "timeout",
+    "TIMEOUT",
+    "Network",
+    "Network request failed",
+  ];
+
+  return (
+    networkErrorCodes.includes(error.code) ||
+    error.name === "TimeoutError" ||
+    networkErrorMessages.some((msg) => error.message?.includes(msg)) ||
+    (!error.response && error.request)
+  );
+};
+
+/**
+ * Get audio format info from URI
+ * @param {string} uri - Audio file URI
+ * @returns {{ format: string, codecs: string }} Audio format info
+ */
+const getAudioFormatFromUri = (uri) => {
+  const uriLower = uri.toLowerCase();
+  for (const [ext, info] of Object.entries(AUDIO_FORMATS)) {
+    if (uriLower.endsWith(`.${ext}`) || uriLower.includes(`.${ext}`)) {
+      return info;
+    }
+  }
+  return AUDIO_FORMATS.webm; // Default
+};
+
+/**
+ * Extract MIME type from filename
+ * @param {string} filename - The filename
+ * @param {string} type - Media type (image/video/file)
+ * @returns {string} MIME type
+ */
+const getMimeTypeFromFilename = (filename, type) => {
+  const match = /\.(\w+)$/.exec(filename);
+  if (match) {
+    return `${type}/${match[1]}`;
+  }
+  return DEFAULT_MIME_TYPES[type] || DEFAULT_MIME_TYPES.file;
+};
+
+/**
+ * Convert file to base64 data URI
+ * @param {string} uri - File URI
+ * @param {string} mimeType - MIME type for data URI
+ * @returns {Promise<string>} Base64 data URI
+ */
+const fileToBase64DataUri = async (uri, mimeType) => {
+  const base64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: getBase64Encoding(),
+  });
+  return `data:${mimeType};base64,${base64}`;
+};
+
+/**
+ * Create a safety timeout that clears loading state
+ * @param {Function} getState - Zustand get function
+ * @param {Function} setState - Zustand set function
+ * @param {string} loadingKey - The loading state key
+ * @param {string} context - Context for logging
+ * @returns {number} Timeout ID
+ */
+const createLoadingSafetyTimeout = (
+  getState,
+  setState,
+  loadingKey,
+  context
+) => {
+  return setTimeout(() => {
+    const currentState = getState();
+    if (currentState[loadingKey]) {
+      console.warn(
+        `⚠️ ${context} safety timeout - force clearing loading state`
+      );
+      setState({ [loadingKey]: false });
+    }
+  }, LOADING_SAFETY_TIMEOUT);
+};
+
+/**
+ * Handle API error with proper logging and state cleanup
+ * @param {Error} error - The error
+ * @param {string} context - Error context
+ * @param {Function} setState - Zustand set function
+ * @param {object} resetState - State to set on error
+ */
+const handleApiError = (error, context, setState, resetState) => {
+  console.error(`Error ${context}:`, error);
+
+  if (isNetworkError(error)) {
+    console.warn(`⚠️ Network issue: ${context}. Check backend connection.`);
+  }
+
+  setState(resetState);
+
+  if (error.response?.status === 401) {
+    useAuthStore.getState().logout();
+  }
+};
+
+// ============================================================================
+// MEDIA CONVERSION UTILITIES
+// ============================================================================
+
+/**
+ * Convert image to base64 data URI
+ * @param {string} imageUri - Image file URI
+ * @returns {Promise<string>} Base64 data URI
+ */
+const convertImageToBase64 = async (imageUri) => {
+  const filename = imageUri.split("/").pop();
+  const mimeType = getMimeTypeFromFilename(filename, "image");
+  return fileToBase64DataUri(imageUri, mimeType);
+};
+
+/**
+ * Convert video to base64 data URI
+ * @param {string|object} videoUri - Video file URI or object with uri property
+ * @returns {Promise<{ dataUri: string, duration?: number }>} Base64 data URI and optional duration
+ */
+const convertVideoToBase64 = async (videoUri) => {
+  const videoUriString = typeof videoUri === "object" ? videoUri.uri : videoUri;
+  const filename = videoUriString.split("/").pop();
+  const mimeType = getMimeTypeFromFilename(filename, "video");
+  const dataUri = await fileToBase64DataUri(videoUriString, mimeType);
+  return {
+    dataUri,
+    duration: typeof videoUri === "object" ? videoUri.duration : undefined,
+  };
+};
+
+/**
+ * Convert file to base64 data URI with metadata
+ * @param {object} fileUri - File object with uri, mimeType, name, size
+ * @returns {Promise<object>} Object with dataUri and metadata
+ */
+const convertFileToBase64 = async (fileUri) => {
+  const mimeType = fileUri.mimeType || DEFAULT_MIME_TYPES.file;
+  const dataUri = await fileToBase64DataUri(fileUri.uri, mimeType);
+  return {
+    dataUri,
+    fileName: fileUri.name || fileUri.uri.split("/").pop(),
+    fileSize: fileUri.size || null,
+    fileType: mimeType,
+  };
+};
+
+/**
+ * Convert audio to base64 data URI with validation
+ * @param {string} audioUri - Audio file URI
+ * @returns {Promise<string>} Base64 data URI
+ */
+const convertAudioToBase64 = async (audioUri) => {
+  if (!audioUri || typeof audioUri !== "string") {
+    throw new Error("Invalid audio URI");
+  }
+
+  // Validate file exists
+  let fileInfo = { exists: true };
+  try {
+    fileInfo = await FileSystem.getInfoAsync(audioUri);
+  } catch (fsError) {
+    if (__DEV__) {
+      console.warn(
+        "⚠️ FileSystem.getInfoAsync failed, attempting direct read:",
+        fsError.message
+      );
+    }
+  }
+
+  if (fileInfo && !fileInfo.exists) {
+    throw new Error(`Audio file does not exist at: ${audioUri}`);
+  }
+
+  if (fileInfo && fileInfo.size === 0) {
+    throw new Error("Audio file is empty (0 bytes)");
+  }
+
+  // Read file
+  const base64 = await FileSystem.readAsStringAsync(audioUri, {
+    encoding: getBase64Encoding(),
+  });
+
+  if (!base64 || base64.length === 0) {
+    throw new Error("Audio file read as empty string");
+  }
+
+  // Get format and create data URI
+  const { format, codecs } = getAudioFormatFromUri(audioUri);
+  return `data:audio/${format};codecs=${codecs};base64,${base64}`;
+};
+
+/**
+ * Build message data object from media inputs
+ * @param {object} params - Parameters for building message data
+ * @returns {Promise<object>} Message data object
+ */
+const buildMessageData = async ({
+  text,
+  imageUri,
+  videoUri,
+  fileUri,
+  audioUri,
+}) => {
+  const messageData = {};
+
+  if (text?.trim()) {
+    messageData.text = text.trim();
+  }
+
+  if (imageUri) {
+    messageData.image = await convertImageToBase64(imageUri);
+  }
+
+  if (videoUri) {
+    const { dataUri, duration } = await convertVideoToBase64(videoUri);
+    messageData.video = dataUri;
+    if (duration) {
+      messageData.videoDuration = duration;
+    }
+  }
+
+  if (fileUri) {
+    const { dataUri, fileName, fileSize, fileType } = await convertFileToBase64(
+      fileUri
+    );
+    messageData.file = dataUri;
+    messageData.fileName = fileName;
+    messageData.fileSize = fileSize;
+    messageData.fileType = fileType;
+  }
+
+  if (audioUri) {
+    messageData.audio = await convertAudioToBase64(audioUri);
+  }
+
+  return messageData;
+};
+
+// ============================================================================
+// INITIAL STATE
+// ============================================================================
+
+const initialState = {
   messages: [],
   users: [],
   groups: [],
@@ -38,14 +329,22 @@ export const useChatStore = create((set, get) => ({
   pendingRequests: [],
   selectedUser: null,
   selectedGroup: null,
-  lastMessages: {}, // { userId: message } - last message for each conversation
-  lastGroupMessages: {}, // { groupId: message } - last message for each group
+  lastMessages: {}, // { [userId]: message } - last message for each conversation
+  lastGroupMessages: {}, // { [groupId]: message } - last message for each group
   isContactsLoading: false,
   isRequestsLoading: false,
   isUsersLoading: false,
   isGroupsLoading: false,
   isMessagesLoading: false,
   typingUsers: [],
+};
+
+// ============================================================================
+// STORE DEFINITION
+// ============================================================================
+
+export const useChatStore = create((set, get) => ({
+  ...initialState,
 
   // Set messages
   setMessages: (messages) => set({ messages }),
@@ -54,27 +353,28 @@ export const useChatStore = create((set, get) => ({
   addMessage: (message) => {
     const state = get();
     const authUser = useAuthStore.getState().authUser;
-    
+
     if (!authUser) return;
 
     // Determine the other user in the conversation
     const senderId = message.sender?._id || message.senderId;
     const receiverId = message.receiver?._id || message.receiverId;
     const authUserId = authUser._id?.toString();
-    
-    const otherUserId = senderId?.toString() === authUserId 
-      ? receiverId?.toString() 
-      : senderId?.toString();
+
+    const otherUserId =
+      senderId?.toString() === authUserId
+        ? receiverId?.toString()
+        : senderId?.toString();
 
     // Check if message already exists to prevent duplicates
     const messageExists = state.messages.some(
-      msg => msg._id?.toString() === message._id?.toString()
+      (msg) => msg._id?.toString() === message._id?.toString()
     );
-    
+
     if (messageExists) {
       // Update existing message instead
       set((state) => ({
-        messages: state.messages.map(msg => 
+        messages: state.messages.map((msg) =>
           msg._id?.toString() === message._id?.toString() ? message : msg
         ),
         lastMessages: {
@@ -109,409 +409,298 @@ export const useChatStore = create((set, get) => ({
   // Set groups
   setGroups: (groups) => set({ groups }),
 
-  // Fetch groups
+  // Fetch groups with optimized loading and caching
   getGroups: async () => {
     const authUser = useAuthStore.getState().authUser;
-    
+    const resetState = {
+      groups: [],
+      lastGroupMessages: {},
+      isGroupsLoading: false,
+    };
+
     if (!authUser) {
-      set({ groups: [], lastGroupMessages: {}, isGroupsLoading: false });
+      set(resetState);
       return;
     }
-    
-    // If we already have groups, show them immediately and refresh in background
-    const currentState = get();
-    if (currentState.groups && currentState.groups.length > 0) {
-      // Don't show loading if we have cached data - refresh in background
-      // Only update if not already false to prevent unnecessary re-renders
-      if (currentState.isGroupsLoading) {
-        set({ isGroupsLoading: false });
-      }
-    } else {
-      // Only show loading if we have no data
-      // Only update if not already true to prevent unnecessary re-renders
-      if (!currentState.isGroupsLoading) {
-        set({ isGroupsLoading: true });
-      }
+
+    // Smart loading: Only show spinner if no cached data
+    const { groups, isGroupsLoading } = get();
+    const hasCache = groups?.length > 0;
+    if (!hasCache && !isGroupsLoading) {
+      set({ isGroupsLoading: true });
+    } else if (hasCache && isGroupsLoading) {
+      set({ isGroupsLoading: false });
     }
-    
-    // Create a safety timeout that ALWAYS clears loading state after 12 seconds
-    // This prevents stuck loading in production builds where errors might not be caught
-    const safetyTimeout = setTimeout(() => {
-      const currentState = get();
-      if (currentState.isGroupsLoading) {
-        console.warn('⚠️ getGroups safety timeout - force clearing loading state');
-        set({ isGroupsLoading: false });
-      }
-    }, 12000);
-    
-    // Match frontend web: Call BOTH endpoints in parallel (like frontend web does)
+
+    const safetyTimeout = createLoadingSafetyTimeout(
+      get,
+      set,
+      "isGroupsLoading",
+      "getGroups"
+    );
+
     try {
+      // Parallel API calls for better performance
       const [groupsRes, lastMessagesRes] = await Promise.all([
-        axiosInstance.get('/groups/my-groups'),
-        axiosInstance.get('/groups/last-messages')
+        axiosInstance.get("/groups/my-groups"),
+        axiosInstance.get("/groups/last-messages"),
       ]);
-      clearTimeout(safetyTimeout); // Clear safety timeout on success
-      
-      // Handle 401 errors gracefully
+      clearTimeout(safetyTimeout);
+
+      // Handle auth errors
       if (groupsRes.status === 401 || lastMessagesRes.status === 401) {
-        if (__DEV__) {
-          console.warn('⚠️ Authentication failed, clearing auth state');
-        }
         useAuthStore.getState().logout();
-        set({ groups: [], lastGroupMessages: {}, isGroupsLoading: false });
+        set(resetState);
         return;
       }
 
-      // Ensure data is an array
+      // Process data
       const groupsData = Array.isArray(groupsRes.data) ? groupsRes.data : [];
-      const lastMessagesData = Array.isArray(lastMessagesRes.data) ? lastMessagesRes.data : [];
-      
-      // Normalize ID function for consistency
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id?.toString();
-      };
-      
-      const lastGroupMessagesMap = {};
-      lastMessagesData.forEach(lastMsg => {
-        const groupId = normalizeId(lastMsg.groupId);
-        if (groupId) {
-          // Store with normalized key for consistency
-          lastGroupMessagesMap[groupId] = lastMsg;
-        }
+      const lastMessagesData = Array.isArray(lastMessagesRes.data)
+        ? lastMessagesRes.data
+        : [];
+
+      // Build last messages map
+      const lastGroupMessagesMap = lastMessagesData.reduce((acc, msg) => {
+        const groupId = normalizeId(msg.groupId);
+        if (groupId) acc[groupId] = msg;
+        return acc;
+      }, {});
+
+      set({
+        groups: groupsData,
+        lastGroupMessages: lastGroupMessagesMap,
+        isGroupsLoading: false,
       });
 
-      set({ groups: groupsData, lastGroupMessages: lastGroupMessagesMap, isGroupsLoading: false });
-      
       if (__DEV__) {
-        console.log(`✅ Loaded ${groupsData.length} groups from parallel requests`);
+        console.log(`✅ Loaded ${groupsData.length} groups`);
       }
     } catch (error) {
-      clearTimeout(safetyTimeout); // Clear safety timeout on error
-      console.error('Error loading groups:', error);
-      
-      // Check if it's a timeout or network error - be more aggressive in detection
-      const isTimeout = error.code === 'ECONNABORTED' || 
-                       error.message?.includes('timeout') ||
-                       error.message?.includes('TIMEOUT') ||
-                       error.name === 'TimeoutError';
-      const isNetworkError = !error.response && (error.request || error.code === 'NETWORK_ERROR' || error.message?.includes('Network'));
-      const isConnectionError = error.code === 'ECONNREFUSED' || 
-                                error.code === 'ENOTFOUND' ||
-                                error.code === 'ERR_NETWORK' ||
-                                error.message?.includes('Network request failed');
-      
-      // Always clear loading state, but show empty groups on network errors
-      if (isTimeout || isNetworkError || isConnectionError) {
-        console.warn('⚠️ Network timeout or connection issue loading groups. Check backend connection.');
-        // Clear loading state immediately - don't wait
-        set({ groups: [], lastGroupMessages: {}, isGroupsLoading: false });
-      } else {
-        // For other errors, clear loading state immediately
-        set({ groups: [], lastGroupMessages: {}, isGroupsLoading: false });
-      }
-      
-      if (error.response?.status === 401) {
-        useAuthStore.getState().logout();
-      }
+      clearTimeout(safetyTimeout);
+      handleApiError(error, "loading groups", set, resetState);
     }
   },
 
-  // Fetch contacts
+  // Fetch contacts with optimized loading
   getContacts: async () => {
     const authUser = useAuthStore.getState().authUser;
-    
+    const resetState = { contacts: [], isContactsLoading: false };
+
     if (!authUser) {
-      set({ contacts: [], isContactsLoading: false });
+      set(resetState);
       return;
     }
-    
-    // If we already have contacts, show them immediately and refresh in background
-    const currentState = get();
-    if (currentState.contacts && currentState.contacts.length > 0) {
-      // Don't show loading if we have cached data - refresh in background
-      // Only update if not already false to prevent unnecessary re-renders
-      if (currentState.isContactsLoading) {
-        set({ isContactsLoading: false });
-      }
-    } else {
-      // Only show loading if we have no data
-      // Only update if not already true to prevent unnecessary re-renders
-      if (!currentState.isContactsLoading) {
-        set({ isContactsLoading: true });
-      }
+
+    // Smart loading: Only show spinner if no cached data
+    const { contacts, isContactsLoading } = get();
+    const hasCache = contacts?.length > 0;
+    if (!hasCache && !isContactsLoading) {
+      set({ isContactsLoading: true });
+    } else if (hasCache && isContactsLoading) {
+      set({ isContactsLoading: false });
     }
-    
-    // Create a safety timeout that ALWAYS clears loading state after 12 seconds
-    // This prevents stuck loading in production builds where errors might not be caught
-    const safetyTimeout = setTimeout(() => {
-      const currentState = get();
-      if (currentState.isContactsLoading) {
-        console.warn('⚠️ getContacts safety timeout - force clearing loading state');
-        set({ isContactsLoading: false });
-      }
-    }, 12000);
-    
+
+    const safetyTimeout = createLoadingSafetyTimeout(
+      get,
+      set,
+      "isContactsLoading",
+      "getContacts"
+    );
+
     try {
-      const res = await axiosInstance.get('/contacts');
-      clearTimeout(safetyTimeout); // Clear safety timeout on success
-      
-      // Handle 401 errors gracefully
+      const res = await axiosInstance.get("/contacts");
+      clearTimeout(safetyTimeout);
+
       if (res.status === 401) {
-        if (__DEV__) {
-          console.warn('⚠️ Authentication failed, clearing auth state');
-        }
         useAuthStore.getState().logout();
-        set({ contacts: [], isContactsLoading: false });
+        set(resetState);
         return;
       }
-      
+
       set({ contacts: res.data || [], isContactsLoading: false });
-      
+
       if (__DEV__) {
         console.log(`✅ Loaded ${(res.data || []).length} contacts`);
       }
     } catch (error) {
-      clearTimeout(safetyTimeout); // Clear safety timeout on error
-      console.error('Error loading contacts:', error);
-      
-      // Check if it's a timeout or network error - be more aggressive in detection
-      const isTimeout = error.code === 'ECONNABORTED' || 
-                       error.message?.includes('timeout') ||
-                       error.message?.includes('TIMEOUT') ||
-                       error.name === 'TimeoutError';
-      const isNetworkError = !error.response && (error.request || error.code === 'NETWORK_ERROR' || error.message?.includes('Network'));
-      const isConnectionError = error.code === 'ECONNREFUSED' || 
-                                error.code === 'ENOTFOUND' ||
-                                error.code === 'ERR_NETWORK' ||
-                                error.message?.includes('Network request failed');
-      
-      // Always clear loading state, but show empty contacts on network errors
-      if (isTimeout || isNetworkError || isConnectionError) {
-        console.warn('⚠️ Network timeout or connection issue loading contacts. Check backend connection.');
-        // Clear loading state immediately - don't wait
-        set({ contacts: [], isContactsLoading: false });
-      } else {
-        // For other errors, clear loading state immediately
-        set({ contacts: [], isContactsLoading: false });
-      }
-      
-      if (error.response?.status === 401) {
-        useAuthStore.getState().logout();
-      }
+      clearTimeout(safetyTimeout);
+      handleApiError(error, "loading contacts", set, resetState);
     }
   },
 
-  // Fetch users (only people you've messaged with - from last-messages)
+  // Fetch users (only people you've messaged with)
   getUsers: async () => {
     const authUser = useAuthStore.getState().authUser;
-    
+    const resetState = { users: [], lastMessages: {}, isUsersLoading: false };
+
     if (!authUser) {
-      set({ users: [], lastMessages: {}, isUsersLoading: false });
+      set(resetState);
       return;
     }
-    
-    // If we already have users, show them immediately and refresh in background
-    const currentState = get();
-    if (currentState.users && currentState.users.length > 0) {
-      // Don't show loading if we have cached data - refresh in background
-      // Only update if not already false to prevent unnecessary re-renders
-      if (currentState.isUsersLoading) {
-        set({ isUsersLoading: false });
-      }
-    } else {
-      // Only show loading if we have no data
-      // Only update if not already true to prevent unnecessary re-renders
-      if (!currentState.isUsersLoading) {
-        set({ isUsersLoading: true });
-      }
+
+    // Smart loading: Only show spinner if no cached data
+    const { users, isUsersLoading } = get();
+    const hasCache = users?.length > 0;
+    if (!hasCache && !isUsersLoading) {
+      set({ isUsersLoading: true });
+    } else if (hasCache && isUsersLoading) {
+      set({ isUsersLoading: false });
     }
-    
-    // Create a safety timeout that ALWAYS clears loading state after 12 seconds
-    // This prevents stuck loading in production builds where errors might not be caught
-    const safetyTimeout = setTimeout(() => {
-      const currentState = get();
-      if (currentState.isUsersLoading) {
-        console.warn('⚠️ getUsers safety timeout - force clearing loading state');
-        set({ isUsersLoading: false });
-      }
-    }, 12000);
-    
-    // Use axios timeout (10 seconds) - don't add additional timeout race
-    // Match frontend web: Call BOTH endpoints in parallel (like frontend web does)
+
+    const safetyTimeout = createLoadingSafetyTimeout(
+      get,
+      set,
+      "isUsersLoading",
+      "getUsers"
+    );
+
     try {
+      // Parallel API calls for better performance
       const [usersRes, lastMessagesRes] = await Promise.all([
-        axiosInstance.get('/messages/users'),
-        axiosInstance.get('/messages/last-messages')
+        axiosInstance.get("/messages/users"),
+        axiosInstance.get("/messages/last-messages"),
       ]);
-      clearTimeout(safetyTimeout); // Clear safety timeout on success
-      
-      // Handle 401 errors gracefully
+      clearTimeout(safetyTimeout);
+
+      // Handle auth errors
       if (usersRes.status === 401 || lastMessagesRes.status === 401) {
-        if (__DEV__) {
-          console.warn('⚠️ Authentication failed, clearing auth state');
-        }
         useAuthStore.getState().logout();
-        set({ users: [], lastMessages: {}, isUsersLoading: false });
+        set(resetState);
         return;
       }
 
-      // Backend returns array of last messages with populated senderId/receiverId
-      const lastMessagesData = Array.isArray(lastMessagesRes.data) ? lastMessagesRes.data : [];
-      // Ensure users data is an array
-      const usersData = Array.isArray(usersRes.data) ? usersRes.data : (usersRes.data?.users || []);
+      // Process data
+      const lastMessagesData = Array.isArray(lastMessagesRes.data)
+        ? lastMessagesRes.data
+        : [];
+      const usersData = Array.isArray(usersRes.data)
+        ? usersRes.data
+        : usersRes.data?.users || [];
+      const authUserId = normalizeId(authUser._id);
 
-      const authUserId = authUser._id?.toString();
-      const lastMessagesMap = {};
-      
-      // Build last messages map from lastMessagesData
-      lastMessagesData.forEach(lastMsg => {
-        const senderId = lastMsg.senderId?._id?.toString() || lastMsg.senderId?.toString();
-        const receiverId = lastMsg.receiverId?._id?.toString() || lastMsg.receiverId?.toString();
-        
-        if (!senderId || !receiverId) return;
-        
-        // Determine the other user (not the current user)
+      // Build last messages map
+      const lastMessagesMap = lastMessagesData.reduce((acc, msg) => {
+        const senderId = normalizeId(msg.senderId?._id || msg.senderId);
+        const receiverId = normalizeId(msg.receiverId?._id || msg.receiverId);
+        if (!senderId || !receiverId) return acc;
         const otherUserId = senderId === authUserId ? receiverId : senderId;
-        if (otherUserId) {
-          lastMessagesMap[otherUserId] = lastMsg;
-        }
-      });
+        if (otherUserId) acc[otherUserId] = msg;
+        return acc;
+      }, {});
 
-      // Remove duplicate users based on _id (like frontend web does)
-      const uniqueUsers = [];
+      // Build unique users list using Set for O(1) lookups
       const seenIds = new Set();
-      
-      // Add users from /messages/users endpoint (primary source)
-      usersData.forEach(user => {
-        const userId = typeof user._id === 'string' ? user._id : user._id?.toString();
+      const uniqueUsers = [];
+
+      // Add users from primary endpoint
+      for (const user of usersData) {
+        const userId = normalizeId(user._id);
         if (userId && !seenIds.has(userId)) {
           seenIds.add(userId);
           uniqueUsers.push(user);
         }
-      });
-      
-      // Also add users from lastMessages (in case they're not in users list)
-      lastMessagesData.forEach(lastMsg => {
-        const senderId = lastMsg.senderId?._id?.toString() || lastMsg.senderId?.toString();
-        const receiverId = lastMsg.receiverId?._id?.toString() || lastMsg.receiverId?.toString();
-        
-        if (!senderId || !receiverId) return;
-        
-        const otherUserId = senderId === authUserId ? receiverId : senderId;
-        if (otherUserId) {
-          // Extract user object from populated data
-          const otherUser = senderId === authUserId 
-            ? (lastMsg.receiverId && typeof lastMsg.receiverId === 'object' ? lastMsg.receiverId : null)
-            : (lastMsg.senderId && typeof lastMsg.senderId === 'object' ? lastMsg.senderId : null);
-          
-          if (otherUser && otherUser._id) {
-            const userId = typeof otherUser._id === 'string' ? otherUser._id : otherUser._id?.toString();
-            if (userId && !seenIds.has(userId)) {
-              seenIds.add(userId);
-              uniqueUsers.push(otherUser);
-            }
+      }
+
+      // Add users from lastMessages (if not already added)
+      for (const msg of lastMessagesData) {
+        const senderId = normalizeId(msg.senderId?._id || msg.senderId);
+        const receiverId = normalizeId(msg.receiverId?._id || msg.receiverId);
+        if (!senderId || !receiverId) continue;
+
+        const isOtherSender = senderId !== authUserId;
+        const otherUser = isOtherSender ? msg.senderId : msg.receiverId;
+
+        if (otherUser && typeof otherUser === "object" && otherUser._id) {
+          const userId = normalizeId(otherUser._id);
+          if (userId && !seenIds.has(userId)) {
+            seenIds.add(userId);
+            uniqueUsers.push(otherUser);
           }
         }
+      }
+
+      set({
+        users: uniqueUsers,
+        lastMessages: lastMessagesMap,
+        isUsersLoading: false,
       });
 
-      set({ users: uniqueUsers, lastMessages: lastMessagesMap, isUsersLoading: false });
-      
       if (__DEV__) {
-        console.log(`✅ Loaded ${uniqueUsers.length} users from last messages`);
+        console.log(`✅ Loaded ${uniqueUsers.length} users`);
       }
     } catch (error) {
-      clearTimeout(safetyTimeout); // Clear safety timeout on error
-      console.error('Error loading users:', error);
-      
-      // Check if it's a timeout or network error - be more aggressive in detection
-      const isTimeout = error.code === 'ECONNABORTED' || 
-                       error.message?.includes('timeout') ||
-                       error.message?.includes('TIMEOUT') ||
-                       error.name === 'TimeoutError';
-      const isNetworkError = !error.response && (error.request || error.code === 'NETWORK_ERROR' || error.message?.includes('Network'));
-      const isConnectionError = error.code === 'ECONNREFUSED' || 
-                                error.code === 'ENOTFOUND' ||
-                                error.code === 'ERR_NETWORK' ||
-                                error.message?.includes('Network request failed');
-      
-      // Always clear loading state, but show empty users on network errors
-      if (isTimeout || isNetworkError || isConnectionError) {
-        console.warn('⚠️ Network timeout or connection issue loading users. Check backend connection.');
-        // Clear loading state immediately - don't wait
-        set({ users: [], lastMessages: {}, isUsersLoading: false });
-      } else {
-        // For other errors, clear loading state immediately
-        set({ users: [], lastMessages: {}, isUsersLoading: false });
-      }
-      
-      if (error.response?.status === 401) {
-        useAuthStore.getState().logout();
-      }
+      clearTimeout(safetyTimeout);
+      handleApiError(error, "loading users", set, resetState);
     }
   },
 
   // Fetch pending contact requests
   getPendingRequests: async () => {
     const authUser = useAuthStore.getState().authUser;
-    
     if (!authUser) {
       set({ pendingRequests: [], isRequestsLoading: false });
       return;
     }
-    
+
     set({ isRequestsLoading: true });
     try {
-      const res = await axiosInstance.get('/contacts/requests');
-      set({ pendingRequests: res.data || [] });
+      const res = await axiosInstance.get("/contacts/requests");
+      set({ pendingRequests: res.data || [], isRequestsLoading: false });
     } catch (error) {
-      console.error('Error loading pending requests:', error);
-      if (error.response?.status !== 401) {
-        set({ pendingRequests: [] });
-      }
-    } finally {
-      set({ isRequestsLoading: false });
+      console.error("Error loading pending requests:", error);
+      set({
+        pendingRequests:
+          error.response?.status === 401 ? [] : get().pendingRequests,
+        isRequestsLoading: false,
+      });
     }
   },
 
   // Send contact request by email
   sendContactRequest: async (email) => {
+    if (!email?.trim()) {
+      throw new Error("Email is required");
+    }
     try {
-      const res = await axiosInstance.post('/contacts/request', { email });
-      // Refresh pending requests
+      const res = await axiosInstance.post("/contacts/request", {
+        email: email.trim(),
+      });
       get().getPendingRequests();
       return res.data;
     } catch (error) {
-      console.error('Error sending contact request:', error);
+      console.error("Error sending contact request:", error);
       throw error;
     }
   },
 
   // Accept contact request
   acceptContactRequest: async (requestId) => {
+    if (!requestId) {
+      throw new Error("Request ID is required");
+    }
     try {
-      const res = await axiosInstance.post('/contacts/accept', { requestId });
-      // Refresh contacts and pending requests
-      get().getContacts();
-      get().getPendingRequests();
+      const res = await axiosInstance.post("/contacts/accept", { requestId });
+      // Refresh both contacts and pending requests in parallel
+      await Promise.all([get().getContacts(), get().getPendingRequests()]);
       return res.data;
     } catch (error) {
-      console.error('Error accepting contact request:', error);
+      console.error("Error accepting contact request:", error);
       throw error;
     }
   },
 
   // Reject contact request
   rejectContactRequest: async (requestId) => {
+    if (!requestId) {
+      throw new Error("Request ID is required");
+    }
     try {
-      const res = await axiosInstance.post('/contacts/reject', { requestId });
-      // Refresh pending requests
+      const res = await axiosInstance.post("/contacts/reject", { requestId });
       get().getPendingRequests();
       return res.data;
     } catch (error) {
-      console.error('Error rejecting contact request:', error);
+      console.error("Error rejecting contact request:", error);
       throw error;
     }
   },
@@ -519,261 +708,207 @@ export const useChatStore = create((set, get) => ({
   // Fetch messages for a conversation
   getMessages: async (userId) => {
     const authUser = useAuthStore.getState().authUser;
-    
+    const resetState = { messages: [], isMessagesLoading: false };
+
     if (!authUser || !userId) {
-      set({ messages: [], isMessagesLoading: false });
+      set(resetState);
       return;
     }
-    
-    // Always set loading state and clear messages when fetching a new conversation
-    // This ensures we don't show stale messages from previous conversations
+
+    // Clear stale messages and show loading
     set({ isMessagesLoading: true, messages: [] });
-    
-    // Create a safety timeout that ALWAYS clears loading state after 12 seconds
-    // This prevents stuck loading in production builds where errors might not be caught
-    const safetyTimeout = setTimeout(() => {
-      const currentState = get();
-      if (currentState.isMessagesLoading) {
-        console.warn('⚠️ getMessages safety timeout - force clearing loading state');
-        set({ isMessagesLoading: false });
-      }
-    }, 12000);
-    
-    // Use axios timeout (10 seconds) - don't add additional timeout race
-    // This prevents premature timeouts on slow networks
+
+    const safetyTimeout = createLoadingSafetyTimeout(
+      get,
+      set,
+      "isMessagesLoading",
+      "getMessages"
+    );
+
     try {
       const res = await axiosInstance.get(`/messages/${userId}`);
-      clearTimeout(safetyTimeout); // Clear safety timeout on success
-      
-      const messagesData = Array.isArray(res.data) ? res.data : (res.data?.messages || []);
+      clearTimeout(safetyTimeout);
+
+      const messagesData = Array.isArray(res.data)
+        ? res.data
+        : res.data?.messages || [];
       set({ messages: messagesData, isMessagesLoading: false });
-      
+
       if (__DEV__) {
-        console.log(`✅ Loaded ${messagesData.length} messages for user ${userId}`);
+        console.log(
+          `✅ Loaded ${messagesData.length} messages for user ${userId}`
+        );
       }
     } catch (error) {
-      clearTimeout(safetyTimeout); // Clear safety timeout on error
-      console.error('Error loading messages:', error);
-      
-      // Check if it's a timeout or network error - be more aggressive in detection
-      const isTimeout = error.code === 'ECONNABORTED' || 
-                       error.message?.includes('timeout') ||
-                       error.message?.includes('TIMEOUT') ||
-                       error.name === 'TimeoutError';
-      const isNetworkError = !error.response && (error.request || error.code === 'NETWORK_ERROR' || error.message?.includes('Network'));
-      const isConnectionError = error.code === 'ECONNREFUSED' || 
-                                error.code === 'ENOTFOUND' ||
-                                error.code === 'ERR_NETWORK' ||
-                                error.message?.includes('Network request failed');
-      
-      // Always clear loading state, but show empty messages on network errors
-      if (isTimeout || isNetworkError || isConnectionError) {
-        console.warn('⚠️ Network timeout or connection issue. Check backend connection.');
-        // Clear loading state immediately - don't wait
-        set({ messages: [], isMessagesLoading: false });
-      } else {
-        // For other errors, clear loading state immediately
-        set({ messages: [], isMessagesLoading: false });
-      }
-      
-      if (error.response?.status === 401) {
-        useAuthStore.getState().logout();
-      }
+      clearTimeout(safetyTimeout);
+      handleApiError(error, "loading messages", set, resetState);
     }
   },
 
   // Fetch messages for a group
   getGroupMessages: async (groupId) => {
     const authUser = useAuthStore.getState().authUser;
-    
+    const resetState = { messages: [], isMessagesLoading: false };
+
     if (!authUser || !groupId) {
-      set({ messages: [], isMessagesLoading: false });
+      set(resetState);
       return;
     }
-    
-    // Always set loading state and clear messages when fetching a new conversation
-    // This ensures we don't show stale messages from previous conversations
+
+    // Clear stale messages and show loading
     set({ isMessagesLoading: true, messages: [] });
-    
-    // Create a safety timeout that ALWAYS clears loading state after 12 seconds
-    // This prevents stuck loading in production builds where errors might not be caught
-    const safetyTimeout = setTimeout(() => {
-      const currentState = get();
-      if (currentState.isMessagesLoading) {
-        console.warn('⚠️ getGroupMessages safety timeout - force clearing loading state');
-        set({ isMessagesLoading: false });
-      }
-    }, 12000);
-    
-    // Use axios timeout (10 seconds) - don't add additional timeout race
-    // This prevents premature timeouts on slow networks
+
+    const safetyTimeout = createLoadingSafetyTimeout(
+      get,
+      set,
+      "isMessagesLoading",
+      "getGroupMessages"
+    );
+
     try {
       const res = await axiosInstance.get(`/groups/${groupId}/messages`);
-      clearTimeout(safetyTimeout); // Clear safety timeout on success
-      
-      const messagesData = Array.isArray(res.data) 
-        ? res.data 
-        : (res.data?.messages || []);
+      clearTimeout(safetyTimeout);
+
+      const messagesData = Array.isArray(res.data)
+        ? res.data
+        : res.data?.messages || [];
       set({ messages: messagesData, isMessagesLoading: false });
-      
+
       if (__DEV__) {
-        console.log(`✅ Loaded ${messagesData.length} messages for group ${groupId}`);
+        console.log(
+          `✅ Loaded ${messagesData.length} messages for group ${groupId}`
+        );
       }
     } catch (error) {
-      clearTimeout(safetyTimeout); // Clear safety timeout on error
-      console.error('Error loading group messages:', error);
-      
-      // Check if it's a timeout or network error - be more aggressive in detection
-      const isTimeout = error.code === 'ECONNABORTED' || 
-                       error.message?.includes('timeout') ||
-                       error.message?.includes('TIMEOUT') ||
-                       error.name === 'TimeoutError';
-      const isNetworkError = !error.response && (error.request || error.code === 'NETWORK_ERROR' || error.message?.includes('Network'));
-      const isConnectionError = error.code === 'ECONNREFUSED' || 
-                                error.code === 'ENOTFOUND' ||
-                                error.code === 'ERR_NETWORK' ||
-                                error.message?.includes('Network request failed');
-      
-      // Always clear loading state, but show empty messages on network errors
-      if (isTimeout || isNetworkError || isConnectionError) {
-        console.warn('⚠️ Network timeout or connection issue. Check backend connection.');
-        // Clear loading state immediately - don't wait
-        set({ messages: [], isMessagesLoading: false });
-      } else {
-        // For other errors, clear loading state immediately
-        set({ messages: [], isMessagesLoading: false });
-      }
-      
-      if (error.response?.status === 401) {
-        useAuthStore.getState().logout();
-      }
+      clearTimeout(safetyTimeout);
+      handleApiError(error, "loading group messages", set, resetState);
     }
   },
 
-  // Send message
-  sendMessage: async (receiverId, text, imageUris = [], videoUris = [], fileUris = [], audioUri = null) => {
+  // Send message with support for multiple media types
+  sendMessage: async (
+    receiverId,
+    text,
+    imageUris = [],
+    videoUris = [],
+    fileUris = [],
+    audioUri = null
+  ) => {
     const authUser = useAuthStore.getState().authUser;
     const socket = useAuthStore.getState().socket;
-    
-    // Normalize arrays
-    const images = Array.isArray(imageUris) ? imageUris : (imageUris ? [imageUris] : []);
-    const videos = Array.isArray(videoUris) ? videoUris : (videoUris ? [videoUris] : []);
-    const files = Array.isArray(fileUris) ? fileUris : (fileUris ? [fileUris] : []);
-    
-    if (!authUser || !receiverId || (!text?.trim() && images.length === 0 && videos.length === 0 && files.length === 0 && !audioUri)) {
-      throw new Error('Invalid message data');
+
+    // Normalize to arrays
+    const images = Array.isArray(imageUris)
+      ? imageUris
+      : imageUris
+      ? [imageUris]
+      : [];
+    const videos = Array.isArray(videoUris)
+      ? videoUris
+      : videoUris
+      ? [videoUris]
+      : [];
+    const files = Array.isArray(fileUris)
+      ? fileUris
+      : fileUris
+      ? [fileUris]
+      : [];
+
+    const hasContent =
+      text?.trim() ||
+      images.length ||
+      videos.length ||
+      files.length ||
+      audioUri;
+    if (!authUser || !receiverId || !hasContent) {
+      throw new Error("Invalid message data");
     }
 
-    // Send multiple messages if multiple media items
-    // First, send text message if there's text and no media, or if there are multiple media items
+    const messages = [];
     const totalMedia = images.length + videos.length + files.length;
     const shouldSendTextSeparately = text?.trim() && totalMedia > 0;
-    
+
+    // Send text separately if there are multiple media items
     if (shouldSendTextSeparately) {
       try {
-        const textRes = await axiosInstance.post(`/messages/send/${receiverId}`, { text: text.trim() });
-        const textMessage = textRes.data;
-        get().addMessage(textMessage);
-        messages.push(textMessage);
+        const res = await axiosInstance.post(`/messages/send/${receiverId}`, {
+          text: text.trim(),
+        });
+        get().addMessage(res.data);
+        messages.push(res.data);
       } catch (error) {
-        console.error('Error sending text message:', error);
+        console.error("Error sending text message:", error);
       }
     }
 
-    // Send each media item as a separate message
-    const allMedia = [
-      ...images.map(uri => ({ type: 'image', uri })),
-      ...videos.map(video => ({ type: 'video', ...video })),
-      ...files.map(file => ({ type: 'file', ...file })),
+    // Build media queue
+    const mediaQueue = [
+      ...images.map((uri) => ({ type: "image", uri })),
+      ...videos.map((video) => ({
+        type: "video",
+        ...(typeof video === "object" ? video : { uri: video }),
+      })),
+      ...files.map((file) => ({
+        type: "file",
+        ...(typeof file === "object" ? file : { uri: file }),
+      })),
     ];
 
-    // If there's only one media item and no text, include text in that message
-    if (allMedia.length === 1 && !shouldSendTextSeparately && text?.trim()) {
-      allMedia[0].text = text.trim();
+    // Include text with single media item
+    if (mediaQueue.length === 1 && !shouldSendTextSeparately && text?.trim()) {
+      mediaQueue[0].text = text.trim();
     }
 
-    // Send all media messages
-    const messages = [];
-    for (const media of allMedia) {
+    // Process media queue
+    for (const media of mediaQueue) {
       try {
-        const messageData = {};
-        
-        if (media.text) {
-          messageData.text = media.text;
+        const messageData = media.text ? { text: media.text } : {};
+
+        if (media.type === "image") {
+          messageData.image = await convertImageToBase64(media.uri);
+        } else if (media.type === "video") {
+          const { dataUri, duration } = await convertVideoToBase64(media);
+          messageData.video = dataUri;
+          if (duration) messageData.videoDuration = duration;
+        } else if (media.type === "file") {
+          const fileData = await convertFileToBase64(media);
+          Object.assign(messageData, {
+            file: fileData.dataUri,
+            fileName: fileData.fileName,
+            fileSize: fileData.fileSize,
+            fileType: fileData.fileType,
+          });
         }
 
-        if (media.type === 'image') {
-          try {
-            const base64 = await FileSystem.readAsStringAsync(media.uri, {
-              encoding: getBase64Encoding(),
-            });
-            const filename = media.uri.split('/').pop();
-            const match = /\.(\w+)$/.exec(filename);
-            const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
-            messageData.image = `data:${mimeType};base64,${base64}`;
-          } catch (imageError) {
-            console.error('Error converting image to base64:', imageError);
-            continue; // Skip this image
-          }
-        } else if (media.type === 'video') {
-          try {
-            const videoUriString = media.uri;
-            const base64 = await FileSystem.readAsStringAsync(videoUriString, {
-              encoding: getBase64Encoding(),
-            });
-            const filename = videoUriString.split('/').pop();
-            const match = /\.(\w+)$/.exec(filename);
-            const mimeType = match ? `video/${match[1]}` : 'video/mp4';
-            messageData.video = `data:${mimeType};base64,${base64}`;
-            if (media.duration) {
-              messageData.videoDuration = media.duration;
-            }
-          } catch (videoError) {
-            console.error('Error converting video to base64:', videoError);
-            continue; // Skip this video
-          }
-        } else if (media.type === 'file') {
-          try {
-            const base64 = await FileSystem.readAsStringAsync(media.uri, {
-              encoding: getBase64Encoding(),
-            });
-            const mimeType = media.mimeType || 'application/octet-stream';
-            messageData.file = `data:${mimeType};base64,${base64}`;
-            messageData.fileName = media.name || media.uri.split('/').pop();
-            messageData.fileSize = media.size || null;
-            messageData.fileType = mimeType;
-          } catch (fileError) {
-            console.error('Error converting file to base64:', fileError);
-            continue; // Skip this file
-          }
-        }
-
-        const res = await axiosInstance.post(`/messages/send/${receiverId}`, messageData);
-        const message = res.data;
-        get().addMessage(message);
-        messages.push(message);
+        const res = await axiosInstance.post(
+          `/messages/send/${receiverId}`,
+          messageData
+        );
+        get().addMessage(res.data);
+        messages.push(res.data);
       } catch (error) {
         console.error(`Error sending ${media.type}:`, error);
-        // Continue with next media item
       }
     }
 
-    // Handle audio separately (only one audio at a time)
+    // Handle audio separately
     if (audioUri) {
       try {
-        const audioMessage = await get()._sendSingleMediaMessage(receiverId, '', null, null, null, audioUri);
-        if (audioMessage) {
-          messages.push(audioMessage);
-        }
+        const audioData = await convertAudioToBase64(audioUri);
+        const res = await axiosInstance.post(`/messages/send/${receiverId}`, {
+          audio: audioData,
+        });
+        get().addMessage(res.data);
+        messages.push(res.data);
       } catch (error) {
-        console.error('Error sending audio:', error);
+        console.error("Error sending audio:", error);
       }
     }
 
-    // Emit via socket for real-time delivery (only for the last message)
-    if (socket && socket.connected && messages.length > 0) {
+    // Emit socket event for real-time delivery
+    if (socket?.connected && messages.length > 0) {
       const lastMessage = messages[messages.length - 1];
-      socket.emit('sendMessage', {
+      socket.emit("sendMessage", {
         receiverId,
         text: lastMessage.text,
         image: lastMessage.image,
@@ -786,297 +921,153 @@ export const useChatStore = create((set, get) => ({
     return messages.length > 0 ? messages : null;
   },
 
-  // Helper function to send a single media message (used internally)
-  _sendSingleMediaMessage: async (receiverId, text, imageUri = null, videoUri = null, fileUri = null, audioUri = null) => {
+  // Internal helper for single media message
+  _sendSingleMediaMessage: async (
+    receiverId,
+    text,
+    imageUri = null,
+    videoUri = null,
+    fileUri = null,
+    audioUri = null
+  ) => {
     const authUser = useAuthStore.getState().authUser;
     const socket = useAuthStore.getState().socket;
-    
-    if (!authUser || !receiverId || (!text?.trim() && !imageUri && !videoUri && !fileUri && !audioUri)) {
-      throw new Error('Invalid message data');
+
+    const hasContent =
+      text?.trim() || imageUri || videoUri || fileUri || audioUri;
+    if (!authUser || !receiverId || !hasContent) {
+      throw new Error("Invalid message data");
     }
 
     try {
-      const messageData = {};
-      
-      if (text?.trim()) {
-        messageData.text = text.trim();
-      }
-
-      if (imageUri) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(imageUri, {
-            encoding: getBase64Encoding(),
-          });
-          const filename = imageUri.split('/').pop();
-          const match = /\.(\w+)$/.exec(filename);
-          const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
-          messageData.image = `data:${mimeType};base64,${base64}`;
-        } catch (imageError) {
-          console.error('Error converting image to base64:', imageError);
-          throw new Error('Failed to process image');
-        }
-      }
-
-      if (videoUri) {
-        try {
-          const videoUriString = typeof videoUri === 'object' ? videoUri.uri : videoUri;
-          const base64 = await FileSystem.readAsStringAsync(videoUriString, {
-            encoding: getBase64Encoding(),
-          });
-          const filename = videoUriString.split('/').pop();
-          const match = /\.(\w+)$/.exec(filename);
-          const mimeType = match ? `video/${match[1]}` : 'video/mp4';
-          messageData.video = `data:${mimeType};base64,${base64}`;
-          if (typeof videoUri === 'object' && videoUri.duration) {
-            messageData.videoDuration = videoUri.duration;
-          }
-        } catch (videoError) {
-          console.error('Error converting video to base64:', videoError);
-          throw new Error('Failed to process video');
-        }
-      }
-
-      // Convert file to base64 if provided
-      if (fileUri) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(fileUri.uri, {
-            encoding: getBase64Encoding(),
-          });
-          // Create data URI for backend
-          const mimeType = fileUri.mimeType || 'application/octet-stream';
-          messageData.file = `data:${mimeType};base64,${base64}`;
-          messageData.fileName = fileUri.name || fileUri.uri.split('/').pop();
-          messageData.fileSize = fileUri.size || null;
-          messageData.fileType = mimeType;
-        } catch (fileError) {
-          console.error('Error converting file to base64:', fileError);
-          throw new Error('Failed to process file');
-        }
-      }
-
-      // Convert audio to base64 if provided
-      if (audioUri) {
-        try {
-          if (__DEV__) {
-            console.log('🎤 Converting audio to base64, URI:', audioUri);
-          }
-          
-          // Validate URI
-          if (!audioUri || typeof audioUri !== 'string') {
-            throw new Error('Invalid audio URI');
-          }
-          
-          // Check if file exists using legacy API with error handling
-          let fileInfo;
-          try {
-            fileInfo = await FileSystem.getInfoAsync(audioUri);
-          } catch (fsError) {
-            // If getInfoAsync fails, try to read directly (file might still exist)
-            console.warn('⚠️ FileSystem.getInfoAsync failed, attempting direct read:', fsError.message);
-            fileInfo = { exists: true }; // Assume exists and try to read
-          }
-          
-          if (fileInfo && !fileInfo.exists) {
-            throw new Error(`Audio file does not exist at: ${audioUri}`);
-          }
-          
-          if (fileInfo && fileInfo.size === 0) {
-            throw new Error('Audio file is empty (0 bytes)');
-          }
-          
-          if (__DEV__ && fileInfo) {
-            console.log('✅ File exists, size:', fileInfo.size, 'bytes');
-          }
-          
-          // Get encoding constant
-          const encoding = getBase64Encoding();
-          if (__DEV__) {
-            console.log('📝 Using encoding:', encoding, typeof encoding);
-          }
-          
-          // Use the same encoding approach as images/files
-          let base64;
-          try {
-            base64 = await FileSystem.readAsStringAsync(audioUri, {
-              encoding: encoding,
-            });
-          } catch (readError) {
-            console.error('❌ Error reading audio file:', readError);
-            throw new Error(`Failed to read audio file: ${readError.message}`);
-          }
-          
-          if (!base64 || base64.length === 0) {
-            throw new Error('Audio file read as empty string');
-          }
-          
-          if (__DEV__) {
-            console.log('✅ Audio converted successfully, base64 length:', base64.length);
-          }
-          
-          // Determine audio format from URI (expo-av uses .m4a on Android, .webm on some platforms)
-          let audioFormat = 'webm';
-          let codecs = 'opus';
-          const uriLower = audioUri.toLowerCase();
-          
-          if (uriLower.endsWith('.m4a') || uriLower.includes('.m4a')) {
-            audioFormat = 'm4a';
-            codecs = 'mp4a.40.2'; // AAC codec for m4a
-          } else if (uriLower.endsWith('.webm') || uriLower.includes('.webm')) {
-            audioFormat = 'webm';
-            codecs = 'opus';
-          } else if (uriLower.endsWith('.mp3') || uriLower.includes('.mp3')) {
-            audioFormat = 'mp3';
-            codecs = 'mp3';
-          } else if (uriLower.endsWith('.aac') || uriLower.includes('.aac')) {
-            audioFormat = 'aac';
-            codecs = 'mp4a.40.2';
-          }
-          
-          // Create data URI for backend
-          messageData.audio = `data:audio/${audioFormat};codecs=${codecs};base64,${base64}`;
-          
-          if (__DEV__) {
-            console.log('Audio format:', audioFormat, 'codecs:', codecs, 'data URI length:', messageData.audio.length);
-          }
-        } catch (audioError) {
-          console.error('Error converting audio to base64:', audioError);
-          console.error('Audio URI:', audioUri);
-          console.error('Error message:', audioError.message);
-          if (audioError.stack) {
-            console.error('Stack trace:', audioError.stack);
-          }
-          throw new Error(`Failed to process audio: ${audioError.message || 'Unknown error'}`);
-        }
-      }
-
-      // Backend expects: POST /api/messages/send/:id
-      const res = await axiosInstance.post(`/messages/send/${receiverId}`, messageData);
-
+      const messageData = await buildMessageData({
+        text,
+        imageUri,
+        videoUri,
+        fileUri,
+        audioUri,
+      });
+      const res = await axiosInstance.post(
+        `/messages/send/${receiverId}`,
+        messageData
+      );
       const message = res.data;
-      
-      // Add message to local state immediately
+
       get().addMessage(message);
-      
-      // Emit via socket for real-time delivery
-      if (socket && socket.connected) {
-        socket.emit('sendMessage', {
-          receiverId,
-          text: messageData.text,
-          image: messageData.image,
-          video: messageData.video,
-          file: messageData.file,
-          audio: messageData.audio,
-        });
+
+      // Emit socket event
+      if (socket?.connected) {
+        socket.emit("sendMessage", { receiverId, ...messageData });
       }
 
       return message;
     } catch (error) {
-      console.error('Error sending message:', error);
+      console.error("Error sending message:", error);
       throw error;
     }
   },
 
-  // Send group message
-  sendGroupMessage: async (groupId, text, imageUris = [], videoUris = [], fileUris = [], audioUri = null) => {
+  // Send group message with support for multiple media types
+  sendGroupMessage: async (
+    groupId,
+    text,
+    imageUris = [],
+    videoUris = [],
+    fileUris = [],
+    audioUri = null
+  ) => {
     const authUser = useAuthStore.getState().authUser;
     const socket = useAuthStore.getState().socket;
-    
-    // Normalize arrays
-    const images = Array.isArray(imageUris) ? imageUris : (imageUris ? [imageUris] : []);
-    const videos = Array.isArray(videoUris) ? videoUris : (videoUris ? [videoUris] : []);
-    const files = Array.isArray(fileUris) ? fileUris : (fileUris ? [fileUris] : []);
-    
-    if (!authUser || !groupId || (!text?.trim() && images.length === 0 && videos.length === 0 && files.length === 0 && !audioUri)) {
-      throw new Error('Invalid message data');
+
+    // Normalize to arrays
+    const images = Array.isArray(imageUris)
+      ? imageUris
+      : imageUris
+      ? [imageUris]
+      : [];
+    const videos = Array.isArray(videoUris)
+      ? videoUris
+      : videoUris
+      ? [videoUris]
+      : [];
+    const files = Array.isArray(fileUris)
+      ? fileUris
+      : fileUris
+      ? [fileUris]
+      : [];
+
+    const hasContent =
+      text?.trim() ||
+      images.length ||
+      videos.length ||
+      files.length ||
+      audioUri;
+    if (!authUser || !groupId || !hasContent) {
+      throw new Error("Invalid message data");
     }
 
-    // Send multiple messages if multiple media items
+    const messages = [];
     const totalMedia = images.length + videos.length + files.length;
     const shouldSendTextSeparately = text?.trim() && totalMedia > 0;
-    const messages = [];
-    
+
+    // Send text separately if there are multiple media items
     if (shouldSendTextSeparately) {
       try {
-        const textRes = await axiosInstance.post(`/groups/${groupId}/send`, { text: text.trim() });
-        const textMessage = textRes.data;
-        get().addMessage(textMessage);
-        messages.push(textMessage);
+        const res = await axiosInstance.post(`/groups/${groupId}/send`, {
+          text: text.trim(),
+        });
+        get().addMessage(res.data);
+        messages.push(res.data);
       } catch (error) {
-        console.error('Error sending text message:', error);
+        console.error("Error sending text message:", error);
       }
     }
 
-    // Send each media item as a separate message
-    const allMedia = [
-      ...images.map(uri => ({ type: 'image', uri })),
-      ...videos.map(video => ({ type: 'video', ...video })),
-      ...files.map(file => ({ type: 'file', ...file })),
+    // Build media queue
+    const mediaQueue = [
+      ...images.map((uri) => ({ type: "image", uri })),
+      ...videos.map((video) => ({
+        type: "video",
+        ...(typeof video === "object" ? video : { uri: video }),
+      })),
+      ...files.map((file) => ({
+        type: "file",
+        ...(typeof file === "object" ? file : { uri: file }),
+      })),
     ];
 
-    // If there's only one media item and no text, include text in that message
-    if (allMedia.length === 1 && !shouldSendTextSeparately && text?.trim()) {
-      allMedia[0].text = text.trim();
+    // Include text with single media item
+    if (mediaQueue.length === 1 && !shouldSendTextSeparately && text?.trim()) {
+      mediaQueue[0].text = text.trim();
     }
 
-    // Send all media messages
-    for (const media of allMedia) {
+    // Process media queue
+    for (const media of mediaQueue) {
       try {
-        const messageData = {};
-        
-        if (media.text) {
-          messageData.text = media.text;
+        const messageData = media.text ? { text: media.text } : {};
+
+        if (media.type === "image") {
+          messageData.image = await convertImageToBase64(media.uri);
+        } else if (media.type === "video") {
+          const { dataUri, duration } = await convertVideoToBase64(media);
+          messageData.video = dataUri;
+          if (duration) messageData.videoDuration = duration;
+        } else if (media.type === "file") {
+          const fileData = await convertFileToBase64(media);
+          Object.assign(messageData, {
+            file: fileData.dataUri,
+            fileName: fileData.fileName,
+            fileSize: fileData.fileSize,
+            fileType: fileData.fileType,
+          });
         }
 
-        if (media.type === 'image') {
-          try {
-            const base64 = await FileSystem.readAsStringAsync(media.uri, {
-              encoding: getBase64Encoding(),
-            });
-            const filename = media.uri.split('/').pop();
-            const match = /\.(\w+)$/.exec(filename);
-            const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
-            messageData.image = `data:${mimeType};base64,${base64}`;
-          } catch (imageError) {
-            console.error('Error converting image to base64:', imageError);
-            continue;
-          }
-        } else if (media.type === 'video') {
-          try {
-            const videoUriString = media.uri;
-            const base64 = await FileSystem.readAsStringAsync(videoUriString, {
-              encoding: getBase64Encoding(),
-            });
-            const filename = videoUriString.split('/').pop();
-            const match = /\.(\w+)$/.exec(filename);
-            const mimeType = match ? `video/${match[1]}` : 'video/mp4';
-            messageData.video = `data:${mimeType};base64,${base64}`;
-            if (media.duration) {
-              messageData.videoDuration = media.duration;
-            }
-          } catch (videoError) {
-            console.error('Error converting video to base64:', videoError);
-            continue;
-          }
-        } else if (media.type === 'file') {
-          try {
-            const base64 = await FileSystem.readAsStringAsync(media.uri, {
-              encoding: getBase64Encoding(),
-            });
-            const mimeType = media.mimeType || 'application/octet-stream';
-            messageData.file = `data:${mimeType};base64,${base64}`;
-            messageData.fileName = media.name || media.uri.split('/').pop();
-            messageData.fileSize = media.size || null;
-            messageData.fileType = mimeType;
-          } catch (fileError) {
-            console.error('Error converting file to base64:', fileError);
-            continue;
-          }
-        }
-
-        const res = await axiosInstance.post(`/groups/${groupId}/send`, messageData);
-        const message = res.data;
-        get().addMessage(message);
-        messages.push(message);
+        const res = await axiosInstance.post(
+          `/groups/${groupId}/send`,
+          messageData
+        );
+        get().addMessage(res.data);
+        messages.push(res.data);
       } catch (error) {
         console.error(`Error sending ${media.type}:`, error);
       }
@@ -1085,19 +1076,21 @@ export const useChatStore = create((set, get) => ({
     // Handle audio separately
     if (audioUri) {
       try {
-        const audioMessage = await get()._sendSingleGroupMessage(groupId, '', null, null, null, audioUri);
-        if (audioMessage) {
-          messages.push(audioMessage);
-        }
+        const audioData = await convertAudioToBase64(audioUri);
+        const res = await axiosInstance.post(`/groups/${groupId}/send`, {
+          audio: audioData,
+        });
+        get().addMessage(res.data);
+        messages.push(res.data);
       } catch (error) {
-        console.error('Error sending audio:', error);
+        console.error("Error sending audio:", error);
       }
     }
 
-    // Emit via socket for real-time delivery
-    if (socket && socket.connected && messages.length > 0) {
+    // Emit socket event for real-time delivery
+    if (socket?.connected && messages.length > 0) {
       const lastMessage = messages[messages.length - 1];
-      socket.emit('sendGroupMessage', {
+      socket.emit("sendGroupMessage", {
         groupId,
         text: lastMessage.text,
         image: lastMessage.image,
@@ -1110,341 +1103,48 @@ export const useChatStore = create((set, get) => ({
     return messages.length > 0 ? messages : null;
   },
 
-  // Helper function to send a single group media message (used internally)
-  _sendSingleGroupMessage: async (groupId, text, imageUri = null, videoUri = null, fileUri = null, audioUri = null) => {
+  // Internal helper for single group message
+  _sendSingleGroupMessage: async (
+    groupId,
+    text,
+    imageUri = null,
+    videoUri = null,
+    fileUri = null,
+    audioUri = null
+  ) => {
     const authUser = useAuthStore.getState().authUser;
     const socket = useAuthStore.getState().socket;
-    
-    if (!authUser || !groupId || (!text?.trim() && !imageUri && !videoUri && !fileUri && !audioUri)) {
-      throw new Error('Invalid message data');
+
+    const hasContent =
+      text?.trim() || imageUri || videoUri || fileUri || audioUri;
+    if (!authUser || !groupId || !hasContent) {
+      throw new Error("Invalid message data");
     }
 
     try {
-      const messageData = {};
-      
-      if (text?.trim()) {
-        messageData.text = text.trim();
-      }
-
-      if (imageUri) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(imageUri, {
-            encoding: getBase64Encoding(),
-          });
-          const filename = imageUri.split('/').pop();
-          const match = /\.(\w+)$/.exec(filename);
-          const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
-          messageData.image = `data:${mimeType};base64,${base64}`;
-        } catch (imageError) {
-          console.error('Error converting image to base64:', imageError);
-          throw new Error('Failed to process image');
-        }
-      }
-
-      if (videoUri) {
-        try {
-          const videoUriString = typeof videoUri === 'object' ? videoUri.uri : videoUri;
-          const base64 = await FileSystem.readAsStringAsync(videoUriString, {
-            encoding: getBase64Encoding(),
-          });
-          const filename = videoUriString.split('/').pop();
-          const match = /\.(\w+)$/.exec(filename);
-          const mimeType = match ? `video/${match[1]}` : 'video/mp4';
-          messageData.video = `data:${mimeType};base64,${base64}`;
-          if (typeof videoUri === 'object' && videoUri.duration) {
-            messageData.videoDuration = videoUri.duration;
-          }
-        } catch (videoError) {
-          console.error('Error converting video to base64:', videoError);
-          throw new Error('Failed to process video');
-        }
-      }
-
-      if (fileUri) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(fileUri.uri, {
-            encoding: getBase64Encoding(),
-          });
-          const mimeType = fileUri.mimeType || 'application/octet-stream';
-          messageData.file = `data:${mimeType};base64,${base64}`;
-          messageData.fileName = fileUri.name || fileUri.uri.split('/').pop();
-          messageData.fileSize = fileUri.size || null;
-          messageData.fileType = mimeType;
-        } catch (fileError) {
-          console.error('Error converting file to base64:', fileError);
-          throw new Error('Failed to process file');
-        }
-      }
-
-      if (audioUri) {
-        try {
-          if (__DEV__) {
-            console.log('🎤 Converting audio to base64, URI:', audioUri);
-          }
-          
-          if (!audioUri || typeof audioUri !== 'string') {
-            throw new Error('Invalid audio URI');
-          }
-          
-          let fileInfo;
-          try {
-            fileInfo = await FileSystem.getInfoAsync(audioUri);
-          } catch (fsError) {
-            console.warn('⚠️ FileSystem.getInfoAsync failed, attempting direct read:', fsError.message);
-            fileInfo = { exists: true };
-          }
-          
-          if (fileInfo && !fileInfo.exists) {
-            throw new Error(`Audio file does not exist at: ${audioUri}`);
-          }
-          
-          if (fileInfo && fileInfo.size === 0) {
-            throw new Error('Audio file is empty (0 bytes)');
-          }
-          
-          const encoding = getBase64Encoding();
-          let base64;
-          try {
-            base64 = await FileSystem.readAsStringAsync(audioUri, {
-              encoding: encoding,
-            });
-          } catch (readError) {
-            console.error('❌ Error reading audio file:', readError);
-            throw new Error(`Failed to read audio file: ${readError.message}`);
-          }
-          
-          if (!base64 || base64.length === 0) {
-            throw new Error('Audio file read as empty string');
-          }
-          
-          let audioFormat = 'webm';
-          let codecs = 'opus';
-          const uriLower = audioUri.toLowerCase();
-          
-          if (uriLower.endsWith('.m4a') || uriLower.includes('.m4a')) {
-            audioFormat = 'm4a';
-            codecs = 'mp4a.40.2';
-          } else if (uriLower.endsWith('.webm') || uriLower.includes('.webm')) {
-            audioFormat = 'webm';
-            codecs = 'opus';
-          } else if (uriLower.endsWith('.mp3') || uriLower.includes('.mp3')) {
-            audioFormat = 'mp3';
-            codecs = 'mp3';
-          } else if (uriLower.endsWith('.aac') || uriLower.includes('.aac')) {
-            audioFormat = 'aac';
-            codecs = 'mp4a.40.2';
-          }
-          
-          messageData.audio = `data:audio/${audioFormat};codecs=${codecs};base64,${base64}`;
-        } catch (audioError) {
-          console.error('Error converting audio to base64:', audioError);
-          throw new Error(`Failed to process audio: ${audioError.message || 'Unknown error'}`);
-        }
-      }
-
-      const res = await axiosInstance.post(`/groups/${groupId}/send`, messageData);
+      const messageData = await buildMessageData({
+        text,
+        imageUri,
+        videoUri,
+        fileUri,
+        audioUri,
+      });
+      const res = await axiosInstance.post(
+        `/groups/${groupId}/send`,
+        messageData
+      );
       const message = res.data;
+
       get().addMessage(message);
-      
-      if (socket && socket.connected) {
-        socket.emit('sendGroupMessage', {
-          groupId,
-          text: messageData.text,
-          image: messageData.image,
-          video: messageData.video,
-          file: messageData.file,
-          audio: messageData.audio,
-        });
+
+      // Emit socket event
+      if (socket?.connected) {
+        socket.emit("sendGroupMessage", { groupId, ...messageData });
       }
 
       return message;
     } catch (error) {
-      console.error('Error sending group message:', error);
-      throw error;
-    }
-  },
-
-    try {
-      // Backend expects text, image, video, file, audio as strings (base64 or URLs)
-      const messageData = {};
-      
-      // Only include text if it has content
-      if (text?.trim()) {
-        messageData.text = text.trim();
-      }
-
-      // Convert image to base64 if provided
-      if (imageUri) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(imageUri, {
-            encoding: getBase64Encoding(),
-          });
-          const filename = imageUri.split('/').pop();
-          const match = /\.(\w+)$/.exec(filename);
-          const mimeType = match ? `image/${match[1]}` : 'image/jpeg';
-          messageData.image = `data:${mimeType};base64,${base64}`;
-        } catch (imageError) {
-          console.error('Error converting image to base64:', imageError);
-          throw new Error('Failed to process image');
-        }
-      }
-
-      // Convert video to base64 if provided
-      if (videoUri) {
-        try {
-          const videoUriString = typeof videoUri === 'object' ? videoUri.uri : videoUri;
-          const base64 = await FileSystem.readAsStringAsync(videoUriString, {
-            encoding: getBase64Encoding(),
-          });
-          const filename = videoUriString.split('/').pop();
-          const match = /\.(\w+)$/.exec(filename);
-          const mimeType = match ? `video/${match[1]}` : 'video/mp4';
-          messageData.video = `data:${mimeType};base64,${base64}`;
-          // Include video metadata if available
-          if (typeof videoUri === 'object' && videoUri.duration) {
-            messageData.videoDuration = videoUri.duration;
-          }
-        } catch (videoError) {
-          console.error('Error converting video to base64:', videoError);
-          throw new Error('Failed to process video');
-        }
-      }
-
-      // Convert file to base64 if provided
-      if (fileUri) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(fileUri.uri, {
-            encoding: getBase64Encoding(),
-          });
-          const mimeType = fileUri.mimeType || 'application/octet-stream';
-          messageData.file = `data:${mimeType};base64,${base64}`;
-          messageData.fileName = fileUri.name || fileUri.uri.split('/').pop();
-          messageData.fileSize = fileUri.size || null;
-          messageData.fileType = mimeType;
-        } catch (fileError) {
-          console.error('Error converting file to base64:', fileError);
-          throw new Error('Failed to process file');
-        }
-      }
-
-      // Convert audio to base64 if provided
-      if (audioUri) {
-        try {
-          if (__DEV__) {
-            console.log('🎤 Converting audio to base64, URI:', audioUri);
-          }
-          
-          // Validate URI
-          if (!audioUri || typeof audioUri !== 'string') {
-            throw new Error('Invalid audio URI');
-          }
-          
-          // Check if file exists using legacy API with error handling
-          let fileInfo;
-          try {
-            fileInfo = await FileSystem.getInfoAsync(audioUri);
-          } catch (fsError) {
-            // If getInfoAsync fails, try to read directly (file might still exist)
-            console.warn('⚠️ FileSystem.getInfoAsync failed, attempting direct read:', fsError.message);
-            fileInfo = { exists: true }; // Assume exists and try to read
-          }
-          
-          if (fileInfo && !fileInfo.exists) {
-            throw new Error(`Audio file does not exist at: ${audioUri}`);
-          }
-          
-          if (fileInfo && fileInfo.size === 0) {
-            throw new Error('Audio file is empty (0 bytes)');
-          }
-          
-          if (__DEV__ && fileInfo) {
-            console.log('✅ File exists, size:', fileInfo.size, 'bytes');
-          }
-          
-          // Get encoding constant
-          const encoding = getBase64Encoding();
-          if (__DEV__) {
-            console.log('📝 Using encoding:', encoding, typeof encoding);
-          }
-          
-          // Use the same encoding approach as images/files
-          let base64;
-          try {
-            base64 = await FileSystem.readAsStringAsync(audioUri, {
-              encoding: encoding,
-            });
-          } catch (readError) {
-            console.error('❌ Error reading audio file:', readError);
-            throw new Error(`Failed to read audio file: ${readError.message}`);
-          }
-          
-          if (!base64 || base64.length === 0) {
-            throw new Error('Audio file read as empty string');
-          }
-          
-          if (__DEV__) {
-            console.log('✅ Audio converted successfully, base64 length:', base64.length);
-          }
-          
-          // Determine audio format from URI (expo-av uses .m4a on Android, .webm on some platforms)
-          let audioFormat = 'webm';
-          let codecs = 'opus';
-          const uriLower = audioUri.toLowerCase();
-          
-          if (uriLower.endsWith('.m4a') || uriLower.includes('.m4a')) {
-            audioFormat = 'm4a';
-            codecs = 'mp4a.40.2'; // AAC codec for m4a
-          } else if (uriLower.endsWith('.webm') || uriLower.includes('.webm')) {
-            audioFormat = 'webm';
-            codecs = 'opus';
-          } else if (uriLower.endsWith('.mp3') || uriLower.includes('.mp3')) {
-            audioFormat = 'mp3';
-            codecs = 'mp3';
-          } else if (uriLower.endsWith('.aac') || uriLower.includes('.aac')) {
-            audioFormat = 'aac';
-            codecs = 'mp4a.40.2';
-          }
-          
-          // Create data URI for backend
-          messageData.audio = `data:audio/${audioFormat};codecs=${codecs};base64,${base64}`;
-          
-          if (__DEV__) {
-            console.log('Audio format:', audioFormat, 'codecs:', codecs, 'data URI length:', messageData.audio.length);
-          }
-        } catch (audioError) {
-          console.error('Error converting audio to base64:', audioError);
-          console.error('Audio URI:', audioUri);
-          console.error('Error message:', audioError.message);
-          if (audioError.stack) {
-            console.error('Stack trace:', audioError.stack);
-          }
-          throw new Error(`Failed to process audio: ${audioError.message || 'Unknown error'}`);
-        }
-      }
-
-      // Backend expects: POST /api/groups/:id/send
-      const res = await axiosInstance.post(`/groups/${groupId}/send`, messageData);
-
-      const message = res.data;
-      
-      // Add message to local state immediately
-      get().addMessage(message);
-      
-      // Emit via socket for real-time delivery
-      if (socket && socket.connected) {
-        socket.emit('sendGroupMessage', {
-          groupId,
-          text: messageData.text,
-          image: messageData.image,
-          video: messageData.video,
-          file: messageData.file,
-          audio: messageData.audio,
-        });
-      }
-
-      return message;
-    } catch (error) {
-      console.error('Error sending group message:', error);
+      console.error("Error sending group message:", error);
       throw error;
     }
   },
@@ -1453,9 +1153,9 @@ export const useChatStore = create((set, get) => ({
   editMessage: async (messageId, text) => {
     const authUser = useAuthStore.getState().authUser;
     const socket = useAuthStore.getState().socket;
-    
+
     if (!authUser || !messageId || !text?.trim()) {
-      throw new Error('Invalid message data');
+      throw new Error("Invalid message data");
     }
 
     try {
@@ -1464,17 +1164,17 @@ export const useChatStore = create((set, get) => ({
       });
 
       const updatedMessage = res.data;
-      
+
       // Update message in local state
       set((state) => ({
-        messages: state.messages.map(msg => 
+        messages: state.messages.map((msg) =>
           msg._id?.toString() === messageId ? updatedMessage : msg
         ),
       }));
 
       // Emit via socket
       if (socket && socket.connected) {
-        socket.emit('editMessage', {
+        socket.emit("editMessage", {
           messageId,
           text: text.trim(),
         });
@@ -1482,7 +1182,7 @@ export const useChatStore = create((set, get) => ({
 
       return updatedMessage;
     } catch (error) {
-      console.error('Error editing message:', error);
+      console.error("Error editing message:", error);
       throw error;
     }
   },
@@ -1491,25 +1191,27 @@ export const useChatStore = create((set, get) => ({
   deleteMessage: async (messageId) => {
     const authUser = useAuthStore.getState().authUser;
     const socket = useAuthStore.getState().socket;
-    
+
     if (!authUser || !messageId) {
-      throw new Error('Invalid message data');
+      throw new Error("Invalid message data");
     }
 
     try {
       await axiosInstance.delete(`/messages/${messageId}`);
-      
+
       // Remove message from local state
       set((state) => ({
-        messages: state.messages.filter(msg => msg._id?.toString() !== messageId),
+        messages: state.messages.filter(
+          (msg) => msg._id?.toString() !== messageId
+        ),
       }));
 
       // Emit via socket
       if (socket && socket.connected) {
-        socket.emit('deleteMessage', { messageId });
+        socket.emit("deleteMessage", { messageId });
       }
     } catch (error) {
-      console.error('Error deleting message:', error);
+      console.error("Error deleting message:", error);
       throw error;
     }
   },
@@ -1519,36 +1221,36 @@ export const useChatStore = create((set, get) => ({
     const socket = useAuthStore.getState().socket;
     if (!socket) {
       if (__DEV__) {
-        console.log('⚠️ subscribeToMessages: No socket available');
+        console.log("⚠️ subscribeToMessages: No socket available");
       }
       return () => {}; // Return empty cleanup function
     }
 
     if (__DEV__) {
-      console.log('✅ Setting up socket listeners for real-time messages');
+      console.log("✅ Setting up socket listeners for real-time messages");
     }
 
     // Remove existing listeners first to prevent duplicates (like web)
-    socket.off('newMessage');
-    socket.off('messageSeenUpdate');
-    socket.off('messageEdited');
-    socket.off('messageDeleted');
-    socket.off('conversationDeleted');
-    socket.off('messageReactionAdded');
-    socket.off('messageReactionRemoved');
-    socket.off('reaction-update');
+    socket.off("newMessage");
+    socket.off("messageSeenUpdate");
+    socket.off("messageEdited");
+    socket.off("messageDeleted");
+    socket.off("conversationDeleted");
+    socket.off("messageReactionAdded");
+    socket.off("messageReactionRemoved");
+    socket.off("reaction-update");
 
     // Normalize ID helper
     const normalizeId = (id) => {
       if (!id) return null;
-      if (typeof id === 'string') return id;
-      if (typeof id === 'object' && id._id) return id._id.toString();
+      if (typeof id === "string") return id;
+      if (typeof id === "object" && id._id) return id._id.toString();
       return id?.toString();
     };
 
     const handleNewMessage = (message) => {
       // Always log in production too (for debugging real-time issues)
-      console.log('📨 New message received (global):', {
+      console.log("📨 New message received (global):", {
         messageId: message._id,
         senderId: message.senderId || message.sender?._id,
         receiverId: message.receiverId || message.receiver?._id,
@@ -1556,22 +1258,24 @@ export const useChatStore = create((set, get) => ({
         hasSocket: !!socket,
         socketConnected: socket?.connected,
       });
-      
+
       const authUser = useAuthStore.getState().authUser;
       if (!authUser || !authUser._id) {
-        console.warn('⚠️ No authUser in handleNewMessage');
+        console.warn("⚠️ No authUser in handleNewMessage");
         return;
       }
-      
+
       const authUserId = normalizeId(authUser._id);
       const senderId = normalizeId(message.senderId || message.sender?._id);
-      const receiverId = normalizeId(message.receiverId || message.receiver?._id);
-      
+      const receiverId = normalizeId(
+        message.receiverId || message.receiver?._id
+      );
+
       if (!senderId || !receiverId) return;
-      
+
       // Determine the other user (not the current user)
       const otherUserId = senderId === authUserId ? receiverId : senderId;
-      
+
       // IMPORTANT: Always update lastMessages for chat list
       // Also add to messages array if it matches current conversation
       // ConversationScreen will also handle adding, but this ensures it works even if ConversationScreen handler fails
@@ -1581,7 +1285,7 @@ export const useChatStore = create((set, get) => ({
           ...state.lastMessages,
           [otherUserId]: message,
         };
-        
+
         // Check if this message should be added to messages array
         // This happens if:
         // 1. It's for the currently selected user/group, OR
@@ -1589,7 +1293,7 @@ export const useChatStore = create((set, get) => ({
         const currentSelectedUser = state.selectedUser;
         const currentSelectedGroup = state.selectedGroup;
         let shouldAddToMessages = false;
-        
+
         // Check if it's a group message for selected group
         if (currentSelectedGroup && message.groupId) {
           const msgGroupId = normalizeId(message.groupId);
@@ -1609,36 +1313,43 @@ export const useChatStore = create((set, get) => ({
         // This handles case where selectedUser might not be set but we're viewing a conversation
         else if (state.messages.length > 0) {
           // Check if any existing message in array is from/to this user
-          const hasConversationWithUser = state.messages.some(msg => {
+          const hasConversationWithUser = state.messages.some((msg) => {
             const msgSenderId = normalizeId(msg.senderId || msg.sender?._id);
-            const msgReceiverId = normalizeId(msg.receiverId || msg.receiver?._id);
-            return (msgSenderId === otherUserId || msgReceiverId === otherUserId) &&
-                   (msgSenderId === authUserId || msgReceiverId === authUserId);
+            const msgReceiverId = normalizeId(
+              msg.receiverId || msg.receiver?._id
+            );
+            return (
+              (msgSenderId === otherUserId || msgReceiverId === otherUserId) &&
+              (msgSenderId === authUserId || msgReceiverId === authUserId)
+            );
           });
           if (hasConversationWithUser) {
             shouldAddToMessages = true;
           }
         }
-        
+
         // Only add to messages array if it's for the current conversation
         let updatedMessages = state.messages;
         if (shouldAddToMessages) {
           const messageExists = state.messages.some(
-            msg => normalizeId(msg._id) === normalizeId(message._id)
+            (msg) => normalizeId(msg._id) === normalizeId(message._id)
           );
           if (!messageExists) {
             updatedMessages = [...state.messages, message];
             if (__DEV__) {
-              console.log('✅ Added message to array (global handler):', message._id);
+              console.log(
+                "✅ Added message to array (global handler):",
+                message._id
+              );
             }
           } else {
             // Update existing message
-            updatedMessages = state.messages.map(msg => 
+            updatedMessages = state.messages.map((msg) =>
               normalizeId(msg._id) === normalizeId(message._id) ? message : msg
             );
           }
         }
-        
+
         return {
           messages: updatedMessages,
           lastMessages: updatedLastMessages,
@@ -1648,19 +1359,24 @@ export const useChatStore = create((set, get) => ({
 
     const handleMessageSeenUpdate = ({ messageId, seenAt }) => {
       if (__DEV__) {
-        console.log('👁️ Message seen update:', { messageId, seenAt });
+        console.log("👁️ Message seen update:", { messageId, seenAt });
       }
       get().updateMessageSeen(messageId, seenAt);
     };
 
     const handleMessageEdited = (editedMessage) => {
       if (__DEV__) {
-        console.log('📝 Message edited:', editedMessage);
+        console.log("📝 Message edited:", editedMessage);
       }
       set((state) => ({
         messages: state.messages.map((msg) =>
           msg._id?.toString() === editedMessage._id?.toString()
-            ? { ...msg, text: editedMessage.text, edited: true, editedAt: editedMessage.editedAt }
+            ? {
+                ...msg,
+                text: editedMessage.text,
+                edited: true,
+                editedAt: editedMessage.editedAt,
+              }
             : msg
         ),
         // Also update last message if it's the edited one
@@ -1668,8 +1384,13 @@ export const useChatStore = create((set, get) => ({
           Object.entries(state.lastMessages).map(([userId, lastMsg]) => [
             userId,
             lastMsg._id?.toString() === editedMessage._id?.toString()
-              ? { ...lastMsg, text: editedMessage.text, edited: true, editedAt: editedMessage.editedAt }
-              : lastMsg
+              ? {
+                  ...lastMsg,
+                  text: editedMessage.text,
+                  edited: true,
+                  editedAt: editedMessage.editedAt,
+                }
+              : lastMsg,
           ])
         ),
       }));
@@ -1677,36 +1398,72 @@ export const useChatStore = create((set, get) => ({
 
     const handleMessageDeleted = ({ messageId }) => {
       if (__DEV__) {
-        console.log('🗑️ Message deleted:', messageId);
+        console.log("🗑️ Message deleted:", messageId);
       }
       set((state) => ({
-        messages: state.messages.filter((msg) => msg._id?.toString() !== messageId?.toString()),
+        messages: state.messages.filter(
+          (msg) => msg._id?.toString() !== messageId?.toString()
+        ),
         // Also remove from last messages if it's the deleted one
         lastMessages: Object.fromEntries(
-          Object.entries(state.lastMessages).map(([userId, lastMsg]) => [
-            userId,
-            lastMsg._id?.toString() === messageId?.toString() ? null : lastMsg
-          ]).filter(([_, msg]) => msg !== null)
+          Object.entries(state.lastMessages)
+            .map(([userId, lastMsg]) => [
+              userId,
+              lastMsg._id?.toString() === messageId?.toString()
+                ? null
+                : lastMsg,
+            ])
+            .filter(([_, msg]) => msg !== null)
         ),
       }));
     };
 
     const handleConversationDeleted = ({ userId }) => {
       if (__DEV__) {
-        console.log('🗑️ Conversation deleted:', userId);
+        console.log("🗑️ Conversation deleted:", userId);
       }
       const normalizedUserId = normalizeId(userId);
       set((state) => ({
         lastMessages: Object.fromEntries(
-          Object.entries(state.lastMessages).filter(([key]) => normalizeId(key) !== normalizedUserId)
+          Object.entries(state.lastMessages).filter(
+            ([key]) => normalizeId(key) !== normalizedUserId
+          )
         ),
       }));
     };
 
-    const handleMessageReactionAdded = ({ messageId, reaction, userId }) => {
+    const handleMessageReactionAdded = ({
+      messageId,
+      reaction,
+      emoji,
+      userId,
+      reactions,
+    }) => {
       if (__DEV__) {
-        console.log('👍 Reaction added:', { messageId, reaction, userId });
+        console.log("👍 Reaction added:", {
+          messageId,
+          reaction,
+          emoji,
+          userId,
+          reactions,
+        });
       }
+
+      // If reactions array is provided (from reaction-update), use it directly
+      if (reactions && Array.isArray(reactions)) {
+        set((state) => ({
+          messages: state.messages.map((msg) => {
+            if (msg._id?.toString() === messageId?.toString()) {
+              return { ...msg, reactions: reactions };
+            }
+            return msg;
+          }),
+        }));
+        return;
+      }
+
+      // Legacy handling for individual reaction
+      const emojiToAdd = emoji || reaction;
       set((state) => ({
         messages: state.messages.map((msg) => {
           if (msg._id?.toString() === messageId?.toString()) {
@@ -1714,15 +1471,29 @@ export const useChatStore = create((set, get) => ({
             const existingReactionIndex = reactions.findIndex(
               (r) => r.userId?.toString() === userId?.toString()
             );
-            
+
             if (existingReactionIndex >= 0) {
               // Update existing reaction
               const updatedReactions = [...reactions];
-              updatedReactions[existingReactionIndex] = { userId, reaction };
+              updatedReactions[existingReactionIndex] = {
+                userId,
+                emoji: emojiToAdd,
+                createdAt: new Date().toISOString(),
+              };
               return { ...msg, reactions: updatedReactions };
             } else {
               // Add new reaction
-              return { ...msg, reactions: [...reactions, { userId, reaction }] };
+              return {
+                ...msg,
+                reactions: [
+                  ...reactions,
+                  {
+                    userId,
+                    emoji: emojiToAdd,
+                    createdAt: new Date().toISOString(),
+                  },
+                ],
+              };
             }
           }
           return msg;
@@ -1730,10 +1501,25 @@ export const useChatStore = create((set, get) => ({
       }));
     };
 
-    const handleMessageReactionRemoved = ({ messageId, userId }) => {
+    const handleMessageReactionRemoved = ({ messageId, userId, reactions }) => {
       if (__DEV__) {
-        console.log('👎 Reaction removed:', { messageId, userId });
+        console.log("👎 Reaction removed:", { messageId, userId, reactions });
       }
+
+      // If reactions array is provided (from reaction-update), use it directly
+      if (reactions && Array.isArray(reactions)) {
+        set((state) => ({
+          messages: state.messages.map((msg) => {
+            if (msg._id?.toString() === messageId?.toString()) {
+              return { ...msg, reactions: reactions };
+            }
+            return msg;
+          }),
+        }));
+        return;
+      }
+
+      // Legacy handling for individual reaction removal
       set((state) => ({
         messages: state.messages.map((msg) => {
           if (msg._id?.toString() === messageId?.toString()) {
@@ -1748,48 +1534,80 @@ export const useChatStore = create((set, get) => ({
     };
 
     // Register all event listeners
-    socket.on('newMessage', handleNewMessage);
-    socket.on('messageSeenUpdate', handleMessageSeenUpdate);
-    socket.on('messageEdited', handleMessageEdited);
-    socket.on('messageDeleted', handleMessageDeleted);
-    socket.on('conversationDeleted', handleConversationDeleted);
-    socket.on('messageReactionAdded', handleMessageReactionAdded);
-    socket.on('messageReactionRemoved', handleMessageReactionRemoved);
-    socket.on('reaction-update', (data) => {
-      // Handle reaction-update event (might be used for group reactions)
-      if (data.type === 'add') {
-        handleMessageReactionAdded(data);
-      } else if (data.type === 'remove') {
-        handleMessageReactionRemoved(data);
+    socket.on("newMessage", handleNewMessage);
+    socket.on("messageSeenUpdate", handleMessageSeenUpdate);
+    socket.on("messageEdited", handleMessageEdited);
+    socket.on("messageDeleted", handleMessageDeleted);
+    socket.on("conversationDeleted", handleConversationDeleted);
+    socket.on("messageReactionAdded", handleMessageReactionAdded);
+    socket.on("messageReactionRemoved", handleMessageReactionRemoved);
+    socket.on("reaction-update", (data) => {
+      if (__DEV__) {
+        console.log("⚡ Reaction update received:", data);
       }
+
+      // Backend sends: { messageId, reactions, message, actionType, userId }
+      // actionType can be 'added' or 'removed'
+
+      // Update the message with the new reactions array
+      set((state) => ({
+        messages: state.messages.map((msg) => {
+          if (msg._id?.toString() === data.messageId?.toString()) {
+            return {
+              ...msg,
+              reactions: data.reactions || [],
+            };
+          }
+          return msg;
+        }),
+        // Also update last messages if it's there
+        lastMessages: Object.fromEntries(
+          Object.entries(state.lastMessages).map(([userId, lastMsg]) => [
+            userId,
+            lastMsg._id?.toString() === data.messageId?.toString()
+              ? { ...lastMsg, reactions: data.reactions || [] }
+              : lastMsg,
+          ])
+        ),
+        lastGroupMessages: Object.fromEntries(
+          Object.entries(state.lastGroupMessages).map(([groupId, lastMsg]) => [
+            groupId,
+            lastMsg._id?.toString() === data.messageId?.toString()
+              ? { ...lastMsg, reactions: data.reactions || [] }
+              : lastMsg,
+          ])
+        ),
+      }));
     });
-    
+
     // Debug: Verify socket connection and listeners
-    console.log('🔌 Socket connection status:', {
+    console.log("🔌 Socket connection status:", {
       connected: socket.connected,
       id: socket.id,
       disconnected: socket.disconnected,
     });
-    
+
     // Verify socket is actually connected
     if (!socket.connected) {
-      console.warn('⚠️ Socket is not connected! Real-time messages will not work.');
-      console.warn('   Attempting to reconnect...');
+      console.warn(
+        "⚠️ Socket is not connected! Real-time messages will not work."
+      );
+      console.warn("   Attempting to reconnect...");
       socket.connect();
     }
 
     // Return cleanup function
     return () => {
-      socket.off('newMessage', handleNewMessage);
-      socket.off('messageSeenUpdate', handleMessageSeenUpdate);
-      socket.off('messageEdited', handleMessageEdited);
-      socket.off('messageDeleted', handleMessageDeleted);
-      socket.off('conversationDeleted', handleConversationDeleted);
-      socket.off('messageReactionAdded', handleMessageReactionAdded);
-      socket.off('messageReactionRemoved', handleMessageReactionRemoved);
-      socket.off('reaction-update');
+      socket.off("newMessage", handleNewMessage);
+      socket.off("messageSeenUpdate", handleMessageSeenUpdate);
+      socket.off("messageEdited", handleMessageEdited);
+      socket.off("messageDeleted", handleMessageDeleted);
+      socket.off("conversationDeleted", handleConversationDeleted);
+      socket.off("messageReactionAdded", handleMessageReactionAdded);
+      socket.off("messageReactionRemoved", handleMessageReactionRemoved);
+      socket.off("reaction-update");
       if (__DEV__) {
-        console.log('🧹 Cleaned up socket listeners for messages');
+        console.log("🧹 Cleaned up socket listeners for messages");
       }
     };
   },
@@ -1820,86 +1638,80 @@ export const useChatStore = create((set, get) => ({
   unsubscribeFromMessages: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
-    
+
     // Remove all message-related listeners
-    socket.off('newMessage');
-    socket.off('messageSeenUpdate');
-    socket.off('messageEdited');
-    socket.off('messageDeleted');
-    socket.off('conversationDeleted');
-    socket.off('messageReactionAdded');
-    socket.off('messageReactionRemoved');
-    socket.off('reaction-update');
-    
+    socket.off("newMessage");
+    socket.off("messageSeenUpdate");
+    socket.off("messageEdited");
+    socket.off("messageDeleted");
+    socket.off("conversationDeleted");
+    socket.off("messageReactionAdded");
+    socket.off("messageReactionRemoved");
+    socket.off("reaction-update");
+
     if (__DEV__) {
-      console.log('🧹 Unsubscribed from all message socket events');
+      console.log("🧹 Unsubscribed from all message socket events");
     }
   },
 
   // Update group info
   updateGroupInfo: async (groupId, groupData) => {
+    if (!groupId || !groupData) {
+      throw new Error("Group ID and data are required");
+    }
+
     try {
       const res = await axiosInstance.put(`/groups/${groupId}/info`, groupData);
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
-      
+      const groupIdStr = normalizeId(groupId);
+
       set((state) => ({
-        groups: state.groups.map((g) => {
-          const gId = normalizeId(g._id);
-          const groupIdStr = normalizeId(groupId);
-          return gId === groupIdStr ? res.data : g;
-        }),
-        selectedGroup: state.selectedGroup && (normalizeId(state.selectedGroup._id) === normalizeId(groupId))
-          ? res.data
-          : state.selectedGroup
+        groups: state.groups.map((g) =>
+          normalizeId(g._id) === groupIdStr ? res.data : g
+        ),
+        selectedGroup:
+          state.selectedGroup &&
+          normalizeId(state.selectedGroup._id) === groupIdStr
+            ? res.data
+            : state.selectedGroup,
       }));
-      
+
       return res.data;
     } catch (error) {
-      console.error('Error updating group info:', error);
+      console.error("Error updating group info:", error);
       throw error;
     }
   },
 
   // Leave group
   leaveGroup: async (groupId) => {
+    if (!groupId) {
+      throw new Error("Group ID is required");
+    }
+
     try {
       await axiosInstance.post(`/groups/${groupId}/leave`);
-      
-      const normalizeId = (id) => {
-        if (!id) return null;
-        if (typeof id === 'string') return id;
-        if (typeof id === 'object' && id._id) return id._id.toString();
-        return id.toString();
-      };
-
       const groupIdStr = normalizeId(groupId);
 
-      // Remove group from groups array
       set((state) => {
-        const updatedGroups = state.groups.filter((group) => {
-          const gId = normalizeId(group._id);
-          return gId !== groupIdStr;
-        });
+        const updatedGroups = state.groups.filter(
+          (group) => normalizeId(group._id) !== groupIdStr
+        );
 
-        // Remove from lastGroupMessages
-        const updatedLastGroupMessages = { ...state.lastGroupMessages };
-        delete updatedLastGroupMessages[groupIdStr];
+        const { [groupIdStr]: removed, ...updatedLastGroupMessages } =
+          state.lastGroupMessages;
 
         return {
           groups: updatedGroups,
           lastGroupMessages: updatedLastGroupMessages,
-          selectedGroup: state.selectedGroup && (normalizeId(state.selectedGroup._id) === groupIdStr)
-            ? null
-            : state.selectedGroup
+          selectedGroup:
+            state.selectedGroup &&
+            normalizeId(state.selectedGroup._id) === groupIdStr
+              ? null
+              : state.selectedGroup,
         };
       });
     } catch (error) {
-      console.error('Error leaving group:', error);
+      console.error("Error leaving group:", error);
       throw error;
     }
   },

@@ -13,18 +13,18 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: function() {
+      required: function () {
         return !this.googleId; // Password not required if user signed up with Google
       },
       validate: {
-        validator: function(value) {
+        validator: function (value) {
           // If googleId exists, password is optional (can be empty)
           if (this.googleId) return true;
           // If no googleId, password must exist and be at least 6 characters
           return value && value.length >= 6;
         },
-        message: 'Password must be at least 6 characters'
-      }
+        message: "Password must be at least 6 characters",
+      },
     },
     googleId: {
       type: String,
@@ -34,6 +34,35 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    pushTokens: [
+      {
+        token: {
+          type: String,
+          required: true,
+        },
+        platform: {
+          type: String,
+          enum: ["ios", "android"],
+          required: true,
+        },
+        userAgent: {
+          type: String,
+          default: "Unknown",
+        },
+        deviceInfo: {
+          type: mongoose.Schema.Types.Mixed,
+          default: {},
+        },
+        lastUsed: {
+          type: Date,
+          default: Date.now,
+        },
+        createdAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
   },
   { timestamps: true }
 );

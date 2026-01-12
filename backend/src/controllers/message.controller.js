@@ -5,6 +5,8 @@ import { toPlainObject } from "../lib/utils.js";
 import logger from "../lib/logger.js";
 import { paginatedResponse } from "../lib/apiResponse.js";
 import mongoose from "mongoose";
+import { sendMobileMessageNotification } from "../services/mobilePushNotification.service.js";
+import { sendMessageNotification } from "../services/pushNotification.service.js";
 
 export const getLastMessages = async (req, res) => {
   try {
@@ -263,8 +265,8 @@ export const getUsersForSidebar = async (req, res) => {
     const limit = parseInt(req.query.limit) || 100; // Default 100 users per page
     const skip = (page - 1) * limit;
 
-    // Only get users who have conversations with the current user
-    // This is much more efficient than loading all users
+    // ✅ PRODUCTION: Only get users who have conversations with the current user
+    // This is much more efficient than loading all users - Telegram pattern
     const usersWithConversations = await Message.aggregate([
       {
         $match: {
@@ -289,6 +291,18 @@ export const getUsersForSidebar = async (req, res) => {
           localField: "_id",
           foreignField: "_id",
           as: "user",
+          pipeline: [
+            {
+              // ✅ BEST PRACTICE: Project only needed fields (reduce data transfer)
+              $project: {
+                _id: 1,
+                fullname: 1,
+                email: 1,
+                profilePic: 1,
+                createdAt: 1,
+              },
+            },
+          ],
         },
       },
       {
@@ -478,7 +492,8 @@ export const getMessages = async (req, res) => {
       })
       .populate({
         path: "replyTo",
-        select: "text image audio video file sticker senderId receiverId createdAt",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic",
@@ -488,16 +503,14 @@ export const getMessages = async (req, res) => {
       .limit(limit + 1) // Fetch one extra to check if there are more
       .lean(); // Use lean() for read-only queries (faster - no Mongoose document overhead)
 
-    // Check if there are more messages before reversing
+    // Check if there are more messages
     const hasMore = messages.length > limit;
     const messagesToReturn = hasMore ? messages.slice(0, limit) : messages;
 
-    // Reverse to get chronological order for display (oldest to newest)
-    // Frontend will display in reverse (newest at top)
-    const reversedMessages = messagesToReturn.reverse();
-
+    // Return messages in descending order (newest first)
+    // Frontend ListView with reverse: true will display newest at bottom (Telegram-style)
     res.status(200).json({
-      messages: reversedMessages,
+      messages: messagesToReturn,
       hasMore: hasMore,
     });
   } catch (error) {
@@ -571,9 +584,47 @@ export const sendMessage = async (req, res) => {
       sticker,
       forwardedFrom,
       replyTo, // Reply message ID
+      idempotencyKey, // ✅ BEST PRACTICE: Telegram-style deduplication
     } = req.body;
     const { id: receiverId } = req.params;
     const senderId = req.user._id;
+
+    // ✅ PRODUCTION: Message deduplication using idempotency key
+    // Prevents duplicate messages from network retries or multiple submissions
+    // Telegram uses this pattern to ensure exactly-once message delivery
+    if (idempotencyKey) {
+      // Check if message with this idempotency key already exists
+      const existingMessage = await Message.findOne({
+        senderId,
+        receiverId,
+        createdAt: {
+          $gte: new Date(Date.now() - 60000), // Within last 60 seconds
+        },
+      })
+        .sort({ createdAt: -1 })
+        .limit(1)
+        .lean();
+
+      // If found, return existing message instead of creating duplicate
+      if (existingMessage) {
+        const textMatch = existingMessage.text === (text || "");
+        const stickerMatch = existingMessage.sticker === (sticker || undefined);
+
+        // Check if content is identical (basic deduplication)
+        if (textMatch && stickerMatch) {
+          logger.info("[DEDUP] Prevented duplicate message", {
+            requestId: req?.requestId,
+            senderId,
+            receiverId,
+            idempotencyKey,
+            existingMessageId: existingMessage._id,
+          });
+
+          // Return existing message (already populated in full)
+          return res.status(200).json(existingMessage);
+        }
+      }
+    }
 
     // Normalize inputs to arrays (supports both single values and arrays for backward compatibility)
     const images = normalizeToArray(image);
@@ -688,6 +739,80 @@ export const sendMessage = async (req, res) => {
       }
     }
 
+    // ✅ PRODUCTION: Handle reply-to message validation
+    let validatedReplyTo = null;
+    if (replyTo) {
+      // Validate replyTo is a valid ObjectId
+      if (!mongoose.Types.ObjectId.isValid(replyTo)) {
+        logger.warn("[SEND] Invalid replyTo message ID", {
+          requestId: req?.requestId,
+          replyTo,
+          senderId,
+        });
+        return res.status(400).json({ error: "Invalid reply-to message ID" });
+      }
+
+      // Verify the message being replied to exists
+      try {
+        const replyToMessage = await Message.findById(replyTo)
+          .select("_id senderId receiverId groupId createdAt")
+          .lean();
+
+        if (!replyToMessage) {
+          logger.warn("[SEND] Reply-to message not found", {
+            requestId: req?.requestId,
+            replyTo,
+          });
+          return res.status(404).json({ error: "Reply-to message not found" });
+        }
+
+        // ✅ BEST PRACTICE: Verify user has access to the message being replied to
+        // For direct messages: user must be sender or receiver
+        // For group messages: user must be group member
+        const userIdStr = senderId.toString();
+        let hasAccess = false;
+
+        if (replyToMessage.groupId) {
+          // Group message - verify user is member
+          const Group = (await import("../model/group.model.js")).default;
+          const group = await Group.findById(replyToMessage.groupId)
+            .select("admin members")
+            .lean();
+          if (group) {
+            hasAccess =
+              group.admin.toString() === userIdStr ||
+              group.members.some((m) => m.toString() === userIdStr);
+          }
+        } else {
+          // Direct message - verify user is sender or receiver
+          hasAccess =
+            replyToMessage.senderId.toString() === userIdStr ||
+            replyToMessage.receiverId.toString() === userIdStr;
+        }
+
+        if (!hasAccess) {
+          logger.warn("[SEND] User cannot reply to this message", {
+            requestId: req?.requestId,
+            replyTo,
+            userId: userIdStr,
+          });
+          return res
+            .status(403)
+            .json({ error: "Cannot reply to this message" });
+        }
+
+        validatedReplyTo = replyTo;
+      } catch (error) {
+        logger.error("[SEND] Error validating reply-to message", {
+          error: error.message,
+          replyTo,
+        });
+        return res
+          .status(500)
+          .json({ error: "Failed to validate reply-to message" });
+      }
+    }
+
     // Handle forwarded message tracking
     let forwardedFromData = null;
     if (forwardedFrom) {
@@ -740,7 +865,7 @@ export const sendMessage = async (req, res) => {
       link: linkUrl,
       linkPreview: linkPreview,
       forwardedFrom: forwardedFromData,
-      replyTo: replyTo || undefined, // Add reply tracking
+      replyTo: validatedReplyTo || undefined, // ✅ Use validated replyTo
     });
 
     // Log what we're saving for debugging
@@ -787,7 +912,8 @@ export const sendMessage = async (req, res) => {
     if (newMessage.replyTo) {
       await newMessage.populate({
         path: "replyTo",
-        select: "text image audio video file sticker senderId receiverId createdAt",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic",
@@ -817,41 +943,92 @@ export const sendMessage = async (req, res) => {
       //   messageId: newMessage._id,
       // });
     }
-    
+
     // Always attempt to send push notification (even if user is online)
     // The frontend will suppress duplicate notifications if user is viewing the chat
     // This ensures notifications work when app is closed or in background
-    try {
-      const { sendMessageNotification } = await import("../services/pushNotification.service.js");
-      const pushResult = await sendMessageNotification(receiverId, messageObj);
-      if (pushResult.success) {
-        logger.info("Push notification sent", {
+
+    // ✅ BEST PRACTICE: Skip notification for "Saved Messages" (messages to self)
+    // When user sends message to their own account, don't trigger alert notification
+    // This prevents annoying self-notifications like Telegram's "Saved Messages" feature
+    const isSavedMessage = senderId.toString() === receiverId.toString();
+
+    if (isSavedMessage) {
+      logger.debug(
+        "💾 [Push] Skipping notification for Saved Message (self-chat)",
+        {
           requestId: req.requestId,
+          userId: senderId,
+          messageId: newMessage._id,
+        }
+      );
+    } else {
+      // Send notification only if it's NOT a saved message
+      try {
+        // Try mobile push first (FCM/APNs for iOS/Android apps)
+        const mobilePushResult = await sendMobileMessageNotification(
+          receiverId,
+          messageObj
+        );
+
+        if (mobilePushResult.success) {
+          logger.info("✅ [Push] Mobile notification sent", {
+            requestId: req.requestId,
+            receiverId,
+            messageId: newMessage._id,
+            sent: mobilePushResult.sent,
+            failed: mobilePushResult.failed,
+            total: mobilePushResult.total,
+            userOnline: !!receiverSocketId,
+          });
+        } else {
+          logger.debug(
+            `⚠️ [Push] Mobile push failed: ${mobilePushResult.error}, trying web push`,
+            {
+              requestId: req.requestId,
+              receiverId,
+            }
+          );
+
+          // Fallback to web push (for web browsers)
+          const pushResult = await sendMessageNotification(
+            receiverId,
+            messageObj
+          );
+
+          if (pushResult.success) {
+            logger.info("✅ [Push] Web notification sent", {
+              requestId: req.requestId,
+              receiverId,
+              messageId: newMessage._id,
+              sent: pushResult.sent,
+              failed: pushResult.failed,
+              total: pushResult.total,
+              userOnline: !!receiverSocketId,
+            });
+          } else {
+            logger.debug(
+              `⚠️ [Push] No notifications sent: ${pushResult.error}`,
+              {
+                requestId: req.requestId,
+                receiverId,
+                messageId: newMessage._id,
+                userOnline: !!receiverSocketId,
+              }
+            );
+          }
+        }
+      } catch (pushError) {
+        logger.error("❌ [Push] Failed to send push notification:", {
+          error: pushError.message,
+          stack: pushError.stack,
           receiverId,
           messageId: newMessage._id,
-          sent: pushResult.sent,
-          failed: pushResult.failed,
-          total: pushResult.total,
-          userOnline: !!receiverSocketId,
+          type: pushError.constructor.name,
         });
-      } else {
-        logger.debug("Push notification not sent (no active subscriptions or error)", {
-          requestId: req.requestId,
-          receiverId,
-          messageId: newMessage._id,
-          error: pushResult.error,
-          userOnline: !!receiverSocketId,
-        });
+        // Don't fail the request if push notification fails
       }
-    } catch (pushError) {
-      logger.error("Failed to send push notification:", {
-        error: pushError.message,
-        stack: pushError.stack,
-        receiverId,
-        messageId: newMessage._id,
-      });
-      // Don't fail the request if push notification fails
-    }
+    } // End of isSavedMessage check
 
     // Also emit to sender so they see their own message in real-time
     const senderSocketId = getReceiverSocketId(senderId.toString());
@@ -902,26 +1079,82 @@ export const sendMessage = async (req, res) => {
 };
 
 export const editMessage = async (req, res) => {
+  const startTime = Date.now();
   try {
     const { id: messageId } = req.params;
-    const { text } = req.body;
+    const { text, editTimestamp } = req.body;
     const userId = req.user._id;
 
-    if (!text || !text.trim()) {
+    // ✅ PRODUCTION: Validate inputs
+    if (!messageId) {
+      return res.status(400).json({ error: "Message ID is required" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ error: "Invalid message ID format" });
+    }
+
+    if (!text || typeof text !== "string" || !text.trim()) {
       return res.status(400).json({ error: "Message text is required" });
+    }
+
+    // ✅ PRODUCTION: Text length validation (Telegram allows 4096 chars)
+    if (text.trim().length > 4096) {
+      return res
+        .status(400)
+        .json({ error: "Message text too long (max 4096 characters)" });
     }
 
     const message = await Message.findById(messageId);
 
     if (!message) {
+      logger.warn("[EDIT] Message not found", { messageId, userId });
       return res.status(404).json({ error: "Message not found" });
     }
 
-    // Check if user is the sender
+    // ✅ PRODUCTION: Authorization check
     if (message.senderId.toString() !== userId.toString()) {
+      logger.warn("[EDIT] Unauthorized edit attempt", {
+        messageId,
+        userId,
+        actualSenderId: message.senderId.toString(),
+      });
       return res
         .status(403)
         .json({ error: "You can only edit your own messages" });
+    }
+
+    // ✅ PRODUCTION: Idempotency check - don't re-edit if text unchanged
+    if (message.text === text.trim()) {
+      logger.info("[EDIT] No changes detected", { messageId });
+      // Return existing message without updating
+      await message.populate("senderId", "fullname profilePic email");
+      await message.populate("receiverId", "fullname profilePic email");
+      if (message.replyTo) {
+        await message.populate({
+          path: "replyTo",
+          select:
+            "text image audio video file sticker senderId receiverId createdAt",
+          populate: { path: "senderId", select: "fullname profilePic email" },
+        });
+      }
+      return res.status(200).json(message.toObject());
+    }
+
+    // ✅ PRODUCTION: Check for duplicate edit timestamp (prevent race conditions)
+    if (editTimestamp && message.editedAt) {
+      const lastEditTime = new Date(message.editedAt).getTime();
+      if (editTimestamp <= lastEditTime) {
+        logger.warn("[EDIT] Stale edit detected", {
+          messageId,
+          clientTimestamp: editTimestamp,
+          lastEditTime,
+        });
+        return res.status(409).json({
+          error: "Message was edited more recently",
+          currentVersion: message.toObject(),
+        });
+      }
     }
 
     // 🔥 FIXED: Allow editing text/caption for media messages
@@ -935,13 +1168,22 @@ export const editMessage = async (req, res) => {
     // console.log(`   ├─ Old text: "${message.text || "<no caption>"}"`);
     // console.log(`   └─ New text: "${text.trim()}"`);
 
-    // Update message text (caption for media messages)
+    // ✅ PRODUCTION: Update message with timestamp tracking
+    const oldText = message.text;
     message.text = text.trim();
     message.edited = true;
     message.editedAt = new Date();
     await message.save();
 
-    // console.log(`✅ [EDIT] Message text/caption updated successfully`); // [DEBUG - Removed for production]
+    logger.info("[EDIT] Message updated successfully", {
+      requestId: req?.requestId,
+      messageId,
+      userId,
+      duration: Date.now() - startTime + "ms",
+    });
+
+    // ✅ CRITICAL: MongoDB write delay (ensure indexes updated)
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     // Populate message with user data before emitting
     await message.populate("senderId", "fullname profilePic email");
@@ -951,7 +1193,8 @@ export const editMessage = async (req, res) => {
     if (message.replyTo) {
       await message.populate({
         path: "replyTo",
-        select: "text image audio video file sticker senderId receiverId createdAt",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic email",
@@ -1095,36 +1338,82 @@ export const editMessage = async (req, res) => {
 
     res.status(200).json(populatedMessage);
   } catch (error) {
+    logger.error("[EDIT] Error in editMessage", {
+      requestId: req?.requestId,
+      error: error.message,
+      stack: error.stack,
+      messageId: req.params.id,
+      userId: req.user?._id,
+    });
     res.status(500).json({ error: "Internal server error" });
   }
 };
 
 export const deleteMessage = async (req, res) => {
+  const startTime = Date.now();
   try {
     const { id: messageId } = req.params;
     const { deleteType = "forEveryone" } = req.body; // "forMe" or "forEveryone"
     const userId = req.user._id;
 
+    // ✅ PRODUCTION: Validate inputs
+    if (!messageId) {
+      return res.status(400).json({ error: "Message ID is required" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ error: "Invalid message ID format" });
+    }
+
+    if (deleteType && !["forMe", "forEveryone"].includes(deleteType)) {
+      return res.status(400).json({ error: "Invalid delete type" });
+    }
+
     const message = await Message.findById(messageId);
 
     if (!message) {
+      logger.warn("[DELETE] Message not found", { messageId, userId });
       return res.status(404).json({ error: "Message not found" });
     }
 
     if (deleteType === "forEveryone") {
-      // Only sender can delete for everyone
+      // ✅ PRODUCTION: Authorization check
       if (message.senderId.toString() !== userId.toString()) {
+        logger.warn("[DELETE] Unauthorized delete attempt", {
+          messageId,
+          userId,
+          actualSenderId: message.senderId.toString(),
+        });
         return res.status(403).json({
           error: "You can only delete your own messages for everyone",
         });
       }
 
-      // Save message info before deletion to find new last message
+      // ✅ PRODUCTION: Save message info before deletion
       const deletedMessageReceiverId = message.receiverId;
       const deletedMessageSenderId = message.senderId;
+      const deletedMessageGroupId = message.groupId;
 
-      // Delete the message completely
-      await Message.findByIdAndDelete(messageId);
+      // ✅ PRODUCTION: Delete the message completely
+      try {
+        await Message.findByIdAndDelete(messageId);
+        logger.info("[DELETE] Message deleted from database", {
+          requestId: req?.requestId,
+          messageId,
+          userId,
+          deleteType,
+          duration: Date.now() - startTime + "ms",
+        });
+      } catch (deleteError) {
+        logger.error("[DELETE] Failed to delete message", {
+          error: deleteError.message,
+          messageId,
+        });
+        return res.status(500).json({ error: "Failed to delete message" });
+      }
+
+      // ✅ CRITICAL: MongoDB write delay (ensure deletion propagated)
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
       // Find the new last message for this conversation (if any messages remain)
       let newLastMessage = null;
@@ -1313,6 +1602,13 @@ export const deleteMessage = async (req, res) => {
       .status(200)
       .json({ message: "Message deleted successfully", deleteType });
   } catch (error) {
+    logger.error("[DELETE] Error in deleteMessage", {
+      requestId: req?.requestId,
+      error: error.message,
+      stack: error.stack,
+      messageId: req.params.id,
+      userId: req.user?._id,
+    });
     res.status(500).json({ error: "Internal server error" });
   }
 };

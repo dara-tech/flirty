@@ -1,6 +1,7 @@
 import { Server } from "socket.io";
 import http from "http";
 import express from "express";
+import mongoose from "mongoose";
 import Message from "../model/message.model.js";
 import Group from "../model/group.model.js";
 import User from "../model/user.model.js";
@@ -260,97 +261,179 @@ io.on("connection", (socket) => {
   io.emit("getOnlineUsers", Array.from(userSockets.keys()));
 
   socket.on("typing", ({ receiverId }) => {
-    if (receiverId && userId) {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("typing", { senderId: userId });
+    try {
+      if (receiverId && userId) {
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("typing", { senderId: userId });
+        }
       }
+    } catch (error) {
+      logger.error("[SOCKET] Error in typing handler", {
+        error: error.message,
+      });
     }
   });
 
   socket.on("stopTyping", ({ receiverId }) => {
-    if (receiverId && userId) {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("stopTyping", { senderId: userId });
+    try {
+      if (receiverId && userId) {
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("stopTyping", { senderId: userId });
+        }
       }
+    } catch (error) {
+      logger.error("[SOCKET] Error in stopTyping handler", {
+        error: error.message,
+      });
     }
   });
 
   // Editing indicator
   socket.on("editing", ({ receiverId }) => {
-    if (receiverId && userId) {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("editing", { senderId: userId });
+    try {
+      if (receiverId && userId) {
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("editing", { senderId: userId });
+        }
       }
+    } catch (error) {
+      logger.error("[SOCKET] Error in editing handler", {
+        error: error.message,
+      });
     }
   });
 
   socket.on("stopEditing", ({ receiverId }) => {
-    if (receiverId && userId) {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("stopEditing", { senderId: userId });
+    try {
+      if (receiverId && userId) {
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("stopEditing", { senderId: userId });
+        }
       }
+    } catch (error) {
+      logger.error("[SOCKET] Error in stopEditing handler", {
+        error: error.message,
+      });
     }
   });
 
   // Deleting indicator
   socket.on("deleting", ({ receiverId }) => {
-    if (receiverId && userId) {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("deleting", { senderId: userId });
+    try {
+      if (receiverId && userId) {
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("deleting", { senderId: userId });
+        }
       }
+    } catch (error) {
+      logger.error("[SOCKET] Error in deleting handler", {
+        error: error.message,
+      });
     }
   });
 
   socket.on("stopDeleting", ({ receiverId }) => {
-    if (receiverId && userId) {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("stopDeleting", { senderId: userId });
+    try {
+      if (receiverId && userId) {
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("stopDeleting", { senderId: userId });
+        }
       }
+    } catch (error) {
+      logger.error("[SOCKET] Error in stopDeleting handler", {
+        error: error.message,
+      });
     }
   });
 
   // Uploading photo indicator
   socket.on("uploadingPhoto", ({ receiverId }) => {
-    if (receiverId && userId) {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("uploadingPhoto", { senderId: userId });
+    try {
+      if (receiverId && userId) {
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("uploadingPhoto", { senderId: userId });
+        }
       }
+    } catch (error) {
+      logger.error("[SOCKET] Error in uploadingPhoto handler", {
+        error: error.message,
+      });
     }
   });
 
   socket.on("stopUploadingPhoto", ({ receiverId }) => {
-    if (receiverId && userId) {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("stopUploadingPhoto", {
-          senderId: userId,
-        });
+    try {
+      if (receiverId && userId) {
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("stopUploadingPhoto", {
+            senderId: userId,
+          });
+        }
       }
+    } catch (error) {
+      logger.error("[SOCKET] Error in stopUploadingPhoto handler", {
+        error: error.message,
+      });
     }
   });
 
   socket.on("messageSeen", async ({ messageId, senderId }) => {
     try {
-      // console.log("👁️ [SOCKET] messageSeen received:", { messageId, senderId });
+      // ✅ BEST PRACTICE: Input validation (Telegram-style safety)
+      if (!messageId || !senderId || !userId) {
+        logger.warn("[SOCKET] messageSeen - Invalid parameters", {
+          messageId,
+          senderId,
+          userId,
+          socketId: socket.id,
+        });
+        return;
+      }
+
+      // ✅ BEST PRACTICE: Validate ObjectId format before query
+      if (!mongoose.Types.ObjectId.isValid(messageId)) {
+        logger.warn("[SOCKET] messageSeen - Invalid messageId format", {
+          messageId,
+        });
+        return;
+      }
 
       const message = await Message.findById(messageId);
       if (!message) {
-        // console.log("❌ [SOCKET] Message not found:", messageId); // [DEBUG - Removed for production]
+        logger.warn("[SOCKET] messageSeen - Message not found", {
+          messageId,
+        });
         return;
       }
 
+      // ✅ PRODUCTION: Idempotent operation - skip if already seen
       if (message.seen) {
-        // console.log("⏭️ [SOCKET] Message already seen:", messageId); // [DEBUG - Removed for production]
+        logger.debug("[SOCKET] messageSeen - Already marked as seen", {
+          messageId,
+        });
         return;
       }
 
+      // ✅ BEST PRACTICE: Authorization check - only receiver can mark as seen
+      const receiverIdStr = message.receiverId?.toString();
+      if (!receiverIdStr || userId.toString() !== receiverIdStr) {
+        logger.warn("[SOCKET] messageSeen - Unauthorized attempt", {
+          messageId,
+          userId,
+          receiverId: receiverIdStr,
+        });
+        return;
+      }
+
+      // ✅ PRODUCTION: Atomic update with timestamp
       message.seen = true;
       message.seenAt = new Date();
       await message.save();
@@ -380,7 +463,7 @@ io.on("connection", (socket) => {
 
       // ✅ CRITICAL FIX: Also emit to receiver (person who marked as seen)
       // This ensures their chat list updates immediately after marking as seen
-      const receiverIdStr = message.receiverId?.toString();
+      // receiverIdStr already declared above, reuse it
       if (receiverIdStr) {
         const receiverSocketId = getReceiverSocketId(receiverIdStr);
         if (receiverSocketId && receiverSocketId !== senderSocketId) {
@@ -439,67 +522,105 @@ io.on("connection", (socket) => {
   });
 
   socket.on("groupStopTyping", async ({ groupId }) => {
-    if (groupId && userId) {
-      await emitToGroupMembers(groupId, userId, "groupStopTyping", {
-        groupId,
-        senderId: userId,
+    try {
+      if (groupId && userId) {
+        await emitToGroupMembers(groupId, userId, "groupStopTyping", {
+          groupId,
+          senderId: userId,
+        });
+      }
+    } catch (error) {
+      logger.error("[SOCKET] Error in groupStopTyping", {
+        error: error.message,
       });
     }
   });
 
   // Group editing indicator
   socket.on("groupEditing", async ({ groupId }) => {
-    if (groupId && userId) {
-      await emitToGroupMembers(groupId, userId, "groupEditing", {
-        groupId,
-        senderId: userId,
-      });
+    try {
+      if (groupId && userId) {
+        await emitToGroupMembers(groupId, userId, "groupEditing", {
+          groupId,
+          senderId: userId,
+        });
+      }
+    } catch (error) {
+      logger.error("[SOCKET] Error in groupEditing", { error: error.message });
     }
   });
 
   socket.on("groupStopEditing", async ({ groupId }) => {
-    if (groupId && userId) {
-      await emitToGroupMembers(groupId, userId, "groupStopEditing", {
-        groupId,
-        senderId: userId,
+    try {
+      if (groupId && userId) {
+        await emitToGroupMembers(groupId, userId, "groupStopEditing", {
+          groupId,
+          senderId: userId,
+        });
+      }
+    } catch (error) {
+      logger.error("[SOCKET] Error in groupStopEditing", {
+        error: error.message,
       });
     }
   });
 
   // Group deleting indicator
   socket.on("groupDeleting", async ({ groupId }) => {
-    if (groupId && userId) {
-      await emitToGroupMembers(groupId, userId, "groupDeleting", {
-        groupId,
-        senderId: userId,
-      });
+    try {
+      if (groupId && userId) {
+        await emitToGroupMembers(groupId, userId, "groupDeleting", {
+          groupId,
+          senderId: userId,
+        });
+      }
+    } catch (error) {
+      logger.error("[SOCKET] Error in groupDeleting", { error: error.message });
     }
   });
 
   socket.on("groupStopDeleting", async ({ groupId }) => {
-    if (groupId && userId) {
-      await emitToGroupMembers(groupId, userId, "groupStopDeleting", {
-        groupId,
-        senderId: userId,
+    try {
+      if (groupId && userId) {
+        await emitToGroupMembers(groupId, userId, "groupStopDeleting", {
+          groupId,
+          senderId: userId,
+        });
+      }
+    } catch (error) {
+      logger.error("[SOCKET] Error in groupStopDeleting", {
+        error: error.message,
       });
     }
   });
 
   // Group uploading photo indicator
   socket.on("groupUploadingPhoto", async ({ groupId }) => {
-    if (groupId && userId) {
-      await emitToGroupMembers(groupId, userId, "groupUploadingPhoto", {
-        groupId,
-        senderId: userId,
+    try {
+      if (groupId && userId) {
+        await emitToGroupMembers(groupId, userId, "groupUploadingPhoto", {
+          groupId,
+          senderId: userId,
+        });
+      }
+    } catch (error) {
+      logger.error("[SOCKET] Error in groupUploadingPhoto", {
+        error: error.message,
       });
     }
   });
 
   socket.on("groupStopUploadingPhoto", async ({ groupId }) => {
-    if (groupId && userId) {
-      await emitToGroupMembers(groupId, userId, "groupStopUploadingPhoto", {
-        groupId,
-        senderId: userId,
+    try {
+      if (groupId && userId) {
+        await emitToGroupMembers(groupId, userId, "groupStopUploadingPhoto", {
+          groupId,
+          senderId: userId,
+        });
+      }
+    } catch (error) {
+      logger.error("[SOCKET] Error in groupStopUploadingPhoto", {
+        error: error.message,
       });
     }
   });
@@ -507,14 +628,38 @@ io.on("connection", (socket) => {
   // Reaction handlers - WebSocket-based real-time reactions
   socket.on("reaction", async ({ messageId, emoji }) => {
     try {
+      // ✅ BEST PRACTICE: Input validation
       if (!messageId || !emoji || !userId) {
-        console.error("Invalid reaction data:", { messageId, emoji, userId });
+        logger.warn("[SOCKET] reaction - Invalid parameters", {
+          messageId,
+          emoji,
+          userId,
+          socketId: socket.id,
+        });
+        return;
+      }
+
+      // ✅ BEST PRACTICE: Validate ObjectId format
+      if (!mongoose.Types.ObjectId.isValid(messageId)) {
+        logger.warn("[SOCKET] reaction - Invalid messageId format", {
+          messageId,
+        });
+        return;
+      }
+
+      // ✅ PRODUCTION: Emoji validation (prevent XSS/injection)
+      const emojiRegex = /^[\p{Emoji}\p{Emoji_Component}]+$/u;
+      if (!emojiRegex.test(emoji) || emoji.length > 10) {
+        logger.warn("[SOCKET] reaction - Invalid emoji format", {
+          emoji,
+          userId,
+        });
         return;
       }
 
       const message = await Message.findById(messageId);
       if (!message) {
-        console.error("Message not found for reaction:", messageId);
+        logger.warn("[SOCKET] reaction - Message not found", { messageId });
         return;
       }
 
@@ -538,20 +683,30 @@ io.on("connection", (socket) => {
       }
 
       if (!isParticipant) {
-        console.error("User is not a participant in this conversation");
+        logger.warn("[SOCKET] reaction - User not a participant", {
+          messageId,
+          userId,
+          groupId: message.groupId?.toString(),
+        });
         return;
       }
 
-      // Remove existing reaction from this user if exists (toggle behavior)
+      // ✅ PRODUCTION: Find existing reaction from this user
       const existingReactionIndex = message.reactions.findIndex(
         (r) => r.userId.toString() === userId.toString() && r.emoji === emoji
       );
 
       const wasRemoved = existingReactionIndex !== -1;
+      const actionType = wasRemoved ? "removed" : "added";
 
       if (existingReactionIndex !== -1) {
         // Remove reaction (toggle off)
         message.reactions.splice(existingReactionIndex, 1);
+        logger.debug("[SOCKET] Reaction removed", {
+          messageId,
+          userId,
+          emoji,
+        });
       } else {
         // Remove any other reaction from this user for this message (one reaction per user per message)
         message.reactions = message.reactions.filter(
@@ -563,29 +718,75 @@ io.on("connection", (socket) => {
           emoji: emoji,
           createdAt: new Date(),
         });
+        logger.debug("[SOCKET] Reaction added", {
+          messageId,
+          userId,
+          emoji,
+        });
       }
 
-      await message.save();
-      await message.populate("reactions.userId", "fullname profilePic");
-      await message.populate("senderId", "fullname profilePic");
-      await message.populate("receiverId", "fullname profilePic");
+      // ✅ PRODUCTION: Save with error handling
+      try {
+        await message.save();
+      } catch (saveError) {
+        logger.error("[SOCKET] Failed to save reaction", {
+          error: saveError.message,
+          messageId,
+          userId,
+        });
+        return;
+      }
+      // ✅ PRODUCTION: Populate with error handling
+      try {
+        await message.populate("reactions.userId", "fullname profilePic");
+        await message.populate("senderId", "fullname profilePic");
+        await message.populate("receiverId", "fullname profilePic");
+      } catch (populateError) {
+        logger.error("[SOCKET] Failed to populate reaction message", {
+          error: populateError.message,
+          messageId,
+        });
+      }
 
       const messageObj = message.toObject ? message.toObject() : message;
+      const reactionPayload = {
+        messageId: messageId.toString(),
+        reactions: messageObj.reactions || [],
+        message: messageObj,
+        actionType: actionType, // ✅ Tell client if added or removed
+        userId: userId.toString(),
+      };
 
-      // Broadcast reaction update to all participants
+      // ✅ PRODUCTION: Broadcast with logging
       if (message.groupId) {
         const group = await Group.findById(message.groupId);
         if (group) {
           const allMembers = [group.admin, ...group.members];
+          let broadcastCount = 0;
+
+          // Determine legacy event name based on action type
+          const legacyGroupEvent =
+            actionType === "removed"
+              ? "groupMessageReactionRemoved"
+              : "groupMessageReactionAdded";
+
           allMembers.forEach((memberId) => {
             const memberSocketId = getReceiverSocketId(memberId.toString());
             if (memberSocketId) {
-              io.to(memberSocketId).emit("reaction-update", {
-                messageId: messageId.toString(),
-                reactions: messageObj.reactions || [],
-                message: messageObj,
-              });
+              // Emit new unified event
+              io.to(memberSocketId).emit("reaction-update", reactionPayload);
+              // ✅ BACKWARD COMPAT: Also emit legacy event for Flutter app
+              io.to(memberSocketId).emit(legacyGroupEvent, messageObj);
+              broadcastCount++;
             }
+          });
+
+          logger.debug("[SOCKET] Reaction broadcast to group", {
+            messageId,
+            groupId: message.groupId.toString(),
+            membersNotified: broadcastCount,
+            totalMembers: allMembers.length,
+            actionType,
           });
         }
       } else {
@@ -612,30 +813,40 @@ io.on("connection", (socket) => {
           ? getReceiverSocketId(senderIdStr)
           : null;
 
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("reaction-update", {
-            messageId: messageId.toString(),
-            reactions: messageObj.reactions || [],
-            message: messageObj,
-          });
+        let broadcastCount = 0;
+        const notifiedSockets = new Set();
+
+        // Determine legacy event name based on action type
+        const legacyEvent =
+          actionType === "removed"
+            ? "messageReactionRemoved"
+            : "messageReactionAdded";
+
+        // Emit to receiver if online and not already notified
+        if (receiverSocketId && !notifiedSockets.has(receiverSocketId)) {
+          io.to(receiverSocketId).emit("reaction-update", reactionPayload);
+          // ✅ BACKWARD COMPAT: Also emit legacy event for Flutter app
+          io.to(receiverSocketId).emit(legacyEvent, messageObj);
+          notifiedSockets.add(receiverSocketId);
+          broadcastCount++;
         }
 
-        if (senderSocketId) {
-          io.to(senderSocketId).emit("reaction-update", {
-            messageId: messageId.toString(),
-            reactions: messageObj.reactions || [],
-            message: messageObj,
-          });
+        // Emit to sender if online and not already notified
+        if (senderSocketId && !notifiedSockets.has(senderSocketId)) {
+          io.to(senderSocketId).emit("reaction-update", reactionPayload);
+          // ✅ BACKWARD COMPAT: Also emit legacy event for Flutter app
+          io.to(senderSocketId).emit(legacyEvent, messageObj);
+          notifiedSockets.add(senderSocketId);
+          broadcastCount++;
         }
 
-        // Always notify the current socket (user who added the reaction) to ensure they see the update
-        if (socket && socket.id) {
-          io.to(socket.id).emit("reaction-update", {
-            messageId: messageId.toString(),
-            reactions: messageObj.reactions || [],
-            message: messageObj,
-          });
-        }
+        logger.debug("[SOCKET] Reaction broadcast to direct message", {
+          messageId,
+          receiverId: receiverIdStr,
+          senderId: senderIdStr,
+          usersNotified: broadcastCount,
+          actionType,
+        });
       }
     } catch (error) {
       console.error("Error handling reaction:", error);
@@ -645,18 +856,47 @@ io.on("connection", (socket) => {
   // Group message seen status
   socket.on("groupMessageSeen", async ({ messageId, groupId }) => {
     try {
-      // console.log("📥 [GROUP_SEEN] Received event:", {
-      //   messageId,
-      //   groupId,
-      //   userId: userId.toString(),
-      // });
+      // ✅ BEST PRACTICE: Input validation
+      if (!messageId || !groupId || !userId) {
+        logger.warn("[SOCKET] groupMessageSeen - Invalid parameters", {
+          messageId,
+          groupId,
+          userId,
+          socketId: socket.id,
+        });
+        return;
+      }
+
+      // ✅ BEST PRACTICE: Validate ObjectId formats
+      if (
+        !mongoose.Types.ObjectId.isValid(messageId) ||
+        !mongoose.Types.ObjectId.isValid(groupId)
+      ) {
+        logger.warn("[SOCKET] groupMessageSeen - Invalid ID format", {
+          messageId,
+          groupId,
+        });
+        return;
+      }
 
       const message = await Message.findById(messageId).populate(
         "senderId",
         "fullname"
       );
       if (!message || !message.groupId) {
-        // console.log("❌ [GROUP_SEEN] Message not found or not a group message"); // [DEBUG - Removed for production]
+        logger.warn(
+          "[SOCKET] groupMessageSeen - Message not found or not a group message",
+          { messageId }
+        );
+        return;
+      }
+
+      // ✅ BEST PRACTICE: Verify groupId matches
+      if (message.groupId.toString() !== groupId.toString()) {
+        logger.warn("[SOCKET] groupMessageSeen - GroupId mismatch", {
+          messageGroupId: message.groupId.toString(),
+          requestedGroupId: groupId.toString(),
+        });
         return;
       }
 
@@ -791,17 +1031,22 @@ io.on("connection", (socket) => {
                 // receiverId: pendingCall.receiverId,
                 // }
                 // );
-                
+
                 // Send push notification for missed call
                 try {
-                  const { sendMissedCallNotification } = await import("../services/pushNotification.service.js");
+                  const { sendMissedCallNotification } = await import(
+                    "../services/pushNotification.service.js"
+                  );
                   await sendMissedCallNotification(pendingCall.receiverId, {
                     callId: savedCall._id,
                     callerId: pendingCall.callerId,
                     callType: pendingCall.callType,
                   });
                 } catch (pushError) {
-                  console.error("Failed to send missed call push notification:", pushError);
+                  console.error(
+                    "Failed to send missed call push notification:",
+                    pushError
+                  );
                 }
               } catch (saveError) {
                 console.error(
@@ -835,7 +1080,9 @@ io.on("connection", (socket) => {
 
           // Send push notification for incoming call (receiver is offline)
           try {
-            const { sendCallNotification } = await import("../services/pushNotification.service.js");
+            const { sendCallNotification } = await import(
+              "../services/pushNotification.service.js"
+            );
             await sendCallNotification(receiverId, {
               callId,
               callerId: userId,

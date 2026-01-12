@@ -5,6 +5,9 @@ import ContactRequest from "../model/contactRequest.model.js";
 import { io, getReceiverSocketId } from "../lib/socket.js";
 import mongoose from "mongoose";
 import { normalizeToArray } from "./message.controller.js";
+import { sendMobileGroupMessageNotification } from "../services/mobilePushNotification.service.js";
+import { sendGroupMessageNotification } from "../services/pushNotification.service.js";
+import logger from "../lib/logger.js";
 
 // Helper function to check if users are contacts
 const areContacts = async (userId, memberIds) => {
@@ -429,7 +432,8 @@ export const getGroupMessages = async (req, res) => {
       .populate("reactions.userId", "fullname profilePic")
       .populate({
         path: "replyTo",
-        select: "text image audio video file sticker senderId receiverId createdAt",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic",
@@ -439,15 +443,13 @@ export const getGroupMessages = async (req, res) => {
       .limit(limit)
       .lean(); // Use lean() for read-only queries (faster)
 
-    // Check if there are more messages before reversing
+    // Check if there are more messages
     const hasMore = messages.length === limit;
 
-    // Reverse to get chronological order for display (oldest to newest)
-    // Frontend will display in reverse (newest at top)
-    const reversedMessages = messages.reverse();
-
+    // Return messages in descending order (newest first)
+    // Frontend ListView with reverse: true will display newest at bottom (Telegram-style)
     res.status(200).json({
-      messages: reversedMessages,
+      messages: messages,
       hasMore: hasMore, // If we got full limit, there might be more
     });
   } catch (error) {
@@ -647,7 +649,8 @@ export const sendGroupMessage = async (req, res) => {
     if (newMessage.replyTo) {
       await newMessage.populate({
         path: "replyTo",
-        select: "text image audio video file sticker senderId groupId createdAt",
+        select:
+          "text image audio video file sticker senderId groupId createdAt",
         populate: {
           path: "senderId",
           select: "fullname profilePic",
@@ -679,51 +682,90 @@ export const sendGroupMessage = async (req, res) => {
 
     // Emit to all group members using same event as personal messages
     // Also send push notifications to offline members
-    const { sendGroupMessageNotification } = await import("../services/pushNotification.service.js");
-    
     allMembers.forEach(async (memberId) => {
       const memberIdStr = memberId.toString();
       // Skip sender (don't notify yourself)
       if (memberIdStr === senderId.toString()) {
         return;
       }
-      
+
       const memberSocketId = getReceiverSocketId(memberIdStr);
       if (memberSocketId) {
         io.to(memberSocketId).emit("newMessage", messageObj);
         // console.log("   ✅ Emitted to member:", memberIdStr);
       }
-      
+
       // Always attempt to send push notification (even if user is online)
       // The frontend will suppress duplicate notifications if user is viewing the chat
       // This ensures notifications work when app is closed or in background
       try {
-        const pushResult = await sendGroupMessageNotification(memberIdStr, messageObj, group);
-        if (pushResult.success) {
-          logger.info("Push notification sent for group member", {
+        // Try mobile push first (FCM/APNs for iOS/Android apps)
+        const mobilePushResult = await sendMobileGroupMessageNotification(
+          memberIdStr,
+          messageObj,
+          group
+        );
+
+        if (mobilePushResult.success) {
+          logger.info("✅ [Push] Mobile group notification sent", {
+            requestId: req.requestId,
             memberId: memberIdStr,
             groupId: groupId,
             messageId: messageObj._id,
-            sent: pushResult.sent,
-            failed: pushResult.failed,
-            total: pushResult.total,
+            sent: mobilePushResult.sent,
+            failed: mobilePushResult.failed,
+            total: mobilePushResult.total,
             userOnline: !!memberSocketId,
           });
         } else {
-          logger.debug("Push notification not sent for group member (no active subscriptions or error)", {
-            memberId: memberIdStr,
-            groupId: groupId,
-            messageId: messageObj._id,
-            error: pushResult.error,
-            userOnline: !!memberSocketId,
-          });
+          logger.debug(
+            `⚠️ [Push] Mobile group push failed: ${mobilePushResult.error}, trying web push`,
+            {
+              requestId: req.requestId,
+              memberId: memberIdStr,
+              groupId: groupId,
+            }
+          );
+
+          // Fallback to web push (for web browsers)
+          const pushResult = await sendGroupMessageNotification(
+            memberIdStr,
+            messageObj,
+            group
+          );
+
+          if (pushResult.success) {
+            logger.info("✅ [Push] Web group notification sent", {
+              requestId: req.requestId,
+              memberId: memberIdStr,
+              groupId: groupId,
+              messageId: messageObj._id,
+              sent: pushResult.sent,
+              failed: pushResult.failed,
+              total: pushResult.total,
+              userOnline: !!memberSocketId,
+            });
+          } else {
+            logger.debug(
+              `⚠️ [Push] No group notifications sent: ${pushResult.error}`,
+              {
+                requestId: req.requestId,
+                memberId: memberIdStr,
+                groupId: groupId,
+                messageId: messageObj._id,
+                userOnline: !!memberSocketId,
+              }
+            );
+          }
         }
       } catch (pushError) {
-        logger.error("Failed to send push notification to group member:", {
+        logger.error("❌ [Push] Failed to send group push notification:", {
           error: pushError.message,
+          stack: pushError.stack,
           memberId: memberIdStr,
           groupId: groupId,
           messageId: messageObj._id,
+          type: pushError.constructor.name,
         });
         // Don't fail the request if push notification fails
       }
