@@ -1048,6 +1048,26 @@ io.on("connection", (socket) => {
                     pushError
                   );
                 }
+
+                // Send mobile push notification for missed call (Flutter)
+                try {
+                  const { sendMobileMissedCallNotification } = await import(
+                    "../services/mobilePushNotification.service.js"
+                  );
+                  await sendMobileMissedCallNotification(
+                    pendingCall.receiverId,
+                    {
+                      callId: savedCall._id,
+                      callerId: pendingCall.callerId,
+                      callType: pendingCall.callType,
+                    }
+                  );
+                } catch (pushError) {
+                  console.error(
+                    "Failed to send mobile missed call push notification:",
+                    pushError
+                  );
+                }
               } catch (saveError) {
                 console.error(
                   "❌ Error saving offline missed call record:",
@@ -1092,6 +1112,23 @@ io.on("connection", (socket) => {
             console.error("Failed to send call push notification:", pushError);
           }
 
+          // Send mobile push notification for incoming call (Flutter CallKit)
+          try {
+            const { sendMobileCallNotification } = await import(
+              "../services/mobilePushNotification.service.js"
+            );
+            await sendMobileCallNotification(receiverId, {
+              callId,
+              callerId: userId,
+              callType,
+            });
+          } catch (pushError) {
+            console.error(
+              "Failed to send mobile call push notification:",
+              pushError
+            );
+          }
+
           // Notify caller that call is ringing (even though user is offline)
           // This allows the UI to show "calling" state
           io.to(socket.id).emit("call:ringing", {
@@ -1114,13 +1151,30 @@ io.on("connection", (socket) => {
           answeredAt: null, // When call was answered (if answered)
         });
 
-        // Send call invitation to receiver
+        // Send call invitation to receiver via socket
         io.to(receiverSocketId).emit("call:incoming", {
           callId,
           callerId: userId,
           callerInfo,
           callType,
         });
+
+        // Also send mobile push notification (for background/locked screen CallKit)
+        try {
+          const { sendMobileCallNotification } = await import(
+            "../services/mobilePushNotification.service.js"
+          );
+          await sendMobileCallNotification(receiverId, {
+            callId,
+            callerId: userId,
+            callType,
+          });
+        } catch (pushError) {
+          console.error(
+            "Failed to send mobile call push notification:",
+            pushError
+          );
+        }
 
         // Notify caller that call is ringing
         io.to(socket.id).emit("call:ringing", {
@@ -1229,6 +1283,9 @@ io.on("connection", (socket) => {
       const callInfo = activeCalls.get(callId);
       if (!callInfo) return;
 
+      // Determine status based on reason
+      const status = reason === "busy" ? "busy" : "rejected";
+
       // Save rejected call to database
       try {
         const savedCall = await createCallRecord({
@@ -1236,7 +1293,7 @@ io.on("connection", (socket) => {
           receiverId: callInfo.receiverId,
           groupId: null,
           callType: callInfo.callType,
-          status: "rejected",
+          status: status,
           duration: 0,
           startedAt: callInfo.startedAt || callInfo.createdAt,
           endedAt: new Date(),
@@ -1250,20 +1307,93 @@ io.on("connection", (socket) => {
         console.error("❌ Error saving rejected call record:", saveError);
       }
 
-      // Notify caller
+      // Notify caller with appropriate event based on reason
       const callerSocketId = getReceiverSocketId(callInfo.callerId);
       if (callerSocketId) {
-        io.to(callerSocketId).emit("call:rejected", {
-          callId,
-          reason: reason || "Call rejected",
-          receiverId: userId,
-        });
+        if (reason === "busy") {
+          // User is already in another call
+          io.to(callerSocketId).emit("call:busy", {
+            callId,
+            receiverId: userId,
+          });
+        } else {
+          io.to(callerSocketId).emit("call:rejected", {
+            callId,
+            reason: reason || "Call rejected",
+            receiverId: userId,
+          });
+        }
       }
 
       // Remove call from active calls
       activeCalls.delete(callId);
     } catch (error) {
       console.error("Error in call:reject:", error);
+    }
+  });
+
+  // Call Cancel (caller cancels before receiver answers)
+  socket.on("call:cancel", async ({ callId }) => {
+    try {
+      // Check active calls first
+      let callInfo = activeCalls.get(callId);
+      let isPending = false;
+
+      // If not in active, check pending calls
+      if (!callInfo) {
+        const pendingCall = pendingCalls.get(callId);
+        if (pendingCall) {
+          callInfo = pendingCall;
+          isPending = true;
+          // Clear the pending call timeout
+          if (pendingCall.timeoutId) {
+            clearTimeout(pendingCall.timeoutId);
+          }
+        }
+      }
+
+      if (!callInfo) {
+        return; // Call not found, nothing to cancel
+      }
+
+      // Only caller can cancel
+      if (callInfo.callerId.toString() !== userId.toString()) {
+        return;
+      }
+
+      // Save cancelled call to database
+      try {
+        await createCallRecord({
+          callerId: callInfo.callerId,
+          receiverId: callInfo.receiverId,
+          groupId: null,
+          callType: callInfo.callType,
+          status: "cancelled",
+          duration: 0,
+          startedAt: callInfo.startedAt || callInfo.createdAt,
+          endedAt: new Date(),
+        });
+      } catch (saveError) {
+        console.error("❌ Error saving cancelled call record:", saveError);
+      }
+
+      // Notify receiver that call was cancelled
+      const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("call:cancelled", {
+          callId,
+          callerId: callInfo.callerId,
+        });
+      }
+
+      // Clean up
+      if (isPending) {
+        pendingCalls.delete(callId);
+      } else {
+        activeCalls.delete(callId);
+      }
+    } catch (error) {
+      console.error("Error in call:cancel:", error);
     }
   });
 

@@ -604,3 +604,367 @@ export const sendMobileGroupMessageNotification = async (
     return { success: false, error: error.message };
   }
 };
+
+/**
+ * Send incoming call notification to mobile devices
+ * Uses high-priority FCM data message for CallKit/Android incoming call UI
+ *
+ * @param {string} receiverId - User ID to send notification to
+ * @param {object} callData - Call data including callId, callerId, callType
+ * @returns {Promise<object>} Result with success status
+ */
+export const sendMobileCallNotification = async (receiverId, callData) => {
+  const startTime = Date.now();
+
+  try {
+    logger.info(
+      `📞 [Mobile Call] Sending call notification to user ${receiverId}`
+    );
+
+    if (!firebaseInitialized) {
+      logger.warn("⚠️ [Mobile Call] Firebase not initialized");
+      return { success: false, error: "Firebase not initialized" };
+    }
+
+    // Validate input
+    if (!receiverId || !callData?.callId || !callData?.callerId) {
+      logger.warn("⚠️ [Mobile Call] Missing required call data");
+      return { success: false, error: "Missing required call data" };
+    }
+
+    // Get caller info
+    const caller = await User.findById(callData.callerId).select(
+      "fullname profilePic"
+    );
+    if (!caller) {
+      logger.warn(`⚠️ [Mobile Call] Caller not found: ${callData.callerId}`);
+      return { success: false, error: "Caller not found" };
+    }
+
+    const callerName = caller.fullname || "Unknown";
+    const callerAvatar = caller.profilePic || "";
+    const callType = callData.callType || "voice";
+    const isVideo = callType === "video";
+
+    // Get user's push tokens
+    const user = await Promise.race([
+      User.findById(receiverId).select("pushTokens"),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Database query timeout")), 5000)
+      ),
+    ]);
+
+    if (!user || !user.pushTokens || user.pushTokens.length === 0) {
+      logger.debug(
+        `⚠️ [Mobile Call] No push tokens found for user ${receiverId}`
+      );
+      return { success: false, error: "No push tokens" };
+    }
+
+    // Filter valid tokens
+    const validTokens = user.pushTokens.filter((tokenData) =>
+      isValidFCMToken(tokenData.token)
+    );
+
+    if (validTokens.length === 0) {
+      logger.warn(
+        `⚠️ [Mobile Call] No valid FCM tokens for user ${receiverId}`
+      );
+      return { success: false, error: "No valid push tokens" };
+    }
+
+    logger.info(`📞 [Mobile Call] Sending to ${validTokens.length} devices`, {
+      callId: callData.callId,
+      callerId: callData.callerId,
+      callerName,
+      callType,
+    });
+
+    const results = [];
+    let sent = 0;
+    let failed = 0;
+
+    // Send to each token with call-specific configuration
+    for (const tokenData of validTokens) {
+      try {
+        const isIOS = tokenData.platform === "ios";
+
+        // Build platform-specific message for CallKit
+        // Following flutter_callkit_incoming documentation format exactly
+        const message = {
+          token: tokenData.token,
+        };
+
+        if (isIOS) {
+          // iOS: Use data-only push with flutter_callkit_incoming format
+          // This allows the app to show CallKit even in background/killed state
+          // 🔥 CRITICAL: Include ALL data fields for CallKit UI and WebRTC connection
+          message.data = {
+            // flutter_callkit_incoming required fields (as strings)
+            id: String(callData.callId),
+            nameCaller: callerName,
+            handle: callerName,
+            type: isVideo ? "1" : "0", // String: "0" = audio, "1" = video
+            avatar: callerAvatar || "",
+            duration: "60000",
+            // 🔥 Additional data needed for WebRTC connection after acceptance
+            // These fields are used by CallKitHandler to navigate to call screen
+            callerId: String(callData.callerId),
+            callerName: callerName, // Duplicate for Flutter compatibility
+            callerAvatar: callerAvatar || "", // Duplicate for Flutter compatibility
+            callType: callType,
+            receiverId: String(receiverId),
+            timestamp: String(Date.now()),
+          };
+
+          // 🔥 LOG FULL PAYLOAD for iOS VoIP debugging
+          logger.debug("📤 [iOS VoIP] Push payload:");
+          logger.debug(`   ├─ id: ${message.data.id}`);
+          logger.debug(`   ├─ nameCaller: ${message.data.nameCaller}`);
+          logger.debug(`   ├─ handle: ${message.data.handle}`);
+          logger.debug(`   ├─ type: ${message.data.type}`);
+          logger.debug(`   ├─ callerId: ${message.data.callerId}`);
+          logger.debug(`   ├─ receiverId: ${message.data.receiverId}`);
+          logger.debug(`   ├─ callType: ${message.data.callType}`);
+          logger.debug(
+            `   └─ avatar: ${message.data.avatar ? "present" : "none"}`
+          );
+
+          // ✅ CRITICAL: Use high-priority background notification for iOS
+          // This wakes the app and allows Flutter to show CallKit
+          // Note: True VoIP push requires VoIP certificate (not FCM)
+          message.apns = {
+            headers: {
+              "apns-priority": "10", // High priority
+              "apns-push-type": "background", // Background content-available
+            },
+            payload: {
+              aps: {
+                "content-available": 1, // Wake app in background
+                // NO alert/sound here - CallKit will provide UI
+              },
+            },
+          };
+        } else {
+          // Android: Include notification + data for CallKit
+          // 🔥 CRITICAL: Include ALL data fields for flutter_callkit_incoming
+          message.data = {
+            type: "call",
+            // flutter_callkit_incoming format fields
+            id: String(callData.callId),
+            nameCaller: callerName,
+            handle: callerName,
+            // App-specific fields
+            callId: String(callData.callId),
+            callerId: String(callData.callerId),
+            callerName: callerName,
+            callerAvatar: callerAvatar || "",
+            callType: callType,
+            receiverId: String(receiverId),
+            timestamp: String(Date.now()),
+          };
+
+          message.android = {
+            priority: "high",
+            ttl: 60000,
+            notification: {
+              sound: "default",
+              clickAction: "FLUTTER_NOTIFICATION_CLICK",
+              channelId: "incoming_calls",
+              priority: "max",
+              visibility: "public",
+              defaultSound: true,
+              defaultVibrateTimings: true,
+            },
+            directBootOk: true,
+          };
+
+          message.notification = {
+            title: `Incoming ${isVideo ? "video" : "voice"} call`,
+            body: `${callerName} is calling you`,
+          };
+        }
+
+        const response = await Promise.race([
+          retryWithBackoff(
+            () => admin.messaging().send(message),
+            2, // Max 2 retries for calls (time-sensitive)
+            50 // Shorter base delay
+          ),
+          new Promise((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `FCM ${
+                      tokenData.platform
+                    } push timeout after 12s (token: ${tokenData.token.substring(
+                      0,
+                      20
+                    )}...)`
+                  )
+                ),
+              12000 // Increased to 12s for iOS VoIP background push
+            )
+          ),
+        ]);
+
+        logger.debug(`✅ [Mobile Call] Push sent to ${tokenData.platform}:`, {
+          token: tokenData.token.substring(0, 20) + "...",
+          messageId: response,
+        });
+
+        sent++;
+        results.push({
+          success: true,
+          platform: tokenData.platform,
+          messageId: response,
+        });
+
+        circuitBreaker.recordSuccess();
+      } catch (error) {
+        // 🔥 Enhanced error logging with full details
+        logger.error(
+          `❌ [Mobile Call] Failed to send push to ${tokenData.platform}:`,
+          {
+            error: error.message,
+            code: error.code,
+            stack: error.stack,
+            token: tokenData.token.substring(0, 20) + "...",
+            platform: tokenData.platform,
+          }
+        );
+
+        // Log readable error message
+        console.error(`\n💥 [Push Error] ${error.message}`);
+        console.error(`   ├─ Code: ${error.code || "unknown"}`);
+        console.error(`   ├─ Platform: ${tokenData.platform}`);
+        console.error(`   ├─ Token: ${tokenData.token.substring(0, 20)}...`);
+        console.error(`   └─ Stack: ${error.stack}\n`);
+
+        failed++;
+        results.push({
+          success: false,
+          platform: tokenData.platform,
+          error: error.message,
+        });
+
+        // 🔥 Auto-cleanup invalid tokens
+        if (
+          error.code === "messaging/invalid-registration-token" ||
+          error.code === "messaging/registration-token-not-registered"
+        ) {
+          logger.warn(
+            `🗑️ [Mobile Call] Removing invalid token for user ${receiverId}`,
+            {
+              token: tokenData.token.substring(0, 20) + "...",
+              errorCode: error.code,
+            }
+          );
+
+          // Remove invalid token from database
+          try {
+            await User.updateOne(
+              { _id: receiverId },
+              {
+                $pull: {
+                  pushTokens: { token: tokenData.token },
+                },
+              }
+            );
+            logger.info(`✅ [Mobile Call] Invalid token removed successfully`);
+          } catch (cleanupError) {
+            logger.error(
+              `❌ [Mobile Call] Failed to cleanup token:`,
+              cleanupError
+            );
+          }
+        } else {
+          circuitBreaker.recordFailure();
+        }
+      }
+    }
+
+    const duration = Date.now() - startTime;
+
+    logger.info(`📊 [Mobile Call] Notification results (${duration}ms):`, {
+      receiverId,
+      callId: callData.callId,
+      sent,
+      failed,
+      total: validTokens.length,
+      duration,
+    });
+
+    return {
+      success: sent > 0,
+      sent,
+      failed,
+      total: validTokens.length,
+      duration,
+      results,
+    };
+  } catch (error) {
+    logger.error("Error sending mobile call notification:", {
+      error: error.message,
+      receiverId,
+      callId: callData?.callId,
+    });
+    return { success: false, error: error.message };
+  }
+};
+
+/**
+ * Send missed call notification to mobile devices
+ *
+ * @param {string} receiverId - User ID to send notification to
+ * @param {object} callData - Call data including callId, callerId, callType
+ * @returns {Promise<object>} Result with success status
+ */
+export const sendMobileMissedCallNotification = async (
+  receiverId,
+  callData
+) => {
+  try {
+    logger.info(
+      `📞 [Mobile Missed Call] Sending notification to user ${receiverId}`
+    );
+
+    // Get caller info
+    const caller = await User.findById(callData.callerId).select(
+      "fullname profilePic"
+    );
+    if (!caller) {
+      logger.warn(
+        `⚠️ [Mobile Missed Call] Caller not found: ${callData.callerId}`
+      );
+      return { success: false, error: "Caller not found" };
+    }
+
+    const callerName = caller.fullname || "Unknown";
+    const callType = callData.callType || "voice";
+    const isVideo = callType === "video";
+
+    return await sendMobilePushNotification(receiverId, {
+      title: "Missed call",
+      body: `You missed a ${
+        isVideo ? "video" : "voice"
+      } call from ${callerName}`,
+      data: {
+        type: "missed_call",
+        callId: String(callData.callId),
+        callerId: String(callData.callerId),
+        callerName: callerName,
+        callType: callType,
+        click_action: "FLUTTER_NOTIFICATION_CLICK",
+      },
+    });
+  } catch (error) {
+    logger.error("Error sending mobile missed call notification:", {
+      error: error.message,
+      receiverId,
+      callId: callData?.callId,
+    });
+    return { success: false, error: error.message };
+  }
+};

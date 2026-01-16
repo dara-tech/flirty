@@ -6,13 +6,16 @@ import User from "../model/user.model.js";
  */
 export const registerPushToken = async (req, res) => {
   try {
-    const { token, platform, userAgent, deviceInfo } = req.body;
+    const { token, platform, userAgent, deviceInfo, voipToken } = req.body; // ✅ Added voipToken
     const userId = req.user._id;
 
     console.log("📤 [Push] Token registration request");
     console.log("   ├─ User:", userId);
     console.log("   ├─ Token:", token?.substring(0, 20) + "...");
     console.log("   └─ Platform:", platform);
+    if (voipToken) {
+      console.log("   └─ VoIP Token:", voipToken.substring(0, 20) + "...");
+    }
 
     // Validation
     if (!token) {
@@ -54,6 +57,7 @@ export const registerPushToken = async (req, res) => {
       user.pushTokens[existingTokenIndex] = {
         token,
         platform,
+        voipToken: voipToken || user.pushTokens[existingTokenIndex].voipToken, // ✅ Store VoIP token
         userAgent: userAgent || "Unknown",
         deviceInfo: deviceInfo || {},
         lastUsed: new Date(),
@@ -65,6 +69,7 @@ export const registerPushToken = async (req, res) => {
       user.pushTokens.push({
         token,
         platform,
+        voipToken: voipToken || null, // ✅ Store VoIP token
         userAgent: userAgent || "Unknown",
         deviceInfo: deviceInfo || {},
         lastUsed: new Date(),
