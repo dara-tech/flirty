@@ -60,7 +60,7 @@ const socketCorsOrigin = (origin, callback) => {
     // Origin not allowed
     return callback(
       new Error(`Origin ${origin} is not allowed by Socket.io CORS policy`),
-      false
+      false,
     );
   } catch (error) {
     console.error("Socket.IO CORS error:", error);
@@ -77,8 +77,68 @@ const io = new Server(server, {
   },
 });
 
-// ⚠️ Renamed userSocketMap to userSockets to avoid conflict
-const userSockets = new Map(); // { userId: socketId }
+// ═══════════════════════════════════════════════════════════════════════════
+// MULTI-DEVICE SUPPORT
+// ═══════════════════════════════════════════════════════════════════════════
+// userSockets now stores Set<socketId> per user to support multiple devices
+// This enables Telegram/WhatsApp-like experience where all devices ring
+// and when call is answered on one device, others are notified
+// ═══════════════════════════════════════════════════════════════════════════
+const userSockets = new Map(); // { userId: Set<socketId> }
+
+// Helper: Add a socket for a user
+function addUserSocket(userId, socketId) {
+  const userIdStr = typeof userId === "string" ? userId : userId.toString();
+  if (!userSockets.has(userIdStr)) {
+    userSockets.set(userIdStr, new Set());
+  }
+  userSockets.get(userIdStr).add(socketId);
+}
+
+// Helper: Remove a socket for a user
+function removeUserSocket(userId, socketId) {
+  const userIdStr = typeof userId === "string" ? userId : userId.toString();
+  const sockets = userSockets.get(userIdStr);
+  if (sockets) {
+    sockets.delete(socketId);
+    if (sockets.size === 0) {
+      userSockets.delete(userIdStr);
+    }
+  }
+}
+
+// Helper: Get all socket IDs for a user (returns array)
+function getAllUserSocketIds(userId) {
+  const userIdStr = typeof userId === "string" ? userId : userId.toString();
+  const sockets = userSockets.get(userIdStr);
+  return sockets ? Array.from(sockets) : [];
+}
+
+// Helper: Emit to all of a user's devices
+function emitToUser(userId, event, data) {
+  const socketIds = getAllUserSocketIds(userId);
+  socketIds.forEach((socketId) => {
+    io.to(socketId).emit(event, data);
+  });
+  return socketIds.length;
+}
+
+// Helper: Emit to all of a user's devices EXCEPT one (for "answered elsewhere")
+function emitToUserExcept(userId, exceptSocketId, event, data) {
+  const socketIds = getAllUserSocketIds(userId);
+  socketIds.forEach((socketId) => {
+    if (socketId !== exceptSocketId) {
+      io.to(socketId).emit(event, data);
+    }
+  });
+}
+
+// Helper: Check if user has any connected sockets
+function isUserOnline(userId) {
+  const userIdStr = typeof userId === "string" ? userId : userId.toString();
+  const sockets = userSockets.get(userIdStr);
+  return sockets && sockets.size > 0;
+}
 
 // Store active calls (temporary, in-memory)
 // In production, consider using Redis or database
@@ -103,18 +163,21 @@ export function getReceiverSocketId(userId) {
   if (!userId) return null;
   // Convert to string to ensure consistent lookup
   const userIdStr = typeof userId === "string" ? userId : userId.toString();
-  const socketId = userSockets.get(userIdStr);
 
-  // Only log when user not found for debugging (commented to reduce spam)
-  // if (!socketId) {
-  //   console.log("⚠️ [SOCKET] getReceiverSocketId - User not found:", {
-  //     requestedUserId: userIdStr,
-  //     allConnectedUsers: Array.from(userSockets.keys()),
-  //     totalConnections: userSockets.size,
-  //   });
-  // }
+  // MULTI-DEVICE: Return first socket ID (for backward compatibility)
+  // For new code, use getAllUserSocketIds() or emitToUser() instead
+  const sockets = userSockets.get(userIdStr);
+  if (!sockets || sockets.size === 0) {
+    return null;
+  }
 
-  return socketId;
+  // Return first socket (arbitrary but consistent)
+  return Array.from(sockets)[0];
+}
+
+// MULTI-DEVICE: Get all socket IDs for a user (exported for use in other modules)
+export function getReceiverSocketIds(userId) {
+  return getAllUserSocketIds(userId);
 }
 
 io.on("connection", (socket) => {
@@ -147,28 +210,25 @@ io.on("connection", (socket) => {
       // Ensure userId is stored as string for consistent lookup
       const userIdStr = typeof userId === "string" ? userId : userId.toString();
 
+      // MULTI-DEVICE: Count existing sockets before adding new one
+      const existingSocketCount = getAllUserSocketIds(userIdStr).length;
+
       logger.debug("Socket user connected", {
         userId: userIdStr,
         socketId: socket.id,
-        wasAlreadyConnected: userSockets.has(userIdStr),
+        existingDevices: existingSocketCount,
+        isNewDevice: existingSocketCount > 0,
       });
 
-      // Handle duplicate connections (e.g., multiple tabs/devices)
-      const existingSocketId = userSockets.get(userIdStr);
-      if (existingSocketId && existingSocketId !== socket.id) {
-        logger.info("Replacing existing socket connection", {
-          userId: userIdStr,
-          oldSocketId: existingSocketId,
-          newSocketId: socket.id,
-        });
+      // MULTI-DEVICE: Add this socket to user's set of sockets
+      // (No longer replaces - allows multiple devices)
+      addUserSocket(userIdStr, socket.id);
 
-        // Notify old socket about replacement (optional)
-        io.to(existingSocketId).emit("connection:replaced", {
-          message: "Your session has been replaced by a new connection",
-        });
-      }
-
-      userSockets.set(userIdStr, socket.id);
+      logger.info("Multi-device socket added", {
+        userId: userIdStr,
+        socketId: socket.id,
+        totalDevices: getAllUserSocketIds(userIdStr).length,
+      });
 
       // Check for pending calls when user comes online
       // Deliver any pending calls that were waiting for this user
@@ -186,8 +246,8 @@ io.on("connection", (socket) => {
             createdAt: pendingCall.createdAt,
           });
 
-          // Send call invitation to receiver (now online)
-          io.to(socket.id).emit("call:incoming", {
+          // MULTI-DEVICE: Send call invitation to ALL receiver's devices
+          emitToUser(userIdStr, "call:incoming", {
             callId,
             callerId: pendingCall.callerId,
             callerInfo: pendingCall.callerInfo,
@@ -693,7 +753,7 @@ io.on("connection", (socket) => {
 
       // ✅ PRODUCTION: Find existing reaction from this user
       const existingReactionIndex = message.reactions.findIndex(
-        (r) => r.userId.toString() === userId.toString() && r.emoji === emoji
+        (r) => r.userId.toString() === userId.toString() && r.emoji === emoji,
       );
 
       const wasRemoved = existingReactionIndex !== -1;
@@ -710,7 +770,7 @@ io.on("connection", (socket) => {
       } else {
         // Remove any other reaction from this user for this message (one reaction per user per message)
         message.reactions = message.reactions.filter(
-          (r) => r.userId.toString() !== userId.toString()
+          (r) => r.userId.toString() !== userId.toString(),
         );
         // Add new reaction
         message.reactions.push({
@@ -881,12 +941,12 @@ io.on("connection", (socket) => {
 
       const message = await Message.findById(messageId).populate(
         "senderId",
-        "fullname"
+        "fullname",
       );
       if (!message || !message.groupId) {
         logger.warn(
           "[SOCKET] groupMessageSeen - Message not found or not a group message",
-          { messageId }
+          { messageId },
         );
         return;
       }
@@ -988,7 +1048,7 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error(
         "❌ [GROUP_SEEN] Error updating group message seen status:",
-        error
+        error,
       );
     }
   });
@@ -1034,9 +1094,8 @@ io.on("connection", (socket) => {
 
                 // Send push notification for missed call
                 try {
-                  const { sendMissedCallNotification } = await import(
-                    "../services/pushNotification.service.js"
-                  );
+                  const { sendMissedCallNotification } =
+                    await import("../services/pushNotification.service.js");
                   await sendMissedCallNotification(pendingCall.receiverId, {
                     callId: savedCall._id,
                     callerId: pendingCall.callerId,
@@ -1045,33 +1104,32 @@ io.on("connection", (socket) => {
                 } catch (pushError) {
                   console.error(
                     "Failed to send missed call push notification:",
-                    pushError
+                    pushError,
                   );
                 }
 
                 // Send mobile push notification for missed call (Flutter)
                 try {
-                  const { sendMobileMissedCallNotification } = await import(
-                    "../services/mobilePushNotification.service.js"
-                  );
+                  const { sendMobileMissedCallNotification } =
+                    await import("../services/mobilePushNotification.service.js");
                   await sendMobileMissedCallNotification(
                     pendingCall.receiverId,
                     {
                       callId: savedCall._id,
                       callerId: pendingCall.callerId,
                       callType: pendingCall.callType,
-                    }
+                    },
                   );
                 } catch (pushError) {
                   console.error(
                     "Failed to send mobile missed call push notification:",
-                    pushError
+                    pushError,
                   );
                 }
               } catch (saveError) {
                 console.error(
                   "❌ Error saving offline missed call record:",
-                  saveError
+                  saveError,
                 );
               }
 
@@ -1088,8 +1146,10 @@ io.on("connection", (socket) => {
             }
           }, 60000); // 60 seconds timeout
 
+          // MULTI-DEVICE: Track callerSocketId for routing WebRTC answer/ICE back
           pendingCalls.set(callId, {
             callerId: userId,
+            callerSocketId: socket.id, // Track which socket initiated the call
             receiverId: receiverId,
             callType,
             callerInfo,
@@ -1100,9 +1160,8 @@ io.on("connection", (socket) => {
 
           // Send push notification for incoming call (receiver is offline)
           try {
-            const { sendCallNotification } = await import(
-              "../services/pushNotification.service.js"
-            );
+            const { sendCallNotification } =
+              await import("../services/pushNotification.service.js");
             await sendCallNotification(receiverId, {
               callId,
               callerId: userId,
@@ -1114,9 +1173,8 @@ io.on("connection", (socket) => {
 
           // Send mobile push notification for incoming call (Flutter CallKit)
           try {
-            const { sendMobileCallNotification } = await import(
-              "../services/mobilePushNotification.service.js"
-            );
+            const { sendMobileCallNotification } =
+              await import("../services/mobilePushNotification.service.js");
             await sendMobileCallNotification(receiverId, {
               callId,
               callerId: userId,
@@ -1125,7 +1183,7 @@ io.on("connection", (socket) => {
           } catch (pushError) {
             console.error(
               "Failed to send mobile call push notification:",
-              pushError
+              pushError,
             );
           }
 
@@ -1141,8 +1199,10 @@ io.on("connection", (socket) => {
 
         // Receiver is online - proceed with normal call flow
         // Store call info with timestamps
+        // MULTI-DEVICE: Track callerSocketId for routing WebRTC answer/ICE back
         activeCalls.set(callId, {
           callerId: userId,
+          callerSocketId: socket.id, // Track which socket initiated the call
           receiverId: receiverId,
           callType,
           status: "ringing",
@@ -1151,19 +1211,24 @@ io.on("connection", (socket) => {
           answeredAt: null, // When call was answered (if answered)
         });
 
-        // Send call invitation to receiver via socket
-        io.to(receiverSocketId).emit("call:incoming", {
+        // MULTI-DEVICE: Send call invitation to ALL receiver's devices via socket
+        const deviceCount = emitToUser(receiverId, "call:incoming", {
           callId,
           callerId: userId,
           callerInfo,
           callType,
         });
 
+        logger.info("📞 [Call] Sent call:incoming to all receiver devices", {
+          callId,
+          receiverId,
+          deviceCount,
+        });
+
         // Also send mobile push notification (for background/locked screen CallKit)
         try {
-          const { sendMobileCallNotification } = await import(
-            "../services/mobilePushNotification.service.js"
-          );
+          const { sendMobileCallNotification } =
+            await import("../services/mobilePushNotification.service.js");
           await sendMobileCallNotification(receiverId, {
             callId,
             callerId: userId,
@@ -1172,7 +1237,7 @@ io.on("connection", (socket) => {
         } catch (pushError) {
           console.error(
             "Failed to send mobile call push notification:",
-            pushError
+            pushError,
           );
         }
 
@@ -1205,23 +1270,17 @@ io.on("connection", (socket) => {
 
             activeCalls.delete(callId);
 
-            // Notify caller
-            const callerSocketId = getReceiverSocketId(callInfo.callerId);
-            if (callerSocketId) {
-              io.to(callerSocketId).emit("call:failed", {
-                callId,
-                reason: "No answer",
-              });
-            }
+            // MULTI-DEVICE: Notify all caller's devices
+            emitToUser(callInfo.callerId, "call:failed", {
+              callId,
+              reason: "No answer",
+            });
 
-            // Notify receiver
-            const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
-            if (receiverSocketId) {
-              io.to(receiverSocketId).emit("call:missed", {
-                callId,
-                callerId: callInfo.callerId,
-              });
-            }
+            // MULTI-DEVICE: Notify all receiver's devices
+            emitToUser(callInfo.receiverId, "call:missed", {
+              callId,
+              callerId: callInfo.callerId,
+            });
           }
         }, 60000); // 60 seconds timeout
       } catch (error) {
@@ -1231,14 +1290,39 @@ io.on("connection", (socket) => {
           reason: "Failed to initiate call",
         });
       }
-    }
+    },
   );
 
   // Call Answer
-  socket.on("call:answer", ({ callId, answer }) => {
+  socket.on("call:answer", async ({ callId, answer }) => {
     try {
-      const callInfo = activeCalls.get(callId);
+      // 🔥 CRITICAL: Check both activeCalls AND pendingCalls
+      // When receiver was offline (push notification), call is in pendingCalls
+      // When receiver was online (socket), call is in activeCalls
+      let callInfo = activeCalls.get(callId);
+      let wasInPendingCalls = false;
+
       if (!callInfo) {
+        // Check pendingCalls (user was offline, received push notification)
+        callInfo = pendingCalls.get(callId);
+        wasInPendingCalls = true;
+
+        if (callInfo) {
+          // Clear the timeout since call is being answered
+          if (callInfo.timeoutId) {
+            clearTimeout(callInfo.timeoutId);
+          }
+          // Move from pendingCalls to activeCalls
+          pendingCalls.delete(callId);
+          activeCalls.set(callId, callInfo);
+          console.log(
+            `📞 [Call] Moved call ${callId} from pendingCalls to activeCalls`,
+          );
+        }
+      }
+
+      if (!callInfo) {
+        console.log(`❌ [Call] Call not found: ${callId}`);
         io.to(socket.id).emit("call:failed", {
           callId,
           reason: "Call not found",
@@ -1248,26 +1332,60 @@ io.on("connection", (socket) => {
 
       if (callInfo.receiverId.toString() !== userId.toString()) {
         // Only receiver can answer
+        console.log(
+          `⚠️ [Call] Wrong user trying to answer. Expected: ${callInfo.receiverId}, Got: ${userId}`,
+        );
         return;
       }
 
       // Update call status and track when call was answered
       callInfo.status = "answered";
       callInfo.answeredAt = new Date();
+      // MULTI-DEVICE: Track which socket answered the call
+      callInfo.answeredBySocketId = socket.id;
       activeCalls.set(callId, callInfo);
 
-      // Notify caller that call was answered
-      const callerSocketId = getReceiverSocketId(callInfo.callerId);
-      if (callerSocketId) {
-        io.to(callerSocketId).emit("call:answered", {
-          callId,
-          receiverId: userId,
-        });
-      }
+      console.log(
+        `✅ [Call] Call ${callId} answered by ${userId} on socket ${socket.id}`,
+      );
 
-      // Forward WebRTC answer if provided
+      // ═══════════════════════════════════════════════════════════════════════
+      // MULTI-DEVICE: Notify receiver's OTHER devices that call was answered elsewhere
+      // This stops ringing on other devices (like Telegram/WhatsApp behavior)
+      // ═══════════════════════════════════════════════════════════════════════
+      emitToUserExcept(
+        callInfo.receiverId,
+        socket.id,
+        "call:answered-elsewhere",
+        {
+          callId,
+          answeredByDeviceId: socket.id,
+          message: "Call was answered on another device",
+        },
+      );
+
+      logger.info("📞 [Call] Notified other devices about answered call", {
+        callId,
+        receiverId: callInfo.receiverId,
+        answeringSocketId: socket.id,
+        otherDevicesNotified:
+          getAllUserSocketIds(callInfo.receiverId).length - 1,
+      });
+
+      // MULTI-DEVICE: Notify ALL caller's devices that call was answered
+      const callerDeviceCount = emitToUser(callInfo.callerId, "call:answered", {
+        callId,
+        receiverId: userId,
+      });
+
+      console.log(
+        `📤 [Call] Emitted call:answered to ${callerDeviceCount} caller device(s) for caller ${callInfo.callerId}`,
+      );
+
+      // Forward WebRTC answer if provided (only to the specific caller socket that initiated)
+      // For now, send to all caller devices - the WebRTC logic will handle which one connects
       if (answer) {
-        io.to(callerSocketId).emit("webrtc:answer", {
+        emitToUser(callInfo.callerId, "webrtc:answer", {
           callId,
           answer,
         });
@@ -1280,11 +1398,34 @@ io.on("connection", (socket) => {
   // Call Reject
   socket.on("call:reject", async ({ callId, reason }) => {
     try {
-      const callInfo = activeCalls.get(callId);
-      if (!callInfo) return;
+      // 🔥 Check both activeCalls AND pendingCalls (same as call:answer)
+      let callInfo = activeCalls.get(callId);
+      let wasInPendingCalls = false;
+
+      if (!callInfo) {
+        // Check pendingCalls (user was offline, received push notification)
+        callInfo = pendingCalls.get(callId);
+        wasInPendingCalls = true;
+
+        if (callInfo) {
+          // Clear the timeout since call is being rejected
+          if (callInfo.timeoutId) {
+            clearTimeout(callInfo.timeoutId);
+          }
+        }
+      }
+
+      if (!callInfo) {
+        console.log(`⚠️ [Call] Call not found for reject: ${callId}`);
+        return;
+      }
 
       // Determine status based on reason
       const status = reason === "busy" ? "busy" : "rejected";
+
+      console.log(
+        `🚫 [Call] Call ${callId} rejected by ${userId} (reason: ${status})`,
+      );
 
       // Save rejected call to database
       try {
@@ -1307,26 +1448,52 @@ io.on("connection", (socket) => {
         console.error("❌ Error saving rejected call record:", saveError);
       }
 
-      // Notify caller with appropriate event based on reason
-      const callerSocketId = getReceiverSocketId(callInfo.callerId);
-      if (callerSocketId) {
-        if (reason === "busy") {
-          // User is already in another call
-          io.to(callerSocketId).emit("call:busy", {
-            callId,
-            receiverId: userId,
-          });
-        } else {
-          io.to(callerSocketId).emit("call:rejected", {
-            callId,
-            reason: reason || "Call rejected",
-            receiverId: userId,
-          });
-        }
+      // MULTI-DEVICE: Notify ALL caller's devices with appropriate event
+      if (reason === "busy") {
+        // User is already in another call
+        emitToUser(callInfo.callerId, "call:busy", {
+          callId,
+          receiverId: userId,
+        });
+      } else {
+        emitToUser(callInfo.callerId, "call:rejected", {
+          callId,
+          reason: reason || "Call rejected",
+          receiverId: userId,
+        });
       }
 
-      // Remove call from active calls
+      // MULTI-DEVICE: Notify all receiver's OTHER devices that call was rejected on this device
+      emitToUserExcept(
+        callInfo.receiverId,
+        socket.id,
+        "call:rejected-elsewhere",
+        {
+          callId,
+          rejectedByDeviceId: socket.id,
+        },
+      );
+
+      // 🔥 CRITICAL: Send push notification to CALLER to dismiss their call UI
+      // This handles the case when caller's app is terminated/background
+      try {
+        const { sendMobileCallEndNotification } =
+          await import("../services/mobilePushNotification.service.js");
+        await sendMobileCallEndNotification(callInfo.callerId, {
+          callId,
+          reason: reason === "busy" ? "busy" : "rejected",
+          endedBy: userId,
+        });
+      } catch (pushError) {
+        console.error(
+          "Failed to send call reject push notification:",
+          pushError,
+        );
+      }
+
+      // Remove call from both maps (whichever it was in)
       activeCalls.delete(callId);
+      pendingCalls.delete(callId);
     } catch (error) {
       console.error("Error in call:reject:", error);
     }
@@ -1377,13 +1544,32 @@ io.on("connection", (socket) => {
         console.error("❌ Error saving cancelled call record:", saveError);
       }
 
-      // Notify receiver that call was cancelled
-      const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("call:cancelled", {
+      // MULTI-DEVICE: Notify ALL receiver's devices that call was cancelled
+      emitToUser(callInfo.receiverId, "call:cancelled", {
+        callId,
+        callerId: callInfo.callerId,
+      });
+
+      // MULTI-DEVICE: Also notify all caller's OTHER devices
+      emitToUserExcept(callInfo.callerId, socket.id, "call:cancelled", {
+        callId,
+        callerId: callInfo.callerId,
+      });
+
+      // 🔥 CRITICAL: Send push notification to dismiss CallKit on receiver's device
+      // This handles the case when receiver's app is terminated/background
+      try {
+        const { sendMobileCallCancelNotification } =
+          await import("../services/mobilePushNotification.service.js");
+        await sendMobileCallCancelNotification(callInfo.receiverId, {
           callId,
           callerId: callInfo.callerId,
         });
+      } catch (pushError) {
+        console.error(
+          "Failed to send call cancel push notification:",
+          pushError,
+        );
       }
 
       // Clean up
@@ -1450,22 +1636,36 @@ io.on("connection", (socket) => {
         // Don't block the call end process if save fails
       }
 
-      // Notify both parties
-      const callerSocketId = getReceiverSocketId(callInfo.callerId);
-      const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
+      // MULTI-DEVICE: Notify ALL devices of BOTH parties (except the one that ended)
+      emitToUserExcept(callInfo.callerId, socket.id, "call:ended", {
+        callId,
+        reason: reason || "Call ended",
+      });
 
-      if (callerSocketId && callerSocketId !== socket.id) {
-        io.to(callerSocketId).emit("call:ended", {
-          callId,
-          reason: reason || "Call ended",
-        });
-      }
+      emitToUserExcept(callInfo.receiverId, socket.id, "call:ended", {
+        callId,
+        reason: reason || "Call ended",
+      });
 
-      if (receiverSocketId && receiverSocketId !== socket.id) {
-        io.to(receiverSocketId).emit("call:ended", {
+      // 🔥 CRITICAL: Send push notification to OTHER party to dismiss their call UI
+      // This handles the case when other party's app is terminated/background
+      try {
+        const { sendMobileCallEndNotification } =
+          await import("../services/mobilePushNotification.service.js");
+
+        // Determine who is the other party (not the one who ended the call)
+        const otherPartyId =
+          userId.toString() === callInfo.callerId.toString()
+            ? callInfo.receiverId
+            : callInfo.callerId;
+
+        await sendMobileCallEndNotification(otherPartyId, {
           callId,
-          reason: reason || "Call ended",
+          reason: reason || "ended",
+          endedBy: userId,
         });
+      } catch (pushError) {
+        console.error("Failed to send call end push notification:", pushError);
       }
 
       // Remove call from active calls
@@ -1475,32 +1675,81 @@ io.on("connection", (socket) => {
     }
   });
 
-  // WebRTC Offer
+  // WebRTC Offer - MULTI-DEVICE: Send to specific receiver socket that answered
   socket.on("webrtc:offer", ({ callId, offer, receiverId }) => {
     try {
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("webrtc:offer", {
+      console.log(`📤 [WebRTC] Offer received from ${userId}:`);
+      console.log(`   ├─ callId: ${callId}`);
+      console.log(`   └─ receiverId: ${receiverId}`);
+
+      // MULTI-DEVICE: For WebRTC, we need to send to the specific socket that answered
+      // Check if there's an answeredBySocketId in the call info
+      const callInfo = activeCalls.get(callId);
+      if (callInfo && callInfo.answeredBySocketId) {
+        // Send to the specific socket that answered
+        io.to(callInfo.answeredBySocketId).emit("webrtc:offer", {
           callId,
           offer,
           callerId: userId,
         });
+        console.log(
+          `✅ [WebRTC] Offer forwarded to answering socket ${callInfo.answeredBySocketId}`,
+        );
+      } else {
+        // Fallback: send to first available socket for receiver
+        const receiverSocketId = getReceiverSocketId(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("webrtc:offer", {
+            callId,
+            offer,
+            callerId: userId,
+          });
+          console.log(
+            `✅ [WebRTC] Offer forwarded to socket ${receiverSocketId} (fallback)`,
+          );
+        } else {
+          console.log(`⚠️ [WebRTC] Receiver ${receiverId} not connected`);
+        }
       }
     } catch (error) {
       console.error("Error in webrtc:offer:", error);
     }
   });
 
-  // WebRTC Answer
+  // WebRTC Answer - MULTI-DEVICE: Send to caller's initiating socket
   socket.on("webrtc:answer", ({ callId, answer, callerId }) => {
     try {
-      const callerSocketId = getReceiverSocketId(callerId);
-      if (callerSocketId) {
-        io.to(callerSocketId).emit("webrtc:answer", {
+      console.log(`📤 [WebRTC] Answer received from ${userId}:`);
+      console.log(`   ├─ callId: ${callId}`);
+      console.log(`   └─ callerId: ${callerId}`);
+
+      // MULTI-DEVICE: For WebRTC, we need to send to the specific socket that initiated the call
+      const callInfo = activeCalls.get(callId);
+      if (callInfo && callInfo.callerSocketId) {
+        // Send to the specific socket that initiated the call
+        io.to(callInfo.callerSocketId).emit("webrtc:answer", {
           callId,
           answer,
           receiverId: userId,
         });
+        console.log(
+          `✅ [WebRTC] Answer forwarded to initiating socket ${callInfo.callerSocketId}`,
+        );
+      } else {
+        // Fallback: send to first available socket for caller
+        const callerSocketId = getReceiverSocketId(callerId);
+        if (callerSocketId) {
+          io.to(callerSocketId).emit("webrtc:answer", {
+            callId,
+            answer,
+            receiverId: userId,
+          });
+          console.log(
+            `✅ [WebRTC] Answer forwarded to socket ${callerSocketId} (fallback)`,
+          );
+        } else {
+          console.log(`⚠️ [WebRTC] Caller ${callerId} not connected`);
+        }
       }
     } catch (error) {
       console.error("Error in webrtc:answer:", error);
@@ -1522,21 +1771,39 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ICE Candidate Exchange
+  // ICE Candidate Exchange - MULTI-DEVICE: Route to specific socket
   socket.on("webrtc:ice-candidate", ({ callId, candidate, receiverId }) => {
     try {
       if (!callId || !candidate || !receiverId) {
         return;
       }
 
-      const receiverSocketId = getReceiverSocketId(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("webrtc:ice-candidate", {
+      // MULTI-DEVICE: Determine correct target socket based on call info
+      const callInfo = activeCalls.get(callId);
+      let targetSocketId = null;
+
+      if (callInfo) {
+        // If sender is the caller, send to the answering socket
+        if (callInfo.callerId === userId && callInfo.answeredBySocketId) {
+          targetSocketId = callInfo.answeredBySocketId;
+        }
+        // If sender is the receiver, send to the caller's initiating socket
+        else if (callInfo.receiverId === userId && callInfo.callerSocketId) {
+          targetSocketId = callInfo.callerSocketId;
+        }
+      }
+
+      // Fallback: use first available socket for receiver
+      if (!targetSocketId) {
+        targetSocketId = getReceiverSocketId(receiverId);
+      }
+
+      if (targetSocketId) {
+        io.to(targetSocketId).emit("webrtc:ice-candidate", {
           callId,
           candidate,
           senderId: userId,
         });
-      } else {
       }
     } catch (error) {
       console.error("Error in webrtc:ice-candidate:", error);
@@ -1609,7 +1876,7 @@ io.on("connection", (socket) => {
 
         // Check if user already in room
         const existingParticipant = room.participants.find(
-          (p) => p.userId === userIdStr
+          (p) => p.userId === userIdStr,
         );
         if (existingParticipant) {
           // Update socket ID if reconnecting
@@ -1666,7 +1933,7 @@ io.on("connection", (socket) => {
           error: "Failed to join group call",
         });
       }
-    }
+    },
   );
 
   // Leave group call room
@@ -1679,7 +1946,7 @@ io.on("connection", (socket) => {
 
       const userIdStr = userId.toString();
       const participantIndex = room.participants.findIndex(
-        (p) => p.userId === userIdStr
+        (p) => p.userId === userIdStr,
       );
 
       if (participantIndex !== -1) {
@@ -1807,7 +2074,7 @@ io.on("connection", (socket) => {
       // For now, we'll broadcast to all participants (simplified SFU)
       if (targetUserId) {
         const targetParticipant = room.participants.find(
-          (p) => p.userId === targetUserId
+          (p) => p.userId === targetUserId,
         );
         if (targetParticipant) {
           io.to(targetParticipant.socketId).emit("groupcall:webrtc-offer", {
@@ -1842,7 +2109,7 @@ io.on("connection", (socket) => {
 
       if (targetUserId) {
         const targetParticipant = room.participants.find(
-          (p) => p.userId === targetUserId
+          (p) => p.userId === targetUserId,
         );
         if (targetParticipant) {
           io.to(targetParticipant.socketId).emit("groupcall:webrtc-answer", {
@@ -1871,7 +2138,7 @@ io.on("connection", (socket) => {
         if (targetUserId) {
           // Send to specific target user
           const targetParticipant = room.participants.find(
-            (p) => p.userId === targetUserId
+            (p) => p.userId === targetUserId,
           );
           if (targetParticipant) {
             io.to(targetParticipant.socketId).emit(
@@ -1880,7 +2147,7 @@ io.on("connection", (socket) => {
                 roomId,
                 candidate,
                 senderId: userId,
-              }
+              },
             );
           }
         } else {
@@ -1893,7 +2160,7 @@ io.on("connection", (socket) => {
                   roomId,
                   candidate,
                   senderId: userId,
-                }
+                },
               );
             }
           });
@@ -1901,7 +2168,7 @@ io.on("connection", (socket) => {
       } catch (error) {
         console.error("Error in groupcall:webrtc-ice-candidate:", error);
       }
-    }
+    },
   );
 
   // Real-time location sharing handlers
@@ -1947,7 +2214,7 @@ io.on("connection", (socket) => {
       } catch (error) {
         console.error("Error handling location update:", error);
       }
-    }
+    },
   );
 
   socket.on("location:join", ({ roomId }) => {
@@ -1979,7 +2246,7 @@ io.on("connection", (socket) => {
       const targetLocation = userLocations.get(targetUserId.toString());
       if (targetLocation) {
         const user = await User.findById(targetUserId).select(
-          "fullname profilePic"
+          "fullname profilePic",
         );
         socket.emit("location:response", {
           userId: targetUserId.toString(),
@@ -2021,50 +2288,53 @@ io.on("connection", (socket) => {
       }
     }
 
-    let disconnectedUserId = null;
-    for (const [userId, socketId] of userSockets.entries()) {
-      if (socketId === socket.id) {
-        disconnectedUserId = userId;
-        userSockets.delete(userId);
-        logger.debug("Removed socket mapping", {
-          userId,
-          socketId: socket.id,
-          remainingConnections: userSockets.size,
-        });
-        break;
-      }
-    }
+    // MULTI-DEVICE: Remove only THIS socket from user's set
+    if (userId) {
+      const userIdStr = userId.toString();
+      const hadSocketsBefore = getAllUserSocketIds(userIdStr).length;
+      removeUserSocket(userIdStr, socket.id);
+      const hasSocketsAfter = getAllUserSocketIds(userIdStr).length;
 
-    // Cleanup active calls where user was participating
-    if (disconnectedUserId) {
-      // Cleanup 1-on-1 calls
+      logger.debug("Removed socket from user", {
+        userId: userIdStr,
+        socketId: socket.id,
+        remainingDevices: hasSocketsAfter,
+        wasLastDevice: hadSocketsBefore > 0 && hasSocketsAfter === 0,
+      });
+
+      // MULTI-DEVICE: Only cleanup calls if this was the SPECIFIC socket in the call
+      // Check if this socket was the answering socket for any active call
       for (const [callId, callInfo] of activeCalls.entries()) {
-        if (
-          callInfo.callerId.toString() === disconnectedUserId.toString() ||
-          callInfo.receiverId.toString() === disconnectedUserId.toString()
-        ) {
-          // Notify other party
-          const otherPartyId =
-            callInfo.callerId.toString() === disconnectedUserId.toString()
-              ? callInfo.receiverId
-              : callInfo.callerId;
-          const otherPartySocketId = getReceiverSocketId(otherPartyId);
+        // Only end call if this specific socket was the one in the call
+        const wasCallerSocket = callInfo.callerId.toString() === userIdStr;
+        const wasAnsweringSocket = callInfo.answeredBySocketId === socket.id;
 
-          if (otherPartySocketId) {
-            io.to(otherPartySocketId).emit("call:ended", {
-              callId,
-              reason: "User disconnected",
-            });
-          }
+        if (wasCallerSocket || wasAnsweringSocket) {
+          // This socket was actively in the call - notify other party
+          const otherPartyId = wasCallerSocket
+            ? callInfo.receiverId
+            : callInfo.callerId;
+
+          // MULTI-DEVICE: Notify ALL devices of other party
+          emitToUser(otherPartyId, "call:ended", {
+            callId,
+            reason: "User disconnected",
+          });
 
           activeCalls.delete(callId);
+          logger.info("Call ended due to socket disconnect", {
+            callId,
+            disconnectedSocket: socket.id,
+            wasCallerSocket,
+            wasAnsweringSocket,
+          });
         }
       }
 
-      // Cleanup group calls
+      // Cleanup group calls - only remove this specific socket
       for (const [roomId, room] of groupCallRooms.entries()) {
         const participantIndex = room.participants.findIndex(
-          (p) => p.userId === disconnectedUserId.toString()
+          (p) => p.socketId === socket.id,
         );
 
         if (participantIndex !== -1) {
@@ -2074,7 +2344,7 @@ io.on("connection", (socket) => {
           room.participants.forEach((participant) => {
             io.to(participant.socketId).emit("groupcall:participant-left", {
               roomId,
-              userId: disconnectedUserId.toString(),
+              userId: userIdStr,
             });
           });
 
@@ -2085,25 +2355,29 @@ io.on("connection", (socket) => {
         }
       }
 
-      // Clean up location data
-      userLocations.delete(disconnectedUserId);
-      // Remove from all location rooms
-      locationRooms.forEach((userSet, roomId) => {
-        userSet.delete(disconnectedUserId);
-        if (userSet.size === 0) {
-          locationRooms.delete(roomId);
-        }
-      });
+      // MULTI-DEVICE: Only clean up location/broadcast offline if NO devices remain
+      if (hasSocketsAfter === 0) {
+        // Clean up location data
+        userLocations.delete(userIdStr);
+        // Remove from all location rooms
+        locationRooms.forEach((userSet, roomId) => {
+          userSet.delete(userIdStr);
+          if (userSet.size === 0) {
+            locationRooms.delete(roomId);
+          }
+        });
 
-      // Notify others that user went offline
-      socket.broadcast.emit("location:offline", {
-        userId: disconnectedUserId,
-      });
+        // Notify others that user went offline (only when ALL devices disconnected)
+        socket.broadcast.emit("location:offline", {
+          userId: userIdStr,
+        });
 
-      const onlineUserIds = Array.from(userSockets.keys());
-      io.emit("getOnlineUsers", onlineUserIds);
+        const onlineUserIds = Array.from(userSockets.keys());
+        io.emit("getOnlineUsers", onlineUserIds);
+      }
     }
   });
 });
 
-export { io, app, server };
+// Note: getReceiverSocketId is already exported as function declaration
+export { io, app, server, activeCalls, pendingCalls };

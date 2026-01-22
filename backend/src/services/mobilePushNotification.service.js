@@ -4,6 +4,7 @@ import logger from "../lib/logger.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import apnsVoipPush from "./apnsVoipPush.service.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,17 +45,17 @@ try {
   // Try to load Firebase service account key
   const serviceAccountPath = path.join(
     __dirname,
-    "../../config/firebase-service-account.json"
+    "../../config/firebase-service-account.json",
   );
 
   logger.info(
-    `🔍 [Firebase] Checking for service account at: ${serviceAccountPath}`
+    `🔍 [Firebase] Checking for service account at: ${serviceAccountPath}`,
   );
 
   if (fs.existsSync(serviceAccountPath)) {
     logger.info("📄 [Firebase] Service account file found, loading...");
     const serviceAccount = JSON.parse(
-      fs.readFileSync(serviceAccountPath, "utf8")
+      fs.readFileSync(serviceAccountPath, "utf8"),
     );
 
     // Validate service account structure
@@ -76,7 +77,7 @@ try {
     logger.info("✅ [Firebase] Firebase Admin SDK initialized successfully");
   } else {
     logger.warn(
-      "⚠️ [Firebase] Service account not found. Mobile push notifications will be disabled."
+      "⚠️ [Firebase] Service account not found. Mobile push notifications will be disabled.",
     );
     logger.warn(`   Expected path: ${serviceAccountPath}`);
   }
@@ -132,7 +133,7 @@ const retryWithBackoff = async (fn, maxRetries = 3, baseDelay = 100) => {
       // Exponential backoff: 100ms, 200ms, 400ms, etc.
       const delay = baseDelay * Math.pow(2, attempt);
       logger.debug(
-        `⏱️ [Retry] Attempt ${attempt + 1} failed, retrying in ${delay}ms`
+        `⏱️ [Retry] Attempt ${attempt + 1} failed, retrying in ${delay}ms`,
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -153,12 +154,12 @@ export const sendMobilePushNotification = async (userId, payload) => {
 
   try {
     logger.debug(
-      `📱 [Mobile Push] Called for user ${userId}, Firebase initialized: ${firebaseInitialized}`
+      `📱 [Mobile Push] Called for user ${userId}, Firebase initialized: ${firebaseInitialized}`,
     );
 
     if (!firebaseInitialized) {
       logger.warn(
-        "⚠️ [Mobile Push] Firebase not initialized, skipping mobile push notification"
+        "⚠️ [Mobile Push] Firebase not initialized, skipping mobile push notification",
       );
       return {
         success: false,
@@ -172,7 +173,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
     // Check circuit breaker
     if (circuitBreaker.isOpen()) {
       logger.warn(
-        `⚠️ [Mobile Push] Circuit breaker is open, skipping push notification (failures: ${circuitBreaker.failureCount})`
+        `⚠️ [Mobile Push] Circuit breaker is open, skipping push notification (failures: ${circuitBreaker.failureCount})`,
       );
       return {
         success: false,
@@ -210,7 +211,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
     const user = await Promise.race([
       User.findById(userId).select("pushTokens"),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Database query timeout")), 5000)
+        setTimeout(() => reject(new Error("Database query timeout")), 5000),
       ),
     ]);
 
@@ -227,7 +228,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
 
     // Filter valid tokens
     const validTokens = user.pushTokens.filter((tokenData) =>
-      isValidFCMToken(tokenData.token)
+      isValidFCMToken(tokenData.token),
     );
 
     if (validTokens.length === 0) {
@@ -245,7 +246,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
       logger.warn(
         `⚠️ [Mobile Push] Filtered out ${
           user.pushTokens.length - validTokens.length
-        } invalid tokens`
+        } invalid tokens`,
       );
     }
 
@@ -275,7 +276,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
                 Object.entries(payload.data).map(([key, value]) => [
                   key,
                   String(value),
-                ])
+                ]),
               )
             : {},
           // Platform-specific config
@@ -307,10 +308,10 @@ export const sendMobilePushNotification = async (userId, payload) => {
           retryWithBackoff(
             () => admin.messaging().send(message),
             3, // Max 3 retries
-            100 // Base delay 100ms
+            100, // Base delay 100ms
           ),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("FCM request timeout")), 10000)
+            setTimeout(() => reject(new Error("FCM request timeout")), 10000),
           ),
         ]);
 
@@ -353,7 +354,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
         ) {
           logger.info(
             `🗑️  Marking invalid token for removal (user ${userId}):`,
-            tokenData.token.substring(0, 20) + "..."
+            tokenData.token.substring(0, 20) + "...",
           );
           invalidTokens.push(tokenData.token);
         } else {
@@ -366,13 +367,13 @@ export const sendMobilePushNotification = async (userId, payload) => {
     // Batch remove invalid tokens (more efficient than filter in loop)
     if (invalidTokens.length > 0) {
       user.pushTokens = user.pushTokens.filter(
-        (t) => !invalidTokens.includes(t.token)
+        (t) => !invalidTokens.includes(t.token),
       );
 
       try {
         await user.save();
         logger.info(
-          `🗑️ Removed ${invalidTokens.length} invalid token(s) for user ${userId}`
+          `🗑️ Removed ${invalidTokens.length} invalid token(s) for user ${userId}`,
         );
       } catch (saveError) {
         logger.error(`❌ Failed to save user after removing tokens:`, {
@@ -435,7 +436,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
  */
 export const sendMobileMessageNotification = async (
   receiverId,
-  messageData
+  messageData,
 ) => {
   try {
     // Input validation
@@ -450,11 +451,11 @@ export const sendMobileMessageNotification = async (
     }
 
     const sender = await User.findById(messageData.senderId).select(
-      "fullname profilePic"
+      "fullname profilePic",
     );
     if (!sender) {
       logger.warn(
-        `⚠️ [Mobile Message] Sender not found: ${messageData.senderId}`
+        `⚠️ [Mobile Message] Sender not found: ${messageData.senderId}`,
       );
       return { success: false, error: "Sender not found" };
     }
@@ -520,7 +521,7 @@ export const sendMobileMessageNotification = async (
 export const sendMobileGroupMessageNotification = async (
   receiverId,
   messageData,
-  groupData
+  groupData,
 ) => {
   try {
     // Input validation
@@ -618,7 +619,7 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
 
   try {
     logger.info(
-      `📞 [Mobile Call] Sending call notification to user ${receiverId}`
+      `📞 [Mobile Call] Sending call notification to user ${receiverId}`,
     );
 
     if (!firebaseInitialized) {
@@ -634,7 +635,7 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
 
     // Get caller info
     const caller = await User.findById(callData.callerId).select(
-      "fullname profilePic"
+      "fullname profilePic",
     );
     if (!caller) {
       logger.warn(`⚠️ [Mobile Call] Caller not found: ${callData.callerId}`);
@@ -650,25 +651,25 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
     const user = await Promise.race([
       User.findById(receiverId).select("pushTokens"),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Database query timeout")), 5000)
+        setTimeout(() => reject(new Error("Database query timeout")), 5000),
       ),
     ]);
 
     if (!user || !user.pushTokens || user.pushTokens.length === 0) {
       logger.debug(
-        `⚠️ [Mobile Call] No push tokens found for user ${receiverId}`
+        `⚠️ [Mobile Call] No push tokens found for user ${receiverId}`,
       );
       return { success: false, error: "No push tokens" };
     }
 
     // Filter valid tokens
     const validTokens = user.pushTokens.filter((tokenData) =>
-      isValidFCMToken(tokenData.token)
+      isValidFCMToken(tokenData.token),
     );
 
     if (validTokens.length === 0) {
       logger.warn(
-        `⚠️ [Mobile Call] No valid FCM tokens for user ${receiverId}`
+        `⚠️ [Mobile Call] No valid FCM tokens for user ${receiverId}`,
       );
       return { success: false, error: "No valid push tokens" };
     }
@@ -689,7 +690,67 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
       try {
         const isIOS = tokenData.platform === "ios";
 
-        // Build platform-specific message for CallKit
+        // 🔥 iOS with VoIP token: Use APNs VoIP push for 100% reliable CallKit
+        // This works even when app is terminated, device locked, or in DND mode
+        if (isIOS && tokenData.voipToken && apnsVoipPush.isAvailable()) {
+          logger.info(`📞 [Mobile Call] Using APNs VoIP push for iOS device`);
+
+          const voipResult = await apnsVoipPush.sendVoipPush(
+            tokenData.voipToken,
+            {
+              id: callData.callId,
+              nameCaller: callerName,
+              handle: callerName,
+              type: isVideo ? 1 : 0,
+              avatar: callerAvatar,
+              duration: 60000,
+              callerId: callData.callerId,
+              callerName: callerName,
+              callerAvatar: callerAvatar,
+              callType: callType,
+              receiverId: receiverId,
+            },
+          );
+
+          if (voipResult.success) {
+            sent++;
+            results.push({
+              success: true,
+              platform: "ios-voip",
+              apnsId: voipResult.apnsId,
+            });
+            circuitBreaker.recordSuccess();
+
+            // Also send FCM as backup (for foreground state sync)
+            // But don't count as failure if it fails
+            try {
+              await sendIOSFCMBackup(
+                tokenData.token,
+                callData,
+                callerName,
+                callerAvatar,
+                callType,
+                receiverId,
+              );
+            } catch (e) {
+              logger.debug(
+                `⚠️ [Mobile Call] FCM backup for iOS failed (non-critical):`,
+                e.message,
+              );
+            }
+          } else {
+            logger.warn(
+              `⚠️ [Mobile Call] VoIP push failed, falling back to FCM:`,
+              voipResult.error,
+            );
+            // Fall through to FCM below
+          }
+
+          // Skip rest of loop if VoIP succeeded
+          if (voipResult.success) continue;
+        }
+
+        // Build platform-specific message for CallKit (FCM)
         // Following flutter_callkit_incoming documentation format exactly
         const message = {
           token: tokenData.token,
@@ -727,7 +788,7 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
           logger.debug(`   ├─ receiverId: ${message.data.receiverId}`);
           logger.debug(`   ├─ callType: ${message.data.callType}`);
           logger.debug(
-            `   └─ avatar: ${message.data.avatar ? "present" : "none"}`
+            `   └─ avatar: ${message.data.avatar ? "present" : "none"}`,
           );
 
           // ✅ CRITICAL: Use high-priority background notification for iOS
@@ -748,12 +809,17 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
         } else {
           // Android: Include notification + data for CallKit
           // 🔥 CRITICAL: Include ALL data fields for flutter_callkit_incoming
+          // Note: 'type' is used for app routing (must be "call"),
+          // flutter_callkit_incoming uses 'isVideo' field instead
           message.data = {
-            type: "call",
+            type: "call", // App routing - must be "call" for push handler
             // flutter_callkit_incoming format fields
             id: String(callData.callId),
             nameCaller: callerName,
             handle: callerName,
+            avatar: callerAvatar || "",
+            duration: "60000", // 🔥 CRITICAL: CallKit timeout in ms (must be string)
+            isVideo: isVideo ? "true" : "false", // For flutter_callkit_incoming
             // App-specific fields
             callId: String(callData.callId),
             callerId: String(callData.callerId),
@@ -789,7 +855,7 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
           retryWithBackoff(
             () => admin.messaging().send(message),
             2, // Max 2 retries for calls (time-sensitive)
-            50 // Shorter base delay
+            50, // Shorter base delay
           ),
           new Promise((_, reject) =>
             setTimeout(
@@ -800,12 +866,12 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
                       tokenData.platform
                     } push timeout after 12s (token: ${tokenData.token.substring(
                       0,
-                      20
-                    )}...)`
-                  )
+                      20,
+                    )}...)`,
+                  ),
                 ),
-              12000 // Increased to 12s for iOS VoIP background push
-            )
+              12000, // Increased to 12s for iOS VoIP background push
+            ),
           ),
         ]);
 
@@ -832,7 +898,7 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
             stack: error.stack,
             token: tokenData.token.substring(0, 20) + "...",
             platform: tokenData.platform,
-          }
+          },
         );
 
         // Log readable error message
@@ -859,7 +925,7 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
             {
               token: tokenData.token.substring(0, 20) + "...",
               errorCode: error.code,
-            }
+            },
           );
 
           // Remove invalid token from database
@@ -870,13 +936,13 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
                 $pull: {
                   pushTokens: { token: tokenData.token },
                 },
-              }
+              },
             );
             logger.info(`✅ [Mobile Call] Invalid token removed successfully`);
           } catch (cleanupError) {
             logger.error(
               `❌ [Mobile Call] Failed to cleanup token:`,
-              cleanupError
+              cleanupError,
             );
           }
         } else {
@@ -915,6 +981,61 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
 };
 
 /**
+ * Send iOS FCM backup notification (for foreground state sync)
+ * Used alongside VoIP push to ensure app state is updated
+ *
+ * @param {string} token - FCM token
+ * @param {object} callData - Call data
+ * @param {string} callerName - Caller display name
+ * @param {string} callerAvatar - Caller avatar URL
+ * @param {string} callType - Call type (voice/video)
+ * @param {string} receiverId - Receiver user ID
+ * @returns {Promise<object>} Result
+ */
+const sendIOSFCMBackup = async (
+  token,
+  callData,
+  callerName,
+  callerAvatar,
+  callType,
+  receiverId,
+) => {
+  const isVideo = callType === "video";
+
+  const message = {
+    token: token,
+    data: {
+      id: String(callData.callId),
+      nameCaller: callerName,
+      handle: callerName,
+      type: isVideo ? "1" : "0",
+      avatar: callerAvatar || "",
+      duration: "60000",
+      callerId: String(callData.callerId),
+      callerName: callerName,
+      callerAvatar: callerAvatar || "",
+      callType: callType,
+      receiverId: String(receiverId),
+      timestamp: String(Date.now()),
+      isBackup: "true", // Mark as backup to prevent duplicate handling
+    },
+    apns: {
+      headers: {
+        "apns-priority": "5", // Lower priority since VoIP is primary
+        "apns-push-type": "background",
+      },
+      payload: {
+        aps: {
+          "content-available": 1,
+        },
+      },
+    },
+  };
+
+  return admin.messaging().send(message);
+};
+
+/**
  * Send missed call notification to mobile devices
  *
  * @param {string} receiverId - User ID to send notification to
@@ -923,20 +1044,20 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
  */
 export const sendMobileMissedCallNotification = async (
   receiverId,
-  callData
+  callData,
 ) => {
   try {
     logger.info(
-      `📞 [Mobile Missed Call] Sending notification to user ${receiverId}`
+      `📞 [Mobile Missed Call] Sending notification to user ${receiverId}`,
     );
 
     // Get caller info
     const caller = await User.findById(callData.callerId).select(
-      "fullname profilePic"
+      "fullname profilePic",
     );
     if (!caller) {
       logger.warn(
-        `⚠️ [Mobile Missed Call] Caller not found: ${callData.callerId}`
+        `⚠️ [Mobile Missed Call] Caller not found: ${callData.callerId}`,
       );
       return { success: false, error: "Caller not found" };
     }
@@ -965,6 +1086,321 @@ export const sendMobileMissedCallNotification = async (
       receiverId,
       callId: callData?.callId,
     });
+    return { success: false, error: error.message };
+  }
+};
+
+/**
+ * Send call cancel notification to dismiss CallKit on receiver's device
+ *
+ * This is CRITICAL for when caller cancels before receiver answers:
+ * - If receiver's app is terminated/background, socket event won't reach them
+ * - This push notification tells the device to dismiss the CallKit UI
+ *
+ * @param {string} receiverId - User ID to send notification to
+ * @param {object} callData - Call data including callId
+ * @returns {Promise<object>} Result with success status
+ */
+export const sendMobileCallCancelNotification = async (
+  receiverId,
+  callData,
+) => {
+  const startTime = Date.now();
+
+  try {
+    logger.info(
+      `📞 [Mobile Call Cancel] Sending cancel notification to user ${receiverId}`,
+    );
+
+    if (!firebaseInitialized) {
+      logger.warn("⚠️ [Mobile Call Cancel] Firebase not initialized");
+      return { success: false, error: "Firebase not initialized" };
+    }
+
+    if (!receiverId || !callData?.callId) {
+      logger.warn("⚠️ [Mobile Call Cancel] Missing required data");
+      return { success: false, error: "Missing required data" };
+    }
+
+    // Get user's push tokens
+    const user = await Promise.race([
+      User.findById(receiverId).select("pushTokens"),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Database query timeout")), 5000),
+      ),
+    ]);
+
+    if (!user || !user.pushTokens || user.pushTokens.length === 0) {
+      logger.debug(
+        `⚠️ [Mobile Call Cancel] No push tokens for user ${receiverId}`,
+      );
+      return { success: false, error: "No push tokens" };
+    }
+
+    const validTokens = user.pushTokens.filter((tokenData) =>
+      isValidFCMToken(tokenData.token),
+    );
+
+    if (validTokens.length === 0) {
+      return { success: false, error: "No valid push tokens" };
+    }
+
+    logger.info(
+      `📞 [Mobile Call Cancel] Sending to ${validTokens.length} devices`,
+    );
+
+    const results = [];
+    let sent = 0;
+    let failed = 0;
+
+    for (const tokenData of validTokens) {
+      try {
+        const isIOS = tokenData.platform === "ios";
+
+        // 🔥 iOS with VoIP token: Use APNs VoIP push to cancel CallKit
+        if (isIOS && tokenData.voipToken && apnsVoipPush.isAvailable()) {
+          logger.info(`📞 [Mobile Call Cancel] Using APNs VoIP for iOS`);
+
+          const voipResult = await apnsVoipPush.sendVoipPush(
+            tokenData.voipToken,
+            {
+              id: callData.callId,
+              nameCaller: "Call Cancelled",
+              handle: "Call Cancelled",
+              type: 0,
+              duration: 0,
+              // 🔥 CRITICAL: These fields tell flutter_callkit_incoming to END the call
+              isCallCancelled: "true",
+              action: "endCall",
+              endReason: "cancelled",
+            },
+          );
+
+          if (voipResult.success) {
+            sent++;
+            results.push({ success: true, platform: "ios-voip" });
+            continue;
+          }
+        }
+
+        // FCM fallback for both iOS and Android
+        const message = {
+          token: tokenData.token,
+          data: {
+            type: "call_cancel",
+            id: String(callData.callId),
+            callId: String(callData.callId),
+            action: "endCall",
+            isCallCancelled: "true",
+            endReason: "cancelled",
+            timestamp: String(Date.now()),
+          },
+        };
+
+        if (isIOS) {
+          message.apns = {
+            headers: {
+              "apns-priority": "10",
+              "apns-push-type": "background",
+            },
+            payload: {
+              aps: {
+                "content-available": 1,
+              },
+            },
+          };
+        } else {
+          // Android: High priority to ensure delivery
+          message.android = {
+            priority: "high",
+            ttl: 10000, // Short TTL - cancel should be immediate
+            directBootOk: true,
+          };
+        }
+
+        const response = await admin.messaging().send(message);
+        logger.debug(`✅ [Mobile Call Cancel] Sent to ${tokenData.platform}`);
+        sent++;
+        results.push({
+          success: true,
+          platform: tokenData.platform,
+          messageId: response,
+        });
+      } catch (error) {
+        logger.error(`❌ [Mobile Call Cancel] Failed:`, error.message);
+        failed++;
+        results.push({ success: false, error: error.message });
+      }
+    }
+
+    const duration = Date.now() - startTime;
+    logger.info(
+      `📊 [Mobile Call Cancel] Results (${duration}ms): sent=${sent}, failed=${failed}`,
+    );
+
+    return { success: sent > 0, sent, failed, results };
+  } catch (error) {
+    logger.error(
+      "Error sending mobile call cancel notification:",
+      error.message,
+    );
+    return { success: false, error: error.message };
+  }
+};
+
+/**
+ * Send call end notification to dismiss active call UI on remote device
+ *
+ * This handles multiple scenarios:
+ * - Receiver declines: Notify CALLER to close call UI
+ * - Caller/Receiver ends ongoing call: Notify OTHER party
+ * - Call timeout: Notify both parties
+ *
+ * CRITICAL for terminated/background state where socket events won't reach
+ *
+ * @param {string} targetUserId - User ID to send notification to
+ * @param {object} callData - Call data including callId, reason, and optional endedBy
+ * @returns {Promise<object>} Result with success status
+ */
+export const sendMobileCallEndNotification = async (targetUserId, callData) => {
+  const startTime = Date.now();
+
+  try {
+    const reason = callData?.reason || "ended";
+    logger.info(
+      `📞 [Mobile Call End] Sending end notification to user ${targetUserId} (reason: ${reason})`,
+    );
+
+    if (!firebaseInitialized) {
+      logger.warn("⚠️ [Mobile Call End] Firebase not initialized");
+      return { success: false, error: "Firebase not initialized" };
+    }
+
+    if (!targetUserId || !callData?.callId) {
+      logger.warn("⚠️ [Mobile Call End] Missing required data");
+      return { success: false, error: "Missing required data" };
+    }
+
+    // Get user's push tokens
+    const user = await Promise.race([
+      User.findById(targetUserId).select("pushTokens"),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Database query timeout")), 5000),
+      ),
+    ]);
+
+    if (!user || !user.pushTokens || user.pushTokens.length === 0) {
+      logger.debug(
+        `⚠️ [Mobile Call End] No push tokens for user ${targetUserId}`,
+      );
+      return { success: false, error: "No push tokens" };
+    }
+
+    const validTokens = user.pushTokens.filter((tokenData) =>
+      isValidFCMToken(tokenData.token),
+    );
+
+    if (validTokens.length === 0) {
+      return { success: false, error: "No valid push tokens" };
+    }
+
+    logger.info(
+      `📞 [Mobile Call End] Sending to ${validTokens.length} devices`,
+    );
+
+    const results = [];
+    let sent = 0;
+    let failed = 0;
+
+    for (const tokenData of validTokens) {
+      try {
+        const isIOS = tokenData.platform === "ios";
+
+        // 🔥 iOS with VoIP token: Use APNs VoIP push to end CallKit
+        if (isIOS && tokenData.voipToken && apnsVoipPush.isAvailable()) {
+          logger.info(`📞 [Mobile Call End] Using APNs VoIP for iOS`);
+
+          const voipResult = await apnsVoipPush.sendVoipPush(
+            tokenData.voipToken,
+            {
+              id: callData.callId,
+              nameCaller: "Call Ended",
+              handle: "Call Ended",
+              type: 0,
+              duration: 0,
+              // 🔥 CRITICAL: These fields tell flutter_callkit_incoming to END the call
+              isCallEnded: "true",
+              action: "endCall",
+              endReason: reason,
+            },
+          );
+
+          if (voipResult.success) {
+            sent++;
+            results.push({ success: true, platform: "ios-voip" });
+            continue;
+          }
+        }
+
+        // FCM for both iOS and Android
+        const message = {
+          token: tokenData.token,
+          data: {
+            type: "call_end",
+            id: String(callData.callId),
+            callId: String(callData.callId),
+            action: "endCall",
+            isCallEnded: "true",
+            endReason: reason,
+            endedBy: callData.endedBy || "",
+            timestamp: String(Date.now()),
+          },
+        };
+
+        if (isIOS) {
+          message.apns = {
+            headers: {
+              "apns-priority": "10",
+              "apns-push-type": "background",
+            },
+            payload: {
+              aps: {
+                "content-available": 1,
+              },
+            },
+          };
+        } else {
+          // Android: High priority to ensure delivery
+          message.android = {
+            priority: "high",
+            ttl: 10000, // Short TTL - end should be immediate
+            directBootOk: true,
+          };
+        }
+
+        const response = await admin.messaging().send(message);
+        logger.debug(`✅ [Mobile Call End] Sent to ${tokenData.platform}`);
+        sent++;
+        results.push({
+          success: true,
+          platform: tokenData.platform,
+          messageId: response,
+        });
+      } catch (error) {
+        logger.error(`❌ [Mobile Call End] Failed:`, error.message);
+        failed++;
+        results.push({ success: false, error: error.message });
+      }
+    }
+
+    const duration = Date.now() - startTime;
+    logger.info(
+      `📊 [Mobile Call End] Results (${duration}ms): sent=${sent}, failed=${failed}`,
+    );
+
+    return { success: sent > 0, sent, failed, results };
+  } catch (error) {
+    logger.error("Error sending mobile call end notification:", error.message);
     return { success: false, error: error.message };
   }
 };

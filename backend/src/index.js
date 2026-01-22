@@ -11,7 +11,14 @@ import { connectDB } from "./lib/db.js";
 import mongoose from "mongoose";
 import cookieParser from "cookie-parser";
 import cors from "cors";
-import { app, server, io } from "./lib/socket.js"; // Use the app instance from socket.js
+import {
+  app,
+  server,
+  io,
+  activeCalls,
+  pendingCalls,
+  getReceiverSocketId,
+} from "./lib/socket.js"; // Use the app instance from socket.js
 import {
   errorHandler,
   notFoundHandler,
@@ -38,6 +45,14 @@ const KEEP_ALIVE_INTERVAL =
 const KEEP_ALIVE_ENABLED = process.env.KEEP_ALIVE_ENABLED !== "false"; // Enabled by default, set to 'false' to disable
 const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 30000; // 30 seconds default
 
+// 🔥 Store call state in app context for HTTP API access
+app.set("io", io);
+app.set("callState", {
+  activeCalls,
+  pendingCalls,
+  getReceiverSocketId,
+});
+
 // Request ID middleware (should be early in the middleware chain)
 app.use(requestIdMiddleware);
 
@@ -54,7 +69,7 @@ app.use(
     },
     level: 6, // Compression level (0-9, 6 is a good balance)
     threshold: 1024, // Only compress responses > 1KB
-  })
+  }),
 );
 
 // Security headers with Helmet
@@ -75,7 +90,7 @@ app.use(
     },
     crossOriginEmbedderPolicy: false, // Allow embedding for chat features
     crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow cross-origin resources
-  })
+  }),
 );
 
 // Middleware setup
@@ -170,7 +185,7 @@ app.use(
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Auth-Token"], // Allow custom auth header
     exposedHeaders: ["X-Auth-Token"], // Expose token header for Safari compatibility
-  })
+  }),
 );
 
 // Health check endpoint (before routes, so it's always accessible)
@@ -376,11 +391,11 @@ const setupKeepAlive = () => {
           const timestamp = new Date().toISOString();
           if (res.statusCode === 200) {
             logger.debug(
-              `Keep-alive ping successful (${res.statusCode}) at ${timestamp}`
+              `Keep-alive ping successful (${res.statusCode}) at ${timestamp}`,
             );
           } else {
             logger.warn(
-              `Keep-alive ping returned status ${res.statusCode} at ${timestamp}`
+              `Keep-alive ping returned status ${res.statusCode} at ${timestamp}`,
             );
           }
         });

@@ -8,15 +8,6 @@ export const registerPushToken = async (req, res) => {
   try {
     const { token, platform, userAgent, deviceInfo, voipToken } = req.body; // ✅ Added voipToken
     const userId = req.user._id;
-
-    console.log("📤 [Push] Token registration request");
-    console.log("   ├─ User:", userId);
-    console.log("   ├─ Token:", token?.substring(0, 20) + "...");
-    console.log("   └─ Platform:", platform);
-    if (voipToken) {
-      console.log("   └─ VoIP Token:", voipToken.substring(0, 20) + "...");
-    }
-
     // Validation
     if (!token) {
       return res.status(400).json({
@@ -49,7 +40,7 @@ export const registerPushToken = async (req, res) => {
 
     // Check if token already exists
     const existingTokenIndex = user.pushTokens.findIndex(
-      (t) => t.token === token
+      (t) => t.token === token,
     );
 
     if (existingTokenIndex !== -1) {
@@ -75,14 +66,9 @@ export const registerPushToken = async (req, res) => {
         lastUsed: new Date(),
         createdAt: new Date(),
       });
-      console.log("✅ [Push] New token added");
     }
 
     await user.save();
-
-    console.log("✅ [Push] Token registered successfully");
-    console.log("   └─ Total tokens for user:", user.pushTokens.length);
-
     res.status(200).json({
       success: true,
       message: "Push token registered successfully",
@@ -106,11 +92,6 @@ export const unregisterPushToken = async (req, res) => {
   try {
     const { token } = req.body;
     const userId = req.user._id;
-
-    console.log("📤 [Push] Token unregister request");
-    console.log("   ├─ User:", userId);
-    console.log("   └─ Token:", token?.substring(0, 20) + "...");
-
     if (!token) {
       return res.status(400).json({
         success: false,
