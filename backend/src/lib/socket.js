@@ -1338,6 +1338,22 @@ io.on("connection", (socket) => {
         return;
       }
 
+      // 🔥 CRITICAL FIX: If call is already answered, skip processing
+      // This prevents multi-device race conditions where second socket overwrites
+      // the answeredBySocketId, causing WebRTC offers to go to wrong socket
+      if (callInfo.status === "answered" && callInfo.answeredBySocketId) {
+        console.log(
+          `⚠️ [Call] Call ${callId} already answered on socket ${callInfo.answeredBySocketId}, ignoring duplicate from ${socket.id}`,
+        );
+        // Notify this socket that call was answered elsewhere
+        io.to(socket.id).emit("call:answered-elsewhere", {
+          callId,
+          answeredByDeviceId: callInfo.answeredBySocketId,
+          message: "Call was already answered on another device",
+        });
+        return;
+      }
+
       // Update call status and track when call was answered
       callInfo.status = "answered";
       callInfo.answeredAt = new Date();
@@ -1675,81 +1691,81 @@ io.on("connection", (socket) => {
     }
   });
 
-  // WebRTC Offer - MULTI-DEVICE: Send to specific receiver socket that answered
+  // WebRTC Offer - MULTI-DEVICE: Send to ALL receiver sockets (handles engine restart)
   socket.on("webrtc:offer", ({ callId, offer, receiverId }) => {
     try {
       console.log(`📤 [WebRTC] Offer received from ${userId}:`);
       console.log(`   ├─ callId: ${callId}`);
       console.log(`   └─ receiverId: ${receiverId}`);
 
-      // MULTI-DEVICE: For WebRTC, we need to send to the specific socket that answered
-      // Check if there's an answeredBySocketId in the call info
-      const callInfo = activeCalls.get(callId);
-      if (callInfo && callInfo.answeredBySocketId) {
-        // Send to the specific socket that answered
-        io.to(callInfo.answeredBySocketId).emit("webrtc:offer", {
-          callId,
-          offer,
-          callerId: userId,
-        });
-        console.log(
-          `✅ [WebRTC] Offer forwarded to answering socket ${callInfo.answeredBySocketId}`,
-        );
-      } else {
-        // Fallback: send to first available socket for receiver
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("webrtc:offer", {
+      // 🔥 CRITICAL FIX: Send offer to ALL sockets for the receiver
+      // This handles the case where the receiver's Flutter engine restarts
+      // after accepting the call, creating a NEW socket connection.
+      // The old socket (answeredBySocketId) might be dead.
+      const allReceiverSockets = getReceiverSocketIds(receiverId);
+
+      if (allReceiverSockets && allReceiverSockets.length > 0) {
+        // Send to ALL sockets - one of them will have the WebRTC listeners
+        let sentCount = 0;
+        for (const socketId of allReceiverSockets) {
+          io.to(socketId).emit("webrtc:offer", {
             callId,
             offer,
             callerId: userId,
           });
-          console.log(
-            `✅ [WebRTC] Offer forwarded to socket ${receiverSocketId} (fallback)`,
-          );
-        } else {
-          console.log(`⚠️ [WebRTC] Receiver ${receiverId} not connected`);
+          sentCount++;
         }
+        console.log(
+          `✅ [WebRTC] Offer forwarded to ${sentCount} socket(s) for receiver ${receiverId}`,
+        );
+
+        // Log which sockets received the offer
+        console.log(`   └─ Sockets: ${allReceiverSockets.join(", ")}`);
+
+        // Also log if the answeredBySocketId is still in the list
+        const callInfo = activeCalls.get(callId);
+        if (callInfo && callInfo.answeredBySocketId) {
+          const stillActive = allReceiverSockets.includes(
+            callInfo.answeredBySocketId,
+          );
+          console.log(
+            `   └─ Original answering socket ${callInfo.answeredBySocketId}: ${stillActive ? "still active" : "DISCONNECTED"}`,
+          );
+        }
+      } else {
+        console.log(`⚠️ [WebRTC] Receiver ${receiverId} not connected`);
       }
     } catch (error) {
       console.error("Error in webrtc:offer:", error);
     }
   });
 
-  // WebRTC Answer - MULTI-DEVICE: Send to caller's initiating socket
+  // WebRTC Answer - MULTI-DEVICE: Send to ALL caller sockets
   socket.on("webrtc:answer", ({ callId, answer, callerId }) => {
     try {
       console.log(`📤 [WebRTC] Answer received from ${userId}:`);
       console.log(`   ├─ callId: ${callId}`);
       console.log(`   └─ callerId: ${callerId}`);
 
-      // MULTI-DEVICE: For WebRTC, we need to send to the specific socket that initiated the call
-      const callInfo = activeCalls.get(callId);
-      if (callInfo && callInfo.callerSocketId) {
-        // Send to the specific socket that initiated the call
-        io.to(callInfo.callerSocketId).emit("webrtc:answer", {
-          callId,
-          answer,
-          receiverId: userId,
-        });
-        console.log(
-          `✅ [WebRTC] Answer forwarded to initiating socket ${callInfo.callerSocketId}`,
-        );
-      } else {
-        // Fallback: send to first available socket for caller
-        const callerSocketId = getReceiverSocketId(callerId);
-        if (callerSocketId) {
-          io.to(callerSocketId).emit("webrtc:answer", {
+      // 🔥 CRITICAL FIX: Send answer to ALL sockets for the caller
+      // This handles the case where the caller might have multiple sockets
+      const allCallerSockets = getReceiverSocketIds(callerId);
+
+      if (allCallerSockets && allCallerSockets.length > 0) {
+        let sentCount = 0;
+        for (const socketId of allCallerSockets) {
+          io.to(socketId).emit("webrtc:answer", {
             callId,
             answer,
             receiverId: userId,
           });
-          console.log(
-            `✅ [WebRTC] Answer forwarded to socket ${callerSocketId} (fallback)`,
-          );
-        } else {
-          console.log(`⚠️ [WebRTC] Caller ${callerId} not connected`);
+          sentCount++;
         }
+        console.log(
+          `✅ [WebRTC] Answer forwarded to ${sentCount} socket(s) for caller ${callerId}`,
+        );
+      } else {
+        console.log(`⚠️ [WebRTC] Caller ${callerId} not connected`);
       }
     } catch (error) {
       console.error("Error in webrtc:answer:", error);
@@ -1771,39 +1787,26 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ICE Candidate Exchange - MULTI-DEVICE: Route to specific socket
+  // ICE Candidate Exchange - MULTI-DEVICE: Send to ALL target sockets
   socket.on("webrtc:ice-candidate", ({ callId, candidate, receiverId }) => {
     try {
       if (!callId || !candidate || !receiverId) {
         return;
       }
 
-      // MULTI-DEVICE: Determine correct target socket based on call info
-      const callInfo = activeCalls.get(callId);
-      let targetSocketId = null;
+      // 🔥 CRITICAL FIX: Send ICE candidates to ALL sockets for the target
+      // ICE candidates are critical for connection establishment
+      const allTargetSockets = getReceiverSocketIds(receiverId);
 
-      if (callInfo) {
-        // If sender is the caller, send to the answering socket
-        if (callInfo.callerId === userId && callInfo.answeredBySocketId) {
-          targetSocketId = callInfo.answeredBySocketId;
+      if (allTargetSockets && allTargetSockets.length > 0) {
+        for (const socketId of allTargetSockets) {
+          io.to(socketId).emit("webrtc:ice-candidate", {
+            callId,
+            candidate,
+            senderId: userId,
+          });
         }
-        // If sender is the receiver, send to the caller's initiating socket
-        else if (callInfo.receiverId === userId && callInfo.callerSocketId) {
-          targetSocketId = callInfo.callerSocketId;
-        }
-      }
-
-      // Fallback: use first available socket for receiver
-      if (!targetSocketId) {
-        targetSocketId = getReceiverSocketId(receiverId);
-      }
-
-      if (targetSocketId) {
-        io.to(targetSocketId).emit("webrtc:ice-candidate", {
-          callId,
-          candidate,
-          senderId: userId,
-        });
+        // Don't log ICE candidates to reduce noise (there are many)
       }
     } catch (error) {
       console.error("Error in webrtc:ice-candidate:", error);
