@@ -1036,33 +1036,15 @@ export const sendMessage = async (req, res) => {
 
     // Also emit to sender so they see their own message in real-time
     const senderSocketId = getReceiverSocketId(senderId.toString());
-    // console.log("🔍 [SOCKET EMIT] Looking up sender socket:", {
-    //   senderId: senderId.toString(),
-    //   senderSocketId,
-    //   found: !!senderSocketId,
-    // });
+
     if (senderSocketId) {
       io.to(senderSocketId).emit("newMessage", messageObj);
-      // console.log("📤 [SOCKET EMIT] Emitted newMessage to sender:", {
-      //   senderId: senderId.toString(),
-      //   socketId: senderSocketId,
-      //   messageId: newMessage._id,
-      // });
     } else {
-      // console.log( // [DEBUG - Removed for production]
-      // "❌ [SOCKET EMIT] Sender socket NOT FOUND:",
-      // senderId.toString()
-      // );
+      console.log(
+        "❌ [SOCKET EMIT] Sender socket NOT FOUND:",
+        senderId.toString(),
+      );
     }
-
-    logger.info("Message sent successfully", {
-      requestId: req.requestId,
-      messageId: newMessage._id,
-      senderId: senderId.toString(),
-      receiverId,
-      receiverSocketId: receiverSocketId || "NOT_FOUND",
-      senderSocketId: senderSocketId || "NOT_FOUND",
-    });
 
     res.status(201).json(newMessage);
   } catch (error) {

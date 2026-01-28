@@ -683,11 +683,23 @@ export const sendGroupMessage = async (req, res) => {
     // );
     // console.log("   └─ members count:", allMembers.length);
 
-    // Emit to all group members using same event as personal messages
+    // ✅ FIX: Emit to sender FIRST so they see their own message
+    // This is critical for optimistic UI - sender needs socket confirmation
+    const senderSocketId = getReceiverSocketId(senderId.toString());
+    if (senderSocketId) {
+      io.to(senderSocketId).emit("newMessage", messageObj);
+    } else {
+      console.log(
+        "   ⚠️ [GROUP] Sender socket NOT FOUND:",
+        senderId.toString(),
+      );
+    }
+
+    // Emit to all OTHER group members using same event as personal messages
     // Also send push notifications to offline members
     allMembers.forEach(async (memberId) => {
       const memberIdStr = memberId.toString();
-      // Skip sender (don't notify yourself)
+      // Skip sender (already emitted above, don't send push notification to yourself)
       if (memberIdStr === senderId.toString()) {
         return;
       }
