@@ -981,6 +981,350 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
 };
 
 /**
+ * Send incoming GROUP call notification to mobile devices
+ * Uses high-priority FCM data message for CallKit/Android incoming call UI
+ *
+ * @param {string} receiverId - User ID to send notification to
+ * @param {object} callData - Group call data
+ * @param {string} callData.roomId - Group call room ID
+ * @param {string} callData.groupId - Group ID
+ * @param {string} callData.groupName - Group name for display
+ * @param {string} callData.callerId - User who initiated the call
+ * @param {string} callData.callType - Call type (voice/video)
+ * @returns {Promise<object>} Result with success status
+ */
+export const sendMobileGroupCallNotification = async (receiverId, callData) => {
+  const startTime = Date.now();
+
+  try {
+    if (!firebaseInitialized) {
+      return { success: false, error: "Firebase not initialized" };
+    }
+
+    // Validate input
+    if (!receiverId || !callData?.roomId || !callData?.groupId) {
+      return { success: false, error: "Missing required call data" };
+    }
+
+    // Get caller info
+    const caller = await User.findById(callData.callerId).select(
+      "fullname profilePic",
+    );
+    const callerName = caller?.fullname || "Someone";
+    const callerAvatar = caller?.profilePic || "";
+    const groupName = callData.groupName || "Group";
+    const callType = callData.callType || "video";
+    const isVideo = callType === "video";
+
+    // Get user's push tokens
+    const user = await Promise.race([
+      User.findById(receiverId).select("pushTokens"),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Database query timeout")), 5000),
+      ),
+    ]);
+
+    if (!user || !user.pushTokens || user.pushTokens.length === 0) {
+      return { success: false, error: "No push tokens" };
+    }
+
+    // Filter valid tokens
+    const validTokens = user.pushTokens.filter((tokenData) =>
+      isValidFCMToken(tokenData.token),
+    );
+
+    if (validTokens.length === 0) {
+      return { success: false, error: "No valid push tokens" };
+    }
+
+    const results = [];
+    let sent = 0;
+    let failed = 0;
+
+    // Send to each token with call-specific configuration
+    for (const tokenData of validTokens) {
+      try {
+        const isIOS = tokenData.platform === "ios";
+
+        // 🔥 iOS with VoIP token: Use APNs VoIP push for 100% reliable CallKit
+        if (isIOS && tokenData.voipToken && apnsVoipPush.isAvailable()) {
+          const voipResult = await apnsVoipPush.sendVoipPush(
+            tokenData.voipToken,
+            {
+              id: callData.roomId, // Use roomId as call ID for group calls
+              nameCaller: `${callerName} - ${groupName}`,
+              handle: groupName,
+              type: isVideo ? 1 : 0,
+              avatar: callerAvatar,
+              duration: 60000,
+              // Group call specific fields
+              isGroupCall: "true",
+              roomId: callData.roomId,
+              groupId: callData.groupId,
+              groupName: groupName,
+              callerId: callData.callerId,
+              callerName: callerName,
+              callerAvatar: callerAvatar,
+              callType: callType,
+              receiverId: receiverId,
+            },
+          );
+
+          if (voipResult.success) {
+            sent++;
+            results.push({
+              success: true,
+              platform: "ios-voip",
+              apnsId: voipResult.apnsId,
+            });
+            circuitBreaker.recordSuccess();
+
+            // Also send FCM as backup
+            try {
+              await sendGroupCallIOSFCMBackup(
+                tokenData.token,
+                callData,
+                callerName,
+                callerAvatar,
+                groupName,
+                callType,
+                receiverId,
+              );
+            } catch (e) {
+              logger.debug(
+                `⚠️ [Group Call] FCM backup for iOS failed (non-critical):`,
+                e.message,
+              );
+            }
+          } else {
+            logger.warn(
+              `⚠️ [Group Call] VoIP push failed, falling back to FCM:`,
+              voipResult.error,
+            );
+          }
+
+          if (voipResult.success) continue;
+        }
+
+        // Build platform-specific message for CallKit (FCM)
+        const message = {
+          token: tokenData.token,
+        };
+
+        if (isIOS) {
+          // iOS: Use data-only push with flutter_callkit_incoming format
+          message.data = {
+            // flutter_callkit_incoming required fields (as strings)
+            id: String(callData.roomId),
+            nameCaller: `${callerName} - ${groupName}`,
+            handle: groupName,
+            type: isVideo ? "1" : "0",
+            avatar: callerAvatar || "",
+            duration: "60000",
+            // Group call specific fields
+            isGroupCall: "true",
+            roomId: String(callData.roomId),
+            groupId: String(callData.groupId),
+            groupName: groupName,
+            callerId: String(callData.callerId),
+            callerName: callerName,
+            callerAvatar: callerAvatar || "",
+            callType: callType,
+            receiverId: String(receiverId),
+            timestamp: String(Date.now()),
+          };
+
+          message.apns = {
+            headers: {
+              "apns-priority": "10",
+              "apns-push-type": "background",
+            },
+            payload: {
+              aps: {
+                "content-available": 1,
+              },
+            },
+          };
+        } else {
+          // Android: Include notification + data for CallKit
+          message.data = {
+            type: "group_call", // App routing
+            // flutter_callkit_incoming format fields
+            id: String(callData.roomId),
+            nameCaller: `${callerName} - ${groupName}`,
+            handle: groupName,
+            avatar: callerAvatar || "",
+            duration: "60000",
+            isVideo: isVideo ? "true" : "false",
+            // Group call specific fields
+            isGroupCall: "true",
+            roomId: String(callData.roomId),
+            groupId: String(callData.groupId),
+            groupName: groupName,
+            callerId: String(callData.callerId),
+            callerName: callerName,
+            callerAvatar: callerAvatar || "",
+            callType: callType,
+            receiverId: String(receiverId),
+            timestamp: String(Date.now()),
+          };
+
+          message.android = {
+            priority: "high",
+            ttl: 60000,
+            notification: {
+              sound: "default",
+              clickAction: "FLUTTER_NOTIFICATION_CLICK",
+              channelId: "incoming_calls",
+              priority: "max",
+              visibility: "public",
+              defaultSound: true,
+              defaultVibrateTimings: true,
+            },
+            directBootOk: true,
+          };
+
+          message.notification = {
+            title: `Incoming group ${isVideo ? "video" : "voice"} call`,
+            body: `${callerName} started a call in ${groupName}`,
+          };
+        }
+
+        const response = await Promise.race([
+          retryWithBackoff(() => admin.messaging().send(message), 2, 50),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("FCM push timeout after 12s")),
+              12000,
+            ),
+          ),
+        ]);
+
+        logger.debug(`✅ [Group Call] Push sent to ${tokenData.platform}:`, {
+          token: tokenData.token.substring(0, 20) + "...",
+          messageId: response,
+        });
+
+        sent++;
+        results.push({
+          success: true,
+          platform: tokenData.platform,
+          messageId: response,
+        });
+
+        circuitBreaker.recordSuccess();
+      } catch (error) {
+        logger.error(
+          `❌ [Group Call] Failed to send push to ${tokenData.platform}:`,
+          {
+            error: error.message,
+            code: error.code,
+            token: tokenData.token.substring(0, 20) + "...",
+          },
+        );
+
+        failed++;
+        results.push({
+          success: false,
+          platform: tokenData.platform,
+          error: error.message,
+        });
+
+        // Auto-cleanup invalid tokens
+        if (
+          error.code === "messaging/invalid-registration-token" ||
+          error.code === "messaging/registration-token-not-registered"
+        ) {
+          try {
+            await User.updateOne(
+              { _id: receiverId },
+              { $pull: { pushTokens: { token: tokenData.token } } },
+            );
+          } catch (cleanupError) {
+            logger.error(
+              `❌ [Group Call] Failed to cleanup token:`,
+              cleanupError,
+            );
+          }
+        } else {
+          circuitBreaker.recordFailure();
+        }
+      }
+    }
+
+    const duration = Date.now() - startTime;
+
+    return {
+      success: sent > 0,
+      sent,
+      failed,
+      total: validTokens.length,
+      duration,
+      results,
+    };
+  } catch (error) {
+    logger.error("Error sending mobile group call notification:", {
+      error: error.message,
+      receiverId,
+      roomId: callData?.roomId,
+      groupId: callData?.groupId,
+    });
+    return { success: false, error: error.message };
+  }
+};
+
+/**
+ * Send iOS FCM backup for group call
+ */
+const sendGroupCallIOSFCMBackup = async (
+  token,
+  callData,
+  callerName,
+  callerAvatar,
+  groupName,
+  callType,
+  receiverId,
+) => {
+  const isVideo = callType === "video";
+
+  const message = {
+    token: token,
+    data: {
+      id: String(callData.roomId),
+      nameCaller: `${callerName} - ${groupName}`,
+      handle: groupName,
+      type: isVideo ? "1" : "0",
+      avatar: callerAvatar || "",
+      duration: "60000",
+      isGroupCall: "true",
+      roomId: String(callData.roomId),
+      groupId: String(callData.groupId),
+      groupName: groupName,
+      callerId: String(callData.callerId),
+      callerName: callerName,
+      callerAvatar: callerAvatar || "",
+      callType: callType,
+      receiverId: String(receiverId),
+      timestamp: String(Date.now()),
+      isBackup: "true",
+    },
+    apns: {
+      headers: {
+        "apns-priority": "5",
+        "apns-push-type": "background",
+      },
+      payload: {
+        aps: {
+          "content-available": 1,
+        },
+      },
+    },
+  };
+
+  return admin.messaging().send(message);
+};
+
+/**
  * Send iOS FCM backup notification (for foreground state sync)
  * Used alongside VoIP push to ensure app state is updated
  *

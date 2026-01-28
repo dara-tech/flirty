@@ -1858,11 +1858,15 @@ io.on("connection", (socket) => {
 
           // If this is a new room, notify all group members about the group call
           const allMembers = [group.admin, ...group.members];
-          allMembers.forEach((memberId) => {
+
+          // 🔥 Send push notifications AND socket events to all members
+          for (const memberId of allMembers) {
             const memberIdStr = memberId.toString();
             // Don't notify the person who started the call
             if (memberIdStr !== userIdStr) {
               const memberSocketId = getReceiverSocketId(memberIdStr);
+
+              // Send socket event if online
               if (memberSocketId) {
                 io.to(memberSocketId).emit("groupcall:invitation", {
                   roomId,
@@ -1871,10 +1875,28 @@ io.on("connection", (socket) => {
                   callerInfo: userInfo || {},
                   groupName: group.name || "Group",
                 });
-              } else {
+              }
+
+              // 🔥 ALWAYS send push notification for CallKit (even if online)
+              // This ensures CallKit UI shows up on iOS/Android
+              try {
+                const { sendMobileGroupCallNotification } =
+                  await import("../services/mobilePushNotification.service.js");
+                await sendMobileGroupCallNotification(memberIdStr, {
+                  roomId,
+                  groupId,
+                  groupName: group.name || "Group",
+                  callerId: userId,
+                  callType: room.callType,
+                });
+              } catch (pushError) {
+                console.error(
+                  `Failed to send group call push notification to ${memberIdStr}:`,
+                  pushError.message,
+                );
               }
             }
-          });
+          }
         }
 
         // Check if user already in room
