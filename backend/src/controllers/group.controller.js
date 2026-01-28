@@ -1085,7 +1085,7 @@ export const searchGroups = async (req, res) => {
       members: userId,
     })
       .populate("members", "fullname email profilePic")
-      .populate("createdBy", "fullname email profilePic")
+      .populate("admin", "fullname email profilePic")
       .sort({ updatedAt: -1 });
 
     // Performance: Case-insensitive substring matching
