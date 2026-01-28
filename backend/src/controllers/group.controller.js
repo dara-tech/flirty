@@ -2,7 +2,7 @@ import Group from "../model/group.model.js";
 import Message from "../model/message.model.js";
 import User from "../model/user.model.js";
 import ContactRequest from "../model/contactRequest.model.js";
-import { io, getReceiverSocketId } from "../lib/socket.js";
+import { io, getReceiverSocketId, emitToUser } from "../lib/socket.js";
 import mongoose from "mongoose";
 import { normalizeToArray } from "./message.controller.js";
 import { sendMobileGroupMessageNotification } from "../services/mobilePushNotification.service.js";
@@ -684,11 +684,13 @@ export const sendGroupMessage = async (req, res) => {
     // console.log("   └─ members count:", allMembers.length);
 
     // ✅ FIX: Emit to sender FIRST so they see their own message
-    // This is critical for optimistic UI - sender needs socket confirmation
-    const senderSocketId = getReceiverSocketId(senderId.toString());
-    if (senderSocketId) {
-      io.to(senderSocketId).emit("newMessage", messageObj);
-    } else {
+    // MULTI-DEVICE: Use emitToUser to emit to ALL sender's devices
+    const senderDeviceCount = emitToUser(
+      senderId.toString(),
+      "newMessage",
+      messageObj,
+    );
+    if (senderDeviceCount === 0) {
       console.log(
         "   ⚠️ [GROUP] Sender socket NOT FOUND:",
         senderId.toString(),
@@ -704,11 +706,15 @@ export const sendGroupMessage = async (req, res) => {
         return;
       }
 
-      const memberSocketId = getReceiverSocketId(memberIdStr);
-      if (memberSocketId) {
-        io.to(memberSocketId).emit("newMessage", messageObj);
-        // console.log("   ✅ Emitted to member:", memberIdStr);
-      }
+      // MULTI-DEVICE: Use emitToUser to emit to ALL member's devices
+      const memberDeviceCount = emitToUser(
+        memberIdStr,
+        "newMessage",
+        messageObj,
+      );
+      // if (memberDeviceCount > 0) {
+      //   console.log("   ✅ Emitted to member:", memberIdStr, "(", memberDeviceCount, "devices)");
+      // }
 
       // Always attempt to send push notification (even if user is online)
       // The frontend will suppress duplicate notifications if user is viewing the chat

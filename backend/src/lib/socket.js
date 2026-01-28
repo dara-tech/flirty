@@ -976,6 +976,18 @@ io.on("connection", (socket) => {
         return;
       }
 
+      // ✅ FIX: Skip if user is the sender of the message
+      // Sender should not be added to seenBy - they sent it, they didn't "see" it
+      const messageSenderId = message.senderId._id
+        ? message.senderId._id.toString()
+        : message.senderId.toString();
+      if (messageSenderId === userIdStr) {
+        console.log(
+          "⏭️  [GROUP_SEEN] Skipping - user is the sender of this message",
+        );
+        return;
+      }
+
       // Check if already seen by this user - normalize IDs for comparison
       const alreadySeen = message.seenBy.some((s) => {
         if (!s || !s.userId) return false;
@@ -1024,26 +1036,18 @@ io.on("connection", (socket) => {
       });
       const deduplicatedSeenBy = Array.from(seenByMap.values());
 
-      // console.log("📤 [GROUP_SEEN] Broadcasting to group members:", {
-      //   memberCount: [group.admin, ...group.members].length,
-      //   seenByCount: deduplicatedSeenBy.length,
-      //   isNewSeen: !alreadySeen,
-      // });
-
       // Notify all group members about the seen update
       // Even if alreadySeen=true, other members need to know the current seenBy status
+      // ✅ FIX: Use emitToUser to notify ALL devices of each member (not just first socket)
       const allMembers = [group.admin, ...group.members];
       allMembers.forEach((memberId) => {
         const memberIdStr = memberId.toString();
-        const memberSocketId = getReceiverSocketId(memberIdStr);
-        if (memberSocketId) {
-          io.to(memberSocketId).emit("groupMessageSeenUpdate", {
-            messageId,
-            groupId,
-            seenBy: deduplicatedSeenBy,
-            userId: userId,
-          });
-        }
+        emitToUser(memberIdStr, "groupMessageSeenUpdate", {
+          messageId,
+          groupId,
+          seenBy: deduplicatedSeenBy,
+          userId: userId,
+        });
       });
     } catch (error) {
       console.error(
@@ -2405,4 +2409,4 @@ io.on("connection", (socket) => {
 });
 
 // Note: getReceiverSocketId is already exported as function declaration
-export { io, app, server, activeCalls, pendingCalls };
+export { io, app, server, activeCalls, pendingCalls, emitToUser };
