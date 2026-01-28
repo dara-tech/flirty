@@ -153,14 +153,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
   const startTime = Date.now();
 
   try {
-    logger.debug(
-      `📱 [Mobile Push] Called for user ${userId}, Firebase initialized: ${firebaseInitialized}`,
-    );
-
     if (!firebaseInitialized) {
-      logger.warn(
-        "⚠️ [Mobile Push] Firebase not initialized, skipping mobile push notification",
-      );
       return {
         success: false,
         error: "Firebase not initialized",
@@ -216,7 +209,7 @@ export const sendMobilePushNotification = async (userId, payload) => {
     ]);
 
     if (!user || !user.pushTokens || user.pushTokens.length === 0) {
-      logger.debug(`⚠️ [Mobile Push] No push tokens found for user ${userId}`);
+      // logger.debug(`⚠️ [Mobile Push] No push tokens found for user ${userId}`);
       return {
         success: false,
         error: "No push tokens",
@@ -249,13 +242,6 @@ export const sendMobilePushNotification = async (userId, payload) => {
         } invalid tokens`,
       );
     }
-
-    logger.info(`📱 [Mobile Push] Sending to user ${userId}`, {
-      totalTokens: user.pushTokens.length,
-      validTokens: validTokens.length,
-      title: payload.title,
-      body: payload.body?.substring(0, 50),
-    });
 
     const results = [];
     let sent = 0;
@@ -314,11 +300,6 @@ export const sendMobilePushNotification = async (userId, payload) => {
             setTimeout(() => reject(new Error("FCM request timeout")), 10000),
           ),
         ]);
-
-        logger.debug(`✅ Push sent to ${tokenData.platform}:`, {
-          token: tokenData.token.substring(0, 20) + "...",
-          messageId: response,
-        });
 
         sent++;
         results.push({
@@ -395,15 +376,6 @@ export const sendMobilePushNotification = async (userId, payload) => {
 
     const duration = Date.now() - startTime;
 
-    logger.info(`📊 Push notification results (${duration}ms):`, {
-      userId,
-      sent,
-      failed,
-      total: validTokens.length,
-      invalidRemoved: invalidTokens.length,
-      duration,
-    });
-
     return {
       success: sent > 0,
       sent,
@@ -473,7 +445,7 @@ export const sendMobileMessageNotification = async (
     } else if (messageData.image && messageData.image.length > 0) {
       body = "📷 Sent a photo";
     } else if (messageData.audio && messageData.audio.length > 0) {
-      body = "🎵 Sent an audio message";
+      body = "🎤 Sent an audio message";
     } else if (messageData.video && messageData.video.length > 0) {
       body = "🎥 Sent a video";
     } else if (messageData.file && messageData.file.length > 0) {
@@ -572,7 +544,7 @@ export const sendMobileGroupMessageNotification = async (
     } else if (messageData.image && messageData.image.length > 0) {
       body += "📷 Sent a photo";
     } else if (messageData.audio && messageData.audio.length > 0) {
-      body += "🎵 Sent an audio message";
+      body += "🎤 Sent an audio message";
     } else if (messageData.video && messageData.video.length > 0) {
       body += "🎥 Sent a video";
     } else if (messageData.file && messageData.file.length > 0) {

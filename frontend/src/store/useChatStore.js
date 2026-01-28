@@ -20,23 +20,26 @@ export const useChatStore = create((set, get) => ({
 
   getMessages: async (userId) => {
     const state = get();
-    const userIdStr = typeof userId === 'string' ? userId : userId?.toString();
-    
+    const userIdStr = typeof userId === "string" ? userId : userId?.toString();
+
     // Check if we already have messages for this user (simple cache check)
     // Only skip if we have messages AND they're for the same user
-    const currentSelectedUserId = state.selectedUser?._id 
-      ? (typeof state.selectedUser._id === 'string' ? state.selectedUser._id : state.selectedUser._id?.toString())
+    const currentSelectedUserId = state.selectedUser?._id
+      ? typeof state.selectedUser._id === "string"
+        ? state.selectedUser._id
+        : state.selectedUser._id?.toString()
       : null;
-    
+
     // If we already have messages for this exact user, don't refetch immediately
     // This prevents unnecessary API calls when switching back to a conversation
-    const hasCachedMessages = state.messages.length > 0 && 
-                              currentSelectedUserId && 
-                              normalizeId(currentSelectedUserId) === normalizeId(userIdStr);
-    
+    const hasCachedMessages =
+      state.messages.length > 0 &&
+      currentSelectedUserId &&
+      normalizeId(currentSelectedUserId) === normalizeId(userIdStr);
+
     // Don't clear messages - keep showing cached ones while loading
     set({ isMessagesLoading: true, hasMoreMessages: false });
-    
+
     try {
       // Use a smaller limit for faster initial load (30 instead of 50)
       // User can load more if needed via pagination
@@ -45,56 +48,59 @@ export const useChatStore = create((set, get) => ({
       // Or fallback to old format: array directly
       const messagesData = res.data.messages || res.data;
       const hasMore = res.data.hasMore || false;
-      
+
       // Keep messages in normal order (oldest first, newest last)
       const orderedMessages = Array.isArray(messagesData) ? messagesData : [];
-      
-      set({ 
+
+      set({
         messages: orderedMessages,
         hasMoreMessages: hasMore,
       });
 
       const authUser = useAuthStore.getState().authUser;
       if (!authUser || !authUser._id) return;
-      
+
       // Clear unread count for this user when viewing messages
       set((state) => ({
         unreadMessages: {
           ...state.unreadMessages,
           [userIdStr]: 0,
-          [userId]: 0 // Also clear with original format
-        }
+          [userId]: 0, // Also clear with original format
+        },
       }));
-      
+
       // Mark messages as seen - OPTIMIZED: Process asynchronously after UI updates
       // This doesn't block the initial message display
       if (orderedMessages && orderedMessages.length > 0) {
         const authUserId = normalizeId(authUser._id);
-        const unseenMessages = orderedMessages.filter(msg => {
+        const unseenMessages = orderedMessages.filter((msg) => {
           if (msg.seen) return false;
           const msgSenderId = normalizeId(msg.senderId);
           return msgSenderId !== authUserId;
         });
-        
+
         // Mark as seen asynchronously - don't block UI rendering
         if (unseenMessages.length > 0) {
           // Use requestIdleCallback if available, otherwise setTimeout
           const markAsSeen = () => {
-          const socket = useAuthStore.getState().socket;
-          if (socket) {
+            const socket = useAuthStore.getState().socket;
+            if (socket) {
               // Only mark the most recent unseen messages (limit to 20 for performance)
               // Older messages will be marked when user scrolls to them
               const messagesToMark = unseenMessages.slice(-20).reverse(); // Most recent first
-              
+
               messagesToMark.forEach((msg) => {
-              const msgSenderId = normalizeId(msg.senderId);
-              socket.emit("messageSeen", { messageId: msg._id, senderId: msgSenderId });
-            });
+                const msgSenderId = normalizeId(msg.senderId);
+                socket.emit("messageSeen", {
+                  messageId: msg._id,
+                  senderId: msgSenderId,
+                });
+              });
             }
           };
-          
+
           // Defer to next event loop cycle so UI can render first
-          if (typeof requestIdleCallback !== 'undefined') {
+          if (typeof requestIdleCallback !== "undefined") {
             requestIdleCallback(markAsSeen, { timeout: 1000 });
           } else {
             setTimeout(markAsSeen, 0);
@@ -112,31 +118,33 @@ export const useChatStore = create((set, get) => ({
   loadMoreMessages: async (userId, beforeMessageId, onScrollPreserve) => {
     const { isLoadingMoreMessages, hasMoreMessages, messages } = get();
     if (isLoadingMoreMessages || !hasMoreMessages || !beforeMessageId) return;
-    
+
     // Prevent duplicate requests for the same beforeMessageId
     const lastLoadBefore = get().lastLoadBeforeMessageId;
     if (lastLoadBefore === beforeMessageId) return;
-    
-    set({ 
+
+    set({
       isLoadingMoreMessages: true,
       lastLoadBeforeMessageId: beforeMessageId,
     });
-    
+
     try {
-      const res = await axiosInstance.get(`/messages/${userId}?before=${beforeMessageId}`);
+      const res = await axiosInstance.get(
+        `/messages/${userId}?before=${beforeMessageId}`,
+      );
       // Handle new pagination format
       const messagesData = res.data.messages || res.data;
       const hasMore = res.data.hasMore || false;
-      
+
       if (Array.isArray(messagesData) && messagesData.length > 0) {
         // Prepend older messages to the beginning of the array
         const previousScrollHeight = onScrollPreserve?.();
-        
+
         set((state) => ({
           messages: [...messagesData, ...state.messages], // Prepend older messages at the beginning
           hasMoreMessages: hasMore,
         }));
-        
+
         // Restore scroll position after DOM update
         if (onScrollPreserve && previousScrollHeight) {
           requestAnimationFrame(() => {
@@ -185,28 +193,59 @@ export const useChatStore = create((set, get) => ({
 
     // === OPTIMISTIC UPDATE: Show message immediately for text-only messages ===
     // Check if arrays are empty or if single values are falsy
-    const hasImage = Array.isArray(messageData.image) ? messageData.image.length > 0 : !!messageData.image;
-    const hasAudio = Array.isArray(messageData.audio) ? messageData.audio.length > 0 : !!messageData.audio;
-    const hasVideo = Array.isArray(messageData.video) ? messageData.video.length > 0 : !!messageData.video;
-    const hasFile = Array.isArray(messageData.file) ? messageData.file.length > 0 : !!messageData.file;
-    const isTextOnly = messageData.text && !hasImage && !hasAudio && !hasVideo && !hasFile;
+    const hasImage = Array.isArray(messageData.image)
+      ? messageData.image.length > 0
+      : !!messageData.image;
+    const hasAudio = Array.isArray(messageData.audio)
+      ? messageData.audio.length > 0
+      : !!messageData.audio;
+    const hasVideo = Array.isArray(messageData.video)
+      ? messageData.video.length > 0
+      : !!messageData.video;
+    const hasFile = Array.isArray(messageData.file)
+      ? messageData.file.length > 0
+      : !!messageData.file;
+    const isTextOnly =
+      messageData.text && !hasImage && !hasAudio && !hasVideo && !hasFile;
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
+
     // Log payload for debugging multiple files
     if (hasImage || hasVideo || hasFile) {
-      console.log('Sending message with files:', {
-        imageCount: Array.isArray(messageData.image) ? messageData.image.length : (messageData.image ? 1 : 0),
-        videoCount: Array.isArray(messageData.video) ? messageData.video.length : (messageData.video ? 1 : 0),
-        fileCount: Array.isArray(messageData.file) ? messageData.file.length : (messageData.file ? 1 : 0),
-        audioCount: Array.isArray(messageData.audio) ? messageData.audio.length : (messageData.audio ? 1 : 0),
+      console.log("Sending message with files:", {
+        imageCount: Array.isArray(messageData.image)
+          ? messageData.image.length
+          : messageData.image
+            ? 1
+            : 0,
+        videoCount: Array.isArray(messageData.video)
+          ? messageData.video.length
+          : messageData.video
+            ? 1
+            : 0,
+        fileCount: Array.isArray(messageData.file)
+          ? messageData.file.length
+          : messageData.file
+            ? 1
+            : 0,
+        audioCount: Array.isArray(messageData.audio)
+          ? messageData.audio.length
+          : messageData.audio
+            ? 1
+            : 0,
         payload: {
-          image: Array.isArray(messageData.image) ? `[${messageData.image.length} items]` : messageData.image,
-          video: Array.isArray(messageData.video) ? `[${messageData.video.length} items]` : messageData.video,
-          file: Array.isArray(messageData.file) ? `[${messageData.file.length} items]` : messageData.file,
-        }
+          image: Array.isArray(messageData.image)
+            ? `[${messageData.image.length} items]`
+            : messageData.image,
+          video: Array.isArray(messageData.video)
+            ? `[${messageData.video.length} items]`
+            : messageData.video,
+          file: Array.isArray(messageData.file)
+            ? `[${messageData.file.length} items]`
+            : messageData.file,
+        },
       });
     }
-    
+
     if (isTextOnly) {
       const optimisticMessage = {
         _id: tempId,
@@ -223,7 +262,7 @@ export const useChatStore = create((set, get) => ({
         createdAt: new Date().toISOString(),
         pending: true, // Mark as pending
       };
-      
+
       // Add optimistic message to UI immediately
       set((state) => ({
         messages: [...state.messages, optimisticMessage],
@@ -236,48 +275,55 @@ export const useChatStore = create((set, get) => ({
 
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      const baseURL = axiosInstance.defaults.baseURL || import.meta.env.VITE_BACKEND_URL || '';
+      const baseURL =
+        axiosInstance.defaults.baseURL ||
+        import.meta.env.VITE_BACKEND_URL ||
+        "";
       const url = `${baseURL}/messages/send/${userId}`;
-      
+
       // Reset progress and determine upload type
       // Only set upload state if not already uploading (for multiple files, state is set once)
       const currentState = get();
-      const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
-      
+      const uploadType = messageData.image
+        ? "image"
+        : messageData.file
+          ? "file"
+          : null;
+
       // Only set upload state if not already set (prevents duplicate indicators for multiple files)
       if (!currentState.isCurrentUserUploading && !isTextOnly) {
-        set({ 
-          uploadProgress: 0, 
-          uploadType, 
+        set({
+          uploadProgress: 0,
+          uploadType,
           isCurrentUserUploading: true,
-          uploadingImagePreview: messageData.image || null
+          uploadingImagePreview: messageData.image || null,
         });
       } else if (!isTextOnly) {
         // Just update progress, keep existing upload state
         set({ uploadProgress: 0 });
       }
-      
+
       // Track upload progress
-      xhr.upload.addEventListener('progress', (e) => {
+      xhr.upload.addEventListener("progress", (e) => {
         if (e.lengthComputable) {
           const percentComplete = Math.round((e.loaded / e.total) * 100);
           set({ uploadProgress: percentComplete });
         }
       });
-      
-      xhr.addEventListener('load', () => {
+
+      xhr.addEventListener("load", () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           const serverMessage = JSON.parse(xhr.responseText);
-          
+
           // Track this message ID FIRST to prevent duplicate from socket (before adding/updating)
           isDuplicateMessage(serverMessage._id);
-          
+
           // Handle message addition/update based on type
           if (isTextOnly) {
             // Replace optimistic message with server response
             set((state) => ({
               messages: state.messages.map((msg) =>
-                msg._id === tempId ? { ...serverMessage, pending: false } : msg
+                msg._id === tempId ? { ...serverMessage, pending: false } : msg,
               ),
               lastMessages: {
                 ...state.lastMessages,
@@ -288,15 +334,17 @@ export const useChatStore = create((set, get) => ({
             // For images/files, add the server message to the array (no optimistic update was done)
             // Track this message ID FIRST to prevent duplicate from socket (before adding)
             isDuplicateMessage(serverMessage._id);
-            
+
             set((state) => {
               // Check if message already exists (from socket or previous add)
-              const messageExists = state.messages.some(msg => msg._id === serverMessage._id);
+              const messageExists = state.messages.some(
+                (msg) => msg._id === serverMessage._id,
+              );
               if (messageExists) {
                 // Update existing message
                 return {
-                  messages: state.messages.map(msg =>
-                    msg._id === serverMessage._id ? serverMessage : msg
+                  messages: state.messages.map((msg) =>
+                    msg._id === serverMessage._id ? serverMessage : msg,
                   ),
                   lastMessages: {
                     ...state.lastMessages,
@@ -315,11 +363,16 @@ export const useChatStore = create((set, get) => ({
               }
             });
           }
-          
+
           set({ uploadProgress: 100 });
           // Reset progress after a short delay
           setTimeout(() => {
-            set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
+            set({
+              uploadProgress: 0,
+              isCurrentUserUploading: false,
+              uploadType: null,
+              uploadingImagePreview: null,
+            });
           }, 300);
           resolve(serverMessage);
         } else {
@@ -329,67 +382,93 @@ export const useChatStore = create((set, get) => ({
               messages: state.messages.filter((msg) => msg._id !== tempId),
             }));
           }
-          set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
+          set({
+            uploadProgress: 0,
+            isCurrentUserUploading: false,
+            uploadType: null,
+            uploadingImagePreview: null,
+          });
           const error = new Error(`HTTP ${xhr.status}`);
-          error.response = { status: xhr.status, data: JSON.parse(xhr.responseText || '{}') };
+          error.response = {
+            status: xhr.status,
+            data: JSON.parse(xhr.responseText || "{}"),
+          };
           reject(error);
         }
       });
-      
-      xhr.addEventListener('error', () => {
+
+      xhr.addEventListener("error", () => {
         // Remove optimistic message on error
         if (isTextOnly) {
           set((state) => ({
             messages: state.messages.filter((msg) => msg._id !== tempId),
           }));
         }
-        set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
-        reject(new Error('Network error'));
+        set({
+          uploadProgress: 0,
+          isCurrentUserUploading: false,
+          uploadingImagePreview: null,
+        });
+        reject(new Error("Network error"));
       });
-      
-      xhr.addEventListener('abort', () => {
+
+      xhr.addEventListener("abort", () => {
         // Remove optimistic message on abort
         if (isTextOnly) {
           set((state) => ({
             messages: state.messages.filter((msg) => msg._id !== tempId),
           }));
         }
-        set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
-        reject(new Error('Upload aborted'));
+        set({
+          uploadProgress: 0,
+          isCurrentUserUploading: false,
+          uploadingImagePreview: null,
+        });
+        reject(new Error("Upload aborted"));
       });
-      
-      xhr.open('POST', url);
+
+      xhr.open("POST", url);
       xhr.withCredentials = true; // Use cookies for authentication (same as axios)
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      
+      xhr.setRequestHeader("Content-Type", "application/json");
+
       // Add Bearer token as fallback (for Safari compatibility, same as axios interceptor)
       const token = getAuthToken();
       if (token) {
-        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       }
-      
+
       xhr.send(JSON.stringify(messageData));
     }).catch((error) => {
       // Only log non-401 errors (401 is expected when not authenticated)
       if (error.response?.status !== 401) {
-        toast.error(error.response?.data?.message || error.message || "Failed to send message");
+        toast.error(
+          error.response?.data?.message ||
+            error.message ||
+            "Failed to send message",
+        );
       }
-      set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
+      set({
+        uploadProgress: 0,
+        isCurrentUserUploading: false,
+        uploadingImagePreview: null,
+      });
       throw error;
     });
   },
 
   editMessage: async (messageId, text) => {
     try {
-      const res = await axiosInstance.put(`/messages/edit/${messageId}`, { text });
+      const res = await axiosInstance.put(`/messages/edit/${messageId}`, {
+        text,
+      });
       const editedMessage = res.data;
       const authUser = useAuthStore.getState().authUser;
       if (!authUser || !authUser._id) return;
-      
+
       set((state) => {
         // Update messages array
         const updatedMessages = state.messages.map((msg) =>
-          msg._id === messageId ? editedMessage : msg
+          msg._id === messageId ? editedMessage : msg,
         );
 
         // Check if this is a group message or direct message
@@ -402,20 +481,23 @@ export const useChatStore = create((set, get) => ({
           }
           return {
             messages: updatedMessages,
-            groupLastMessages: updatedGroupLastMessages
+            groupLastMessages: updatedGroupLastMessages,
           };
         } else {
           // Direct message - update lastMessages
           const authUserId = normalizeId(authUser._id);
           const senderId = normalizeId(editedMessage.senderId);
           const receiverId = normalizeId(editedMessage.receiverId);
-          
+
           // Determine target ID (the other user in the conversation)
-          const targetIdRaw = senderId === authUserId ? editedMessage.receiverId : editedMessage.senderId;
+          const targetIdRaw =
+            senderId === authUserId
+              ? editedMessage.receiverId
+              : editedMessage.senderId;
           const targetIdStr = normalizeId(targetIdRaw);
-          
+
           const updatedLastMessages = { ...state.lastMessages };
-          
+
           // Check all possible keys for the last message
           let lastMessage = null;
           let lastMessageKey = null;
@@ -426,21 +508,24 @@ export const useChatStore = create((set, get) => ({
               lastMessageKey = key;
             }
           });
-          
-          if (lastMessage && normalizeId(lastMessage._id) === normalizeId(messageId)) {
+
+          if (
+            lastMessage &&
+            normalizeId(lastMessage._id) === normalizeId(messageId)
+          ) {
             // Update with multiple key formats for compatibility
             updatedLastMessages[targetIdStr] = editedMessage;
             if (lastMessageKey && lastMessageKey !== targetIdStr) {
               updatedLastMessages[lastMessageKey] = editedMessage;
             }
-            if (targetIdRaw && typeof targetIdRaw !== 'string') {
+            if (targetIdRaw && typeof targetIdRaw !== "string") {
               updatedLastMessages[targetIdRaw] = editedMessage;
             }
           }
 
           return {
             messages: updatedMessages,
-            lastMessages: updatedLastMessages
+            lastMessages: updatedLastMessages,
           };
         }
       });
@@ -461,13 +546,13 @@ export const useChatStore = create((set, get) => ({
             const msgId = normalizeId(msg._id);
             return msgId !== targetId;
           });
-          
+
           return { messages: updatedMessages };
         });
       }
-      
+
       await axiosInstance.delete(`/messages/${messageId}`, {
-        data: { deleteType }
+        data: { deleteType },
       });
       // Socket event will confirm and handle proper state updates (including lastMessages)
       // The optimistic update above gives immediate UI feedback
@@ -488,15 +573,15 @@ export const useChatStore = create((set, get) => ({
     try {
       const res = await axiosInstance.put(`/messages/pin/${messageId}`);
       const pinnedMessage = res.data;
-      
+
       // Update message in local state
       set((state) => {
         const updatedMessages = state.messages.map((msg) =>
-          msg._id === messageId ? { ...msg, ...pinnedMessage } : msg
+          msg._id === messageId ? { ...msg, ...pinnedMessage } : msg,
         );
         return { messages: updatedMessages };
       });
-      
+
       toast.success("Message pinned");
       return pinnedMessage;
     } catch (error) {
@@ -509,15 +594,15 @@ export const useChatStore = create((set, get) => ({
     try {
       const res = await axiosInstance.put(`/messages/unpin/${messageId}`);
       const unpinnedMessage = res.data;
-      
+
       // Update message in local state
       set((state) => {
         const updatedMessages = state.messages.map((msg) =>
-          msg._id === messageId ? { ...msg, ...unpinnedMessage } : msg
+          msg._id === messageId ? { ...msg, ...unpinnedMessage } : msg,
         );
         return { messages: updatedMessages };
       });
-      
+
       toast.success("Message unpinned");
       return unpinnedMessage;
     } catch (error) {
@@ -529,41 +614,44 @@ export const useChatStore = create((set, get) => ({
   addReaction: async (messageId, emoji) => {
     const socket = useAuthStore.getState().socket;
     const authUser = useAuthStore.getState().authUser;
-    
+
     if (!socket || !authUser) {
       toast.error("Connection error. Please reconnect.");
       return;
     }
 
     // Optimistic UI update - update immediately before server confirms
-      set((state) => {
-
+    set((state) => {
       const authUserId = normalizeId(authUser._id);
-      
+
       return {
         messages: state.messages.map((msg) => {
           if (msg._id !== messageId) return msg;
-          
+
           // Clone reactions array
           const currentReactions = msg.reactions || [];
-          
+
           // Check if user already reacted with this emoji
           const existingReactionIndex = currentReactions.findIndex(
-            r => normalizeId(r.userId?._id || r.userId) === authUserId && r.emoji === emoji
+            (r) =>
+              normalizeId(r.userId?._id || r.userId) === authUserId &&
+              r.emoji === emoji,
           );
-          
+
           if (existingReactionIndex !== -1) {
             // Remove reaction (toggle off)
             return {
               ...msg,
-              reactions: currentReactions.filter((_, idx) => idx !== existingReactionIndex)
+              reactions: currentReactions.filter(
+                (_, idx) => idx !== existingReactionIndex,
+              ),
             };
           } else {
             // Remove any other reaction from this user, then add new one
             const filteredReactions = currentReactions.filter(
-              r => normalizeId(r.userId?._id || r.userId) !== authUserId
+              (r) => normalizeId(r.userId?._id || r.userId) !== authUserId,
             );
-            
+
             return {
               ...msg,
               reactions: [
@@ -572,8 +660,8 @@ export const useChatStore = create((set, get) => ({
                   userId: authUser._id,
                   emoji: emoji,
                   createdAt: new Date(),
-                }
-              ]
+                },
+              ],
             };
           }
         }),
@@ -592,7 +680,7 @@ export const useChatStore = create((set, get) => ({
   removeReaction: async (messageId) => {
     const socket = useAuthStore.getState().socket;
     const authUser = useAuthStore.getState().authUser;
-    
+
     if (!socket || !authUser) {
       toast.error("Connection error. Please reconnect.");
       return;
@@ -600,15 +688,15 @@ export const useChatStore = create((set, get) => ({
 
     // Find the emoji the user reacted with
     const state = useChatStore.getState();
-    const message = state.messages.find(msg => msg._id === messageId);
-    
+    const message = state.messages.find((msg) => msg._id === messageId);
+
     if (!message || !message.reactions || message.reactions.length === 0) {
       return;
     }
 
     const authUserId = normalizeId(authUser._id);
     const userReaction = message.reactions.find(
-      r => normalizeId(r.userId?._id || r.userId) === authUserId
+      (r) => normalizeId(r.userId?._id || r.userId) === authUserId,
     );
 
     if (!userReaction) {
@@ -622,8 +710,8 @@ export const useChatStore = create((set, get) => ({
         return {
           ...msg,
           reactions: (msg.reactions || []).filter(
-            r => normalizeId(r.userId?._id || r.userId) !== authUserId
-          )
+            (r) => normalizeId(r.userId?._id || r.userId) !== authUserId,
+          ),
         };
       }),
     }));
@@ -641,12 +729,13 @@ export const useChatStore = create((set, get) => ({
     try {
       // Upload image to OSS first if it's a data URI
       let imageUrl = image;
-      if (image && (image.startsWith('data:') || image.startsWith('blob:'))) {
-        const { uploadDataURIToOSS, dataURItoBlob } = await import("../lib/ossService");
-        
+      if (image && (image.startsWith("data:") || image.startsWith("blob:"))) {
+        const { uploadDataURIToOSS, dataURItoBlob } =
+          await import("../lib/ossService");
+
         // Convert blob URL to data URI if needed
         let dataURI = image;
-        if (image.startsWith('blob:')) {
+        if (image.startsWith("blob:")) {
           const response = await fetch(image);
           const blob = await response.blob();
           const reader = new FileReader();
@@ -656,20 +745,29 @@ export const useChatStore = create((set, get) => ({
             reader.readAsDataURL(blob);
           });
         }
-        
+
         const filename = `image_${Date.now()}.jpg`;
-        imageUrl = await uploadDataURIToOSS(dataURI, filename, 'sre', 'test01', 'file-upload');
+        imageUrl = await uploadDataURIToOSS(
+          dataURI,
+          filename,
+          "sre",
+          "test01",
+          "file-upload",
+        );
       }
-      
-      const res = await axiosInstance.put(`/messages/update-image/${messageId}`, { image: imageUrl });
+
+      const res = await axiosInstance.put(
+        `/messages/update-image/${messageId}`,
+        { image: imageUrl },
+      );
       const updatedMessage = res.data;
       const authUser = useAuthStore.getState().authUser;
       if (!authUser || !authUser._id) return;
-      
+
       set((state) => {
         // Update messages array
         const updatedMessages = state.messages.map((msg) =>
-          msg._id === messageId ? updatedMessage : msg
+          msg._id === messageId ? updatedMessage : msg,
         );
 
         // Check if this is a group message or direct message
@@ -682,19 +780,22 @@ export const useChatStore = create((set, get) => ({
           }
           return {
             messages: updatedMessages,
-            groupLastMessages: updatedGroupLastMessages
+            groupLastMessages: updatedGroupLastMessages,
           };
         } else {
           // Direct message - update lastMessages
           const authUserId = normalizeId(authUser._id);
           const senderId = normalizeId(updatedMessage.senderId);
-          
+
           // Determine target ID (the other user in the conversation)
-          const targetIdRaw = senderId === authUserId ? updatedMessage.receiverId : updatedMessage.senderId;
+          const targetIdRaw =
+            senderId === authUserId
+              ? updatedMessage.receiverId
+              : updatedMessage.senderId;
           const targetIdStr = normalizeId(targetIdRaw);
-          
+
           const updatedLastMessages = { ...state.lastMessages };
-          
+
           // Check all possible keys for the last message
           let lastMessage = null;
           let lastMessageKey = null;
@@ -705,21 +806,24 @@ export const useChatStore = create((set, get) => ({
               lastMessageKey = key;
             }
           });
-          
-          if (lastMessage && normalizeId(lastMessage._id) === normalizeId(messageId)) {
+
+          if (
+            lastMessage &&
+            normalizeId(lastMessage._id) === normalizeId(messageId)
+          ) {
             // Update with multiple key formats for compatibility
             updatedLastMessages[targetIdStr] = updatedMessage;
             if (lastMessageKey && lastMessageKey !== targetIdStr) {
               updatedLastMessages[lastMessageKey] = updatedMessage;
             }
-            if (targetIdRaw && typeof targetIdRaw !== 'string') {
+            if (targetIdRaw && typeof targetIdRaw !== "string") {
               updatedLastMessages[targetIdRaw] = updatedMessage;
             }
           }
 
           return {
             messages: updatedMessages,
-            lastMessages: updatedLastMessages
+            lastMessages: updatedLastMessages,
           };
         }
       });
@@ -747,30 +851,32 @@ export const useChatStore = create((set, get) => ({
     socket.off("reaction-update");
 
     socket.on("newMessage", (newMessage) => {
-      set(state => {
+      set((state) => {
         // Always update last messages for all users
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id) return state;
-        
+
         // Get sender and receiver IDs, handling both object and string formats
         const senderIdRaw = newMessage.senderId;
         const receiverIdRaw = newMessage.receiverId;
         const senderId = normalizeId(senderIdRaw);
         const receiverId = normalizeId(receiverIdRaw);
         const authUserId = normalizeId(authUser._id);
-        
+
         if (!senderId || !receiverId || !authUserId) return state;
-        
+
         // Determine target ID (the other user in the conversation)
         // If I'm the sender, target is receiver. If I'm the receiver, target is sender.
         const targetId = senderId === authUserId ? receiverId : senderId;
         const targetIdStr = targetId;
-        
+
         // Check if message already exists to prevent duplicates (multiple checks)
         const messageId = newMessage._id;
-        const messageExistsInState = state.messages.some(msg => msg._id === messageId);
+        const messageExistsInState = state.messages.some(
+          (msg) => msg._id === messageId,
+        );
         const isDuplicate = isDuplicateMessage(messageId);
-        
+
         // If I'm the sender, handle message addition/update carefully
         // This prevents duplicate messages when sending
         const iAmSender = senderId === authUserId;
@@ -787,51 +893,60 @@ export const useChatStore = create((set, get) => ({
               lastMessages: updatedLastMessages,
             };
           }
-          
+
           // Check if this message is for the currently selected chat
           const currentSelectedUser = state.selectedUser;
           let isSelectedChat = false;
-          
+
           if (currentSelectedUser) {
-            const selectedUserIdNormalized = normalizeId(currentSelectedUser._id);
+            const selectedUserIdNormalized = normalizeId(
+              currentSelectedUser._id,
+            );
             const normalizedReceiverId = normalizeId(receiverIdRaw);
             isSelectedChat = selectedUserIdNormalized === normalizedReceiverId;
           }
-          
+
           // Replace any temp message with the real one, or add if it doesn't exist and is for selected chat
           let updatedMessages = state.messages;
-          
+
           if (isSelectedChat) {
             // Try to replace temp message if exists, otherwise add
-            const hasTempMessage = state.messages.some(msg => 
-              msg.tempId && msg.pending && normalizeId(msg.receiverId?._id || msg.receiverId) === receiverId
+            const hasTempMessage = state.messages.some(
+              (msg) =>
+                msg.tempId &&
+                msg.pending &&
+                normalizeId(msg.receiverId?._id || msg.receiverId) ===
+                  receiverId,
             );
-            
+
             if (hasTempMessage) {
               // Replace temp message
-              updatedMessages = state.messages.map(msg => 
-                (msg.tempId && msg.pending && normalizeId(msg.receiverId?._id || msg.receiverId) === receiverId) 
-                  ? newMessage 
-                  : msg
+              updatedMessages = state.messages.map((msg) =>
+                msg.tempId &&
+                msg.pending &&
+                normalizeId(msg.receiverId?._id || msg.receiverId) ===
+                  receiverId
+                  ? newMessage
+                  : msg,
               );
             } else {
               // Add new message (shouldn't happen often, but handle it)
               updatedMessages = [...state.messages, newMessage];
             }
           }
-          
+
           const updatedLastMessages = {
             ...state.lastMessages,
             [targetIdStr]: newMessage,
           };
-          
+
           return {
             ...state,
             messages: updatedMessages,
             lastMessages: updatedLastMessages,
           };
         }
-        
+
         // Skip if duplicate or already in state
         if (isDuplicate || messageExistsInState) {
           // Still update lastMessages even if duplicate (in case it's a newer version)
@@ -844,31 +959,33 @@ export const useChatStore = create((set, get) => ({
             lastMessages: updatedLastMessages,
           };
         }
-        
+
         // Update messages array only if from selected user and message doesn't exist
         const currentSelectedUser = state.selectedUser;
         let isSelectedChat = false;
-        
+
         if (currentSelectedUser) {
           const selectedUserIdNormalized = normalizeId(currentSelectedUser._id);
           const normalizedReceiverId = normalizeId(receiverIdRaw);
           const normalizedSenderId = normalizeId(senderIdRaw);
-          
+
           // Check if this message is for the currently selected chat
           // The message belongs to the selected chat if:
           // - I'm the sender (senderId === authUserId) and selectedUser is the receiver (selectedUserId === receiverId), OR
           // - I'm the receiver (senderId !== authUserId) and selectedUser is the sender (selectedUserId === senderId)
           // Also check targetIdStr as a fallback
-          isSelectedChat = selectedUserIdNormalized && (
+          isSelectedChat =
+            selectedUserIdNormalized &&
             // Case 1: I'm the sender, selectedUser is the receiver
-            (senderId === authUserId && selectedUserIdNormalized === normalizedReceiverId) ||
-            // Case 2: I'm the receiver, selectedUser is the sender
-            (senderId !== authUserId && selectedUserIdNormalized === normalizedSenderId) ||
-            // Case 3: Fallback - check targetIdStr
-            (targetIdStr && selectedUserIdNormalized === targetIdStr)
-          );
+            ((senderId === authUserId &&
+              selectedUserIdNormalized === normalizedReceiverId) ||
+              // Case 2: I'm the receiver, selectedUser is the sender
+              (senderId !== authUserId &&
+                selectedUserIdNormalized === normalizedSenderId) ||
+              // Case 3: Fallback - check targetIdStr
+              (targetIdStr && selectedUserIdNormalized === targetIdStr));
         }
-        
+
         // Always add message if it's for the selected chat (whether sender or receiver)
         const updatedMessages = isSelectedChat
           ? [...state.messages, newMessage]
@@ -879,17 +996,17 @@ export const useChatStore = create((set, get) => ({
           ...state.lastMessages,
           [targetIdStr]: newMessage,
         };
-        
+
         // Also store with original format keys for compatibility
         if (receiverIdRaw && normalizeId(receiverIdRaw) === targetIdStr) {
           updatedLastMessages[receiverId] = newMessage;
-          if (typeof receiverIdRaw === 'object' && receiverIdRaw._id) {
+          if (typeof receiverIdRaw === "object" && receiverIdRaw._id) {
             updatedLastMessages[receiverIdRaw._id.toString()] = newMessage;
           }
         }
         if (senderIdRaw && normalizeId(senderIdRaw) === targetIdStr) {
           updatedLastMessages[senderId] = newMessage;
-          if (typeof senderIdRaw === 'object' && senderIdRaw._id) {
+          if (typeof senderIdRaw === "object" && senderIdRaw._id) {
             updatedLastMessages[senderIdRaw._id.toString()] = newMessage;
           }
         }
@@ -898,32 +1015,42 @@ export const useChatStore = create((set, get) => ({
         // Extract user data from populated senderId/receiverId if available
         let updatedUsers = [...state.users];
         let targetUser = null;
-        
+
         // Get the target user from the message (sender if I'm receiver, receiver if I'm sender)
         if (senderId === authUserId) {
           // I'm the sender, so target is the receiver
-          if (receiverIdRaw && typeof receiverIdRaw === 'object' && receiverIdRaw.fullname) {
+          if (
+            receiverIdRaw &&
+            typeof receiverIdRaw === "object" &&
+            receiverIdRaw.fullname
+          ) {
             targetUser = receiverIdRaw;
           }
         } else {
           // I'm the receiver, so target is the sender
-          if (senderIdRaw && typeof senderIdRaw === 'object' && senderIdRaw.fullname) {
+          if (
+            senderIdRaw &&
+            typeof senderIdRaw === "object" &&
+            senderIdRaw.fullname
+          ) {
             targetUser = senderIdRaw;
           }
         }
-        
+
         // Add target user to users array if not already present
         if (targetUser && targetUser._id) {
           const targetUserId = normalizeId(targetUser._id);
-          const userExists = updatedUsers.some(u => normalizeId(u._id) === targetUserId);
-          
+          const userExists = updatedUsers.some(
+            (u) => normalizeId(u._id) === targetUserId,
+          );
+
           if (!userExists) {
             // Add the user to the array with proper structure
             updatedUsers.push({
               _id: targetUser._id,
-              fullname: targetUser.fullname || 'Unknown',
+              fullname: targetUser.fullname || "Unknown",
               profilePic: targetUser.profilePic || null,
-              email: targetUser.email || null
+              email: targetUser.email || null,
             });
           }
         }
@@ -931,9 +1058,10 @@ export const useChatStore = create((set, get) => ({
         // Update unread count if message is from someone else and not currently viewing this chat
         const isIncomingMessage = senderId !== authUserId;
         const updatedUnreadMessages = { ...state.unreadMessages };
-        
+
         if (isIncomingMessage && !isSelectedChat) {
-          updatedUnreadMessages[targetIdStr] = (updatedUnreadMessages[targetIdStr] || 0) + 1;
+          updatedUnreadMessages[targetIdStr] =
+            (updatedUnreadMessages[targetIdStr] || 0) + 1;
         }
 
         // Show browser notification for incoming messages when user is online
@@ -943,15 +1071,16 @@ export const useChatStore = create((set, get) => ({
             try {
               const senderName = targetUser.fullname || "Someone";
               let body = "";
-              
+
               if (newMessage.text) {
-                body = newMessage.text.length > 100 
-                  ? newMessage.text.substring(0, 100) + "..." 
-                  : newMessage.text;
+                body =
+                  newMessage.text.length > 100
+                    ? newMessage.text.substring(0, 100) + "..."
+                    : newMessage.text;
               } else if (newMessage.image && newMessage.image.length > 0) {
                 body = "📷 Sent a photo";
               } else if (newMessage.audio && newMessage.audio.length > 0) {
-                body = "🎵 Sent an audio message";
+                body = "🎤 Sent an audio message";
               } else if (newMessage.video && newMessage.video.length > 0) {
                 body = "🎥 Sent a video";
               } else if (newMessage.file && newMessage.file.length > 0) {
@@ -980,19 +1109,22 @@ export const useChatStore = create((set, get) => ({
         }
 
         // Clear upload status if this is a message from current user (upload completed)
-        const shouldClearUpload = senderId === authUserId && get().isCurrentUserUploading;
-        
+        const shouldClearUpload =
+          senderId === authUserId && get().isCurrentUserUploading;
+
         return {
           messages: updatedMessages,
           users: updatedUsers,
           lastMessages: updatedLastMessages,
           unreadMessages: updatedUnreadMessages,
-          ...(shouldClearUpload ? {
-            isCurrentUserUploading: false,
-            uploadProgress: 0,
-            uploadType: null,
-            uploadingImagePreview: null
-          } : {})
+          ...(shouldClearUpload
+            ? {
+                isCurrentUserUploading: false,
+                uploadProgress: 0,
+                uploadType: null,
+                uploadingImagePreview: null,
+              }
+            : {}),
         };
       });
     });
@@ -1000,9 +1132,9 @@ export const useChatStore = create((set, get) => ({
     socket.on("messageSeenUpdate", ({ messageId, seenAt }) => {
       set((state) => ({
         messages: state.messages.map((msg) =>
-          msg._id === messageId 
-            ? { ...msg, seen: true, seenAt: seenAt || new Date().toISOString() } 
-            : msg
+          msg._id === messageId
+            ? { ...msg, seen: true, seenAt: seenAt || new Date().toISOString() }
+            : msg,
         ),
       }));
     });
@@ -1013,21 +1145,20 @@ export const useChatStore = create((set, get) => ({
         if (!authUser || !authUser._id || !editedMessage) {
           return state;
         }
-        
+
         // Normalize IDs for consistent comparison
         const editedMessageId = normalizeId(editedMessage._id);
         if (!editedMessageId) {
           return state;
         }
-        
-        
+
         // Determine user IDs for chat matching
         const authUserId = normalizeId(authUser._id);
         const senderIdRaw = editedMessage.senderId;
         const receiverIdRaw = editedMessage.receiverId;
         const senderId = normalizeId(senderIdRaw);
         const receiverId = normalizeId(receiverIdRaw);
-        
+
         // Always update messages array if the edited message exists in it
         // This ensures real-time updates for the user viewing the chat
         let messageUpdated = false;
@@ -1042,29 +1173,34 @@ export const useChatStore = create((set, get) => ({
           }
           return msg;
         });
-        
+
         // If message wasn't found but should be in this chat, add it (edge case)
         // This shouldn't normally happen, but ensures robustness
         if (!messageUpdated && state.messages.length > 0) {
           // Message might not be in array yet, but socket event says it was edited
           // This can happen if messages array is stale - in this case, lastMessages update is enough
         }
-        
+
         // Determine target ID (the other user in the conversation)
-        const targetIdRaw = senderId === authUserId ? receiverIdRaw : senderIdRaw;
+        const targetIdRaw =
+          senderId === authUserId ? receiverIdRaw : senderIdRaw;
         const targetIdStr = normalizeId(targetIdRaw);
-        
-        if (!targetIdStr) return { messages: updatedMessages, lastMessages: state.lastMessages };
-        
+
+        if (!targetIdStr)
+          return {
+            messages: updatedMessages,
+            lastMessages: state.lastMessages,
+          };
+
         // Always update lastMessages if this message is in it
         const updatedLastMessages = { ...state.lastMessages };
         let shouldUpdateLastMessages = false;
-        
+
         // Check all possible keys for the last message
         Object.keys(updatedLastMessages).forEach((key) => {
           const normalizedKey = normalizeId(key);
           const lastMsg = updatedLastMessages[key];
-          
+
           // Update if this key matches the target user AND the message ID matches
           if (normalizedKey === targetIdStr && lastMsg) {
             const lastMsgId = normalizeId(lastMsg._id);
@@ -1075,20 +1211,23 @@ export const useChatStore = create((set, get) => ({
               if (key !== targetIdStr) {
                 updatedLastMessages[key] = editedMessage;
               }
-              if (targetIdRaw && typeof targetIdRaw !== 'string') {
+              if (targetIdRaw && typeof targetIdRaw !== "string") {
                 updatedLastMessages[targetIdRaw] = editedMessage;
               }
             }
           }
         });
-        
+
         // If message is in lastMessages but wasn't found above, add it anyway
         // This ensures the conversation list shows the edited message
         if (!shouldUpdateLastMessages && updatedLastMessages[targetIdStr]) {
           const existingLastMsg = updatedLastMessages[targetIdStr];
-          if (existingLastMsg && normalizeId(existingLastMsg._id) === editedMessageId) {
+          if (
+            existingLastMsg &&
+            normalizeId(existingLastMsg._id) === editedMessageId
+          ) {
             updatedLastMessages[targetIdStr] = editedMessage;
-            if (targetIdRaw && typeof targetIdRaw !== 'string') {
+            if (targetIdRaw && typeof targetIdRaw !== "string") {
               updatedLastMessages[targetIdRaw] = editedMessage;
             }
           }
@@ -1101,272 +1240,301 @@ export const useChatStore = create((set, get) => ({
 
         return {
           messages: updatedMessages,
-          lastMessages: updatedLastMessages
-        };
-      });
-    });
-
-    socket.on("conversationDeleted", ({ userId, deleteType = "forEveryone" }) => {
-      set((state) => {
-        const authUser = useAuthStore.getState().authUser;
-        if (!authUser || !authUser._id) {
-          return state;
-        }
-        
-        const normalizeId = (id) => {
-          if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
-          return id.toString();
-        };
-        
-        const userIdNormalized = normalizeId(userId);
-        const authUserIdNormalized = normalizeId(authUser._id);
-        
-        
-        // For "forEveryone", both users should remove the conversation
-        // For "forMe", only the user who deleted should remove it
-        // Since this socket event is sent to the appropriate user(s), we always remove
-        // Remove from lastMessages - check all keys and remove matching ones
-        const updatedLastMessages = { ...state.lastMessages };
-        const keysToDelete = [];
-        Object.keys(updatedLastMessages).forEach((key) => {
-          const normalizedKey = normalizeId(key);
-          if (normalizedKey === userIdNormalized) {
-            keysToDelete.push(key);
-          }
-        });
-        keysToDelete.forEach(key => {
-          delete updatedLastMessages[key];
-        });
-        
-        // Remove from unreadMessages - check all keys and remove matching ones
-        const updatedUnreadMessages = { ...state.unreadMessages };
-        const unreadKeysToDelete = [];
-        Object.keys(updatedUnreadMessages).forEach((key) => {
-          const normalizedKey = normalizeId(key);
-          if (normalizedKey === userIdNormalized) {
-            unreadKeysToDelete.push(key);
-          }
-        });
-        unreadKeysToDelete.forEach(key => {
-          delete updatedUnreadMessages[key];
-        });
-        
-        // Clear messages if this conversation was selected
-        const currentSelectedUserId = state.selectedUser?._id ? normalizeId(state.selectedUser._id) : null;
-        const shouldClearMessages = currentSelectedUserId === userIdNormalized;
-        
-        
-        return {
           lastMessages: updatedLastMessages,
-          unreadMessages: updatedUnreadMessages,
-          messages: shouldClearMessages ? [] : state.messages,
-          selectedUser: shouldClearMessages ? null : state.selectedUser
         };
       });
     });
 
-    socket.on("messageDeleted", ({ messageId, deleteType = "forEveryone", newLastMessage, conversationDeleted }) => {
-      set((state) => {
-        const authUser = useAuthStore.getState().authUser;
-        if (!authUser || !authUser._id) {
-          return state;
-        }
-        
-        // Normalize IDs for comparison
-        const normalizeId = (id) => {
-          if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
-          return id.toString();
-        };
-        
-        // Find the deleted message to check if user is sender or receiver
-        const deletedMessage = state.messages.find((msg) => {
-          const msgId = normalizeId(msg._id);
-          const targetId = normalizeId(messageId);
-          return msgId === targetId;
-        });
-        
-        // If message not found in current messages, still update lastMessages if needed
-        if (!deletedMessage) {
-          // Check if we need to update lastMessages even if message isn't in current view
-          const updatedLastMessages = { ...state.lastMessages };
-          let foundDeletedInLastMessages = false;
-          const keysToUpdate = [];
-          const targetUserIds = new Set();
-          
-          // Check all lastMessages to see if any match the deleted message ID
-          Object.keys(updatedLastMessages).forEach((key) => {
-            const lastMsg = updatedLastMessages[key];
-            if (lastMsg && normalizeId(lastMsg._id) === normalizeId(messageId)) {
-              foundDeletedInLastMessages = true;
-              
-              // Find the target user ID from this last message
-              const msgSenderId = normalizeId(lastMsg.senderId);
-              const msgReceiverId = normalizeId(lastMsg.receiverId);
-              const authUserId = normalizeId(useAuthStore.getState().authUser?._id);
-              const msgTargetId = msgSenderId === authUserId ? msgReceiverId : msgSenderId;
-              
-              if (msgTargetId) {
-                targetUserIds.add(msgTargetId);
-                keysToUpdate.push({ key, targetId: msgTargetId });
-              }
-            }
-          });
-          
-          // Update or remove lastMessages based on newLastMessage from backend
-          if (foundDeletedInLastMessages) {
-            if (conversationDeleted || !newLastMessage) {
-              // Conversation is now empty, remove all matching keys
-              keysToUpdate.forEach(({ key }) => {
-                delete updatedLastMessages[key];
-              });
-            } else if (newLastMessage) {
-              // Update with new last message from backend
-              const authUserId = normalizeId(useAuthStore.getState().authUser?._id);
-              const senderId = normalizeId(newLastMessage.senderId);
-              const receiverId = normalizeId(newLastMessage.receiverId);
-              const targetId = senderId === authUserId ? receiverId : senderId;
-              const targetIdStr = normalizeId(targetId);
-              
-              keysToUpdate.forEach(({ key, targetId: msgTargetId }) => {
-                if (normalizeId(msgTargetId) === targetIdStr) {
-                  updatedLastMessages[targetIdStr] = newLastMessage;
-                  if (key !== targetIdStr) {
-                    updatedLastMessages[key] = newLastMessage;
-                  }
-                } else {
-                  delete updatedLastMessages[key];
-                }
-              });
-            }
-            
-            return { lastMessages: updatedLastMessages };
+    socket.on(
+      "conversationDeleted",
+      ({ userId, deleteType = "forEveryone" }) => {
+        set((state) => {
+          const authUser = useAuthStore.getState().authUser;
+          if (!authUser || !authUser._id) {
+            return state;
           }
-          
-          return state;
-        }
-        
-        const authUserId = normalizeId(authUser._id);
-        const deletedSenderId = normalizeId(deletedMessage.senderId);
-        const deletedReceiverId = normalizeId(deletedMessage.receiverId);
-        const isMyMessage = deletedSenderId === authUserId;
-        const isReceiver = deletedReceiverId === authUserId;
-        
-        // For "forMe" deletions: if I received this event, it means I'm the one who deleted it
-        // So I should always remove it from my view (regardless of whether I'm sender or receiver)
-        // For "forEveryone" deletions: always remove from everyone's view
-        let shouldRemove = false;
-        if (deleteType === "forEveryone") {
-          shouldRemove = true; // Always remove when deleted for everyone
-        } else if (deleteType === "forMe") {
-          // If I received a "forMe" delete event, it means I deleted it, so always remove from my view
-          // The backend only sends "forMe" events to the user who performed the deletion
-          shouldRemove = true;
-        }
-        
-        // Remove message from messages array only if shouldRemove is true
-        const updatedMessages = shouldRemove
-          ? state.messages.filter((msg) => {
-              const msgId = normalizeId(msg._id);
-              const targetId = normalizeId(messageId);
-              return msgId !== targetId;
-            })
-          : state.messages;
 
-        // Update lastMessages if this was the last message and it was removed
-        const updatedLastMessages = { ...state.lastMessages };
-        
-        if (shouldRemove && deletedMessage && !deletedMessage.groupId) {
-          // Determine the target user ID (the other user in the conversation)
-          // If I'm the sender, target is receiver. If I'm the receiver, target is sender.
-          const targetIdRaw = isMyMessage 
-            ? deletedMessage.receiverId 
-            : deletedMessage.senderId;
-          
-          const targetIdStr = normalizeId(targetIdRaw);
-          
-          // Check all possible keys for the last message (string and object formats)
-          let lastMessage = null;
-          let lastMessageKey = null;
-          
-          // Try to find last message using various key formats
+          const normalizeId = (id) => {
+            if (!id) return null;
+            if (typeof id === "string") return id;
+            if (typeof id === "object" && id._id) return id._id.toString();
+            return id.toString();
+          };
+
+          const userIdNormalized = normalizeId(userId);
+          const authUserIdNormalized = normalizeId(authUser._id);
+
+          // For "forEveryone", both users should remove the conversation
+          // For "forMe", only the user who deleted should remove it
+          // Since this socket event is sent to the appropriate user(s), we always remove
+          // Remove from lastMessages - check all keys and remove matching ones
+          const updatedLastMessages = { ...state.lastMessages };
+          const keysToDelete = [];
           Object.keys(updatedLastMessages).forEach((key) => {
             const normalizedKey = normalizeId(key);
-            if (normalizedKey === targetIdStr && updatedLastMessages[key]) {
-              lastMessage = updatedLastMessages[key];
-              lastMessageKey = key;
+            if (normalizedKey === userIdNormalized) {
+              keysToDelete.push(key);
             }
           });
-          
-          if (lastMessage && normalizeId(lastMessage._id) === normalizeId(messageId)) {
-            // Use newLastMessage from backend if provided (more reliable than searching in current messages)
-            if (newLastMessage) {
-              // Update with new last message from backend
-              updatedLastMessages[targetIdStr] = newLastMessage;
-              if (lastMessageKey && lastMessageKey !== targetIdStr) {
-                updatedLastMessages[lastMessageKey] = newLastMessage;
-              }
-              if (targetIdRaw && typeof targetIdRaw !== 'string') {
-                updatedLastMessages[targetIdRaw] = newLastMessage;
-              }
-            } else if (!conversationDeleted) {
-              // Try to find new last message from current messages (fallback)
-              const foundNewLastMessage = updatedMessages
-                .filter((msg) => {
-                  if (!msg || !msg.senderId || !msg.receiverId) return false;
-                  const msgSenderId = normalizeId(msg.senderId);
-                  const msgReceiverId = normalizeId(msg.receiverId);
-                  // Determine target ID for this message
-                  const msgTargetId = msgSenderId === authUserId ? msgReceiverId : msgSenderId;
-                  return msgTargetId && normalizeId(msgTargetId) === targetIdStr;
-                })
-                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
-              
-              if (foundNewLastMessage) {
-                updatedLastMessages[targetIdStr] = foundNewLastMessage;
-                if (lastMessageKey && lastMessageKey !== targetIdStr) {
-                  updatedLastMessages[lastMessageKey] = foundNewLastMessage;
+          keysToDelete.forEach((key) => {
+            delete updatedLastMessages[key];
+          });
+
+          // Remove from unreadMessages - check all keys and remove matching ones
+          const updatedUnreadMessages = { ...state.unreadMessages };
+          const unreadKeysToDelete = [];
+          Object.keys(updatedUnreadMessages).forEach((key) => {
+            const normalizedKey = normalizeId(key);
+            if (normalizedKey === userIdNormalized) {
+              unreadKeysToDelete.push(key);
+            }
+          });
+          unreadKeysToDelete.forEach((key) => {
+            delete updatedUnreadMessages[key];
+          });
+
+          // Clear messages if this conversation was selected
+          const currentSelectedUserId = state.selectedUser?._id
+            ? normalizeId(state.selectedUser._id)
+            : null;
+          const shouldClearMessages =
+            currentSelectedUserId === userIdNormalized;
+
+          return {
+            lastMessages: updatedLastMessages,
+            unreadMessages: updatedUnreadMessages,
+            messages: shouldClearMessages ? [] : state.messages,
+            selectedUser: shouldClearMessages ? null : state.selectedUser,
+          };
+        });
+      },
+    );
+
+    socket.on(
+      "messageDeleted",
+      ({
+        messageId,
+        deleteType = "forEveryone",
+        newLastMessage,
+        conversationDeleted,
+      }) => {
+        set((state) => {
+          const authUser = useAuthStore.getState().authUser;
+          if (!authUser || !authUser._id) {
+            return state;
+          }
+
+          // Normalize IDs for comparison
+          const normalizeId = (id) => {
+            if (!id) return null;
+            if (typeof id === "string") return id;
+            if (typeof id === "object" && id._id) return id._id.toString();
+            return id.toString();
+          };
+
+          // Find the deleted message to check if user is sender or receiver
+          const deletedMessage = state.messages.find((msg) => {
+            const msgId = normalizeId(msg._id);
+            const targetId = normalizeId(messageId);
+            return msgId === targetId;
+          });
+
+          // If message not found in current messages, still update lastMessages if needed
+          if (!deletedMessage) {
+            // Check if we need to update lastMessages even if message isn't in current view
+            const updatedLastMessages = { ...state.lastMessages };
+            let foundDeletedInLastMessages = false;
+            const keysToUpdate = [];
+            const targetUserIds = new Set();
+
+            // Check all lastMessages to see if any match the deleted message ID
+            Object.keys(updatedLastMessages).forEach((key) => {
+              const lastMsg = updatedLastMessages[key];
+              if (
+                lastMsg &&
+                normalizeId(lastMsg._id) === normalizeId(messageId)
+              ) {
+                foundDeletedInLastMessages = true;
+
+                // Find the target user ID from this last message
+                const msgSenderId = normalizeId(lastMsg.senderId);
+                const msgReceiverId = normalizeId(lastMsg.receiverId);
+                const authUserId = normalizeId(
+                  useAuthStore.getState().authUser?._id,
+                );
+                const msgTargetId =
+                  msgSenderId === authUserId ? msgReceiverId : msgSenderId;
+
+                if (msgTargetId) {
+                  targetUserIds.add(msgTargetId);
+                  keysToUpdate.push({ key, targetId: msgTargetId });
                 }
-                if (targetIdRaw && typeof targetIdRaw !== 'string') {
-                  updatedLastMessages[targetIdRaw] = foundNewLastMessage;
+              }
+            });
+
+            // Update or remove lastMessages based on newLastMessage from backend
+            if (foundDeletedInLastMessages) {
+              if (conversationDeleted || !newLastMessage) {
+                // Conversation is now empty, remove all matching keys
+                keysToUpdate.forEach(({ key }) => {
+                  delete updatedLastMessages[key];
+                });
+              } else if (newLastMessage) {
+                // Update with new last message from backend
+                const authUserId = normalizeId(
+                  useAuthStore.getState().authUser?._id,
+                );
+                const senderId = normalizeId(newLastMessage.senderId);
+                const receiverId = normalizeId(newLastMessage.receiverId);
+                const targetId =
+                  senderId === authUserId ? receiverId : senderId;
+                const targetIdStr = normalizeId(targetId);
+
+                keysToUpdate.forEach(({ key, targetId: msgTargetId }) => {
+                  if (normalizeId(msgTargetId) === targetIdStr) {
+                    updatedLastMessages[targetIdStr] = newLastMessage;
+                    if (key !== targetIdStr) {
+                      updatedLastMessages[key] = newLastMessage;
+                    }
+                  } else {
+                    delete updatedLastMessages[key];
+                  }
+                });
+              }
+
+              return { lastMessages: updatedLastMessages };
+            }
+
+            return state;
+          }
+
+          const authUserId = normalizeId(authUser._id);
+          const deletedSenderId = normalizeId(deletedMessage.senderId);
+          const deletedReceiverId = normalizeId(deletedMessage.receiverId);
+          const isMyMessage = deletedSenderId === authUserId;
+          const isReceiver = deletedReceiverId === authUserId;
+
+          // For "forMe" deletions: if I received this event, it means I'm the one who deleted it
+          // So I should always remove it from my view (regardless of whether I'm sender or receiver)
+          // For "forEveryone" deletions: always remove from everyone's view
+          let shouldRemove = false;
+          if (deleteType === "forEveryone") {
+            shouldRemove = true; // Always remove when deleted for everyone
+          } else if (deleteType === "forMe") {
+            // If I received a "forMe" delete event, it means I deleted it, so always remove from my view
+            // The backend only sends "forMe" events to the user who performed the deletion
+            shouldRemove = true;
+          }
+
+          // Remove message from messages array only if shouldRemove is true
+          const updatedMessages = shouldRemove
+            ? state.messages.filter((msg) => {
+                const msgId = normalizeId(msg._id);
+                const targetId = normalizeId(messageId);
+                return msgId !== targetId;
+              })
+            : state.messages;
+
+          // Update lastMessages if this was the last message and it was removed
+          const updatedLastMessages = { ...state.lastMessages };
+
+          if (shouldRemove && deletedMessage && !deletedMessage.groupId) {
+            // Determine the target user ID (the other user in the conversation)
+            // If I'm the sender, target is receiver. If I'm the receiver, target is sender.
+            const targetIdRaw = isMyMessage
+              ? deletedMessage.receiverId
+              : deletedMessage.senderId;
+
+            const targetIdStr = normalizeId(targetIdRaw);
+
+            // Check all possible keys for the last message (string and object formats)
+            let lastMessage = null;
+            let lastMessageKey = null;
+
+            // Try to find last message using various key formats
+            Object.keys(updatedLastMessages).forEach((key) => {
+              const normalizedKey = normalizeId(key);
+              if (normalizedKey === targetIdStr && updatedLastMessages[key]) {
+                lastMessage = updatedLastMessages[key];
+                lastMessageKey = key;
+              }
+            });
+
+            if (
+              lastMessage &&
+              normalizeId(lastMessage._id) === normalizeId(messageId)
+            ) {
+              // Use newLastMessage from backend if provided (more reliable than searching in current messages)
+              if (newLastMessage) {
+                // Update with new last message from backend
+                updatedLastMessages[targetIdStr] = newLastMessage;
+                if (lastMessageKey && lastMessageKey !== targetIdStr) {
+                  updatedLastMessages[lastMessageKey] = newLastMessage;
+                }
+                if (targetIdRaw && typeof targetIdRaw !== "string") {
+                  updatedLastMessages[targetIdRaw] = newLastMessage;
+                }
+              } else if (!conversationDeleted) {
+                // Try to find new last message from current messages (fallback)
+                const foundNewLastMessage = updatedMessages
+                  .filter((msg) => {
+                    if (!msg || !msg.senderId || !msg.receiverId) return false;
+                    const msgSenderId = normalizeId(msg.senderId);
+                    const msgReceiverId = normalizeId(msg.receiverId);
+                    // Determine target ID for this message
+                    const msgTargetId =
+                      msgSenderId === authUserId ? msgReceiverId : msgSenderId;
+                    return (
+                      msgTargetId && normalizeId(msgTargetId) === targetIdStr
+                    );
+                  })
+                  .sort(
+                    (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+                  )[0];
+
+                if (foundNewLastMessage) {
+                  updatedLastMessages[targetIdStr] = foundNewLastMessage;
+                  if (lastMessageKey && lastMessageKey !== targetIdStr) {
+                    updatedLastMessages[lastMessageKey] = foundNewLastMessage;
+                  }
+                  if (targetIdRaw && typeof targetIdRaw !== "string") {
+                    updatedLastMessages[targetIdRaw] = foundNewLastMessage;
+                  }
+                } else {
+                  // No more messages in this conversation, remove all key formats
+                  delete updatedLastMessages[targetIdStr];
+                  if (lastMessageKey && lastMessageKey !== targetIdStr) {
+                    delete updatedLastMessages[lastMessageKey];
+                  }
+                  if (targetIdRaw && typeof targetIdRaw !== "string") {
+                    delete updatedLastMessages[targetIdRaw];
+                  }
                 }
               } else {
-                // No more messages in this conversation, remove all key formats
+                // Conversation is deleted (no messages remain), remove all key formats
                 delete updatedLastMessages[targetIdStr];
                 if (lastMessageKey && lastMessageKey !== targetIdStr) {
                   delete updatedLastMessages[lastMessageKey];
                 }
-                if (targetIdRaw && typeof targetIdRaw !== 'string') {
+                if (targetIdRaw && typeof targetIdRaw !== "string") {
                   delete updatedLastMessages[targetIdRaw];
                 }
               }
-            } else {
-              // Conversation is deleted (no messages remain), remove all key formats
-              delete updatedLastMessages[targetIdStr];
-              if (lastMessageKey && lastMessageKey !== targetIdStr) {
-                delete updatedLastMessages[lastMessageKey];
-              }
-              if (targetIdRaw && typeof targetIdRaw !== 'string') {
-                delete updatedLastMessages[targetIdRaw];
-              }
             }
           }
-        }
 
-        return {
-          messages: updatedMessages,
-          lastMessages: updatedLastMessages
-        };
-      });
-    });
+          return {
+            messages: updatedMessages,
+            lastMessages: updatedLastMessages,
+          };
+        });
+      },
+    );
 
     socket.on("messagePinned", (pinnedMessage) => {
       set((state) => {
         const updatedMessages = state.messages.map((msg) =>
-          msg._id === pinnedMessage._id ? { ...msg, ...pinnedMessage } : msg
+          msg._id === pinnedMessage._id ? { ...msg, ...pinnedMessage } : msg,
         );
         return { messages: updatedMessages };
       });
@@ -1375,7 +1543,9 @@ export const useChatStore = create((set, get) => ({
     socket.on("messageUnpinned", (unpinnedMessage) => {
       set((state) => {
         const updatedMessages = state.messages.map((msg) =>
-          msg._id === unpinnedMessage._id ? { ...msg, ...unpinnedMessage } : msg
+          msg._id === unpinnedMessage._id
+            ? { ...msg, ...unpinnedMessage }
+            : msg,
         );
         return { messages: updatedMessages };
       });
@@ -1383,31 +1553,32 @@ export const useChatStore = create((set, get) => ({
 
     // Reaction socket listeners - handle both direct and group messages
     socket.on("messageReactionAdded", (data) => {
-      
       // Handle both formats: direct message (just message object) or group message (wrapped object)
       const messageWithReaction = data.message || data;
       const memberId = data.memberId;
       const groupId = data.groupId;
-      
+
       set((state) => {
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id) {
           return state;
         }
-        
+
         const normalizeId = (id) => {
           if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
+          if (typeof id === "string") return id;
+          if (typeof id === "object" && id._id) return id._id.toString();
           return id.toString();
         };
-        
+
         const authUserId = normalizeId(authUser._id);
-        
+
         // For group messages, check if user is viewing this group
         if (groupId) {
           const groupIdStr = normalizeId(groupId);
-          const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
+          const isViewingThisGroup =
+            state.selectedGroup &&
+            normalizeId(state.selectedGroup._id) === groupIdStr;
           // Only update if viewing this group
           if (!isViewingThisGroup) return state;
         } else {
@@ -1416,48 +1587,50 @@ export const useChatStore = create((set, get) => ({
           const receiverId = normalizeId(messageWithReaction.receiverId);
           const isMyMessage = senderId === authUserId;
           const otherUserId = isMyMessage ? receiverId : senderId;
-          const isViewingThisChat = state.selectedUser && normalizeId(state.selectedUser._id) === otherUserId;
-          
-          
+          const isViewingThisChat =
+            state.selectedUser &&
+            normalizeId(state.selectedUser._id) === otherUserId;
+
           // Only update if viewing this conversation
           if (!isViewingThisChat) return state;
         }
-        
+
         const updatedMessages = state.messages.map((msg) =>
-          normalizeId(msg._id) === normalizeId(messageWithReaction._id) 
-            ? { ...msg, reactions: messageWithReaction.reactions || [] } 
-            : msg
+          normalizeId(msg._id) === normalizeId(messageWithReaction._id)
+            ? { ...msg, reactions: messageWithReaction.reactions || [] }
+            : msg,
         );
         return { messages: updatedMessages };
       });
     });
 
     socket.on("messageReactionRemoved", (data) => {
-      
       // Handle both formats: direct message (just message object) or group message (wrapped object)
       const messageWithReaction = data.message || data;
       const memberId = data.memberId;
       const groupId = data.groupId;
-      
+
       set((state) => {
         const authUser = useAuthStore.getState().authUser;
         if (!authUser || !authUser._id) {
           return state;
         }
-        
+
         const normalizeId = (id) => {
           if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
+          if (typeof id === "string") return id;
+          if (typeof id === "object" && id._id) return id._id.toString();
           return id.toString();
         };
-        
+
         const authUserId = normalizeId(authUser._id);
-        
+
         // For group messages, check if user is viewing this group
         if (groupId) {
           const groupIdStr = normalizeId(groupId);
-          const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
+          const isViewingThisGroup =
+            state.selectedGroup &&
+            normalizeId(state.selectedGroup._id) === groupIdStr;
           // Only update if viewing this group
           if (!isViewingThisGroup) return state;
         } else {
@@ -1466,84 +1639,94 @@ export const useChatStore = create((set, get) => ({
           const receiverId = normalizeId(messageWithReaction.receiverId);
           const isMyMessage = senderId === authUserId;
           const otherUserId = isMyMessage ? receiverId : senderId;
-          const isViewingThisChat = state.selectedUser && normalizeId(state.selectedUser._id) === otherUserId;
-          
-          
+          const isViewingThisChat =
+            state.selectedUser &&
+            normalizeId(state.selectedUser._id) === otherUserId;
+
           // Only update if viewing this conversation
           if (!isViewingThisChat) return state;
         }
-        
+
         const updatedMessages = state.messages.map((msg) =>
-          normalizeId(msg._id) === normalizeId(messageWithReaction._id) 
-            ? { ...msg, reactions: messageWithReaction.reactions || [] } 
-            : msg
+          normalizeId(msg._id) === normalizeId(messageWithReaction._id)
+            ? { ...msg, reactions: messageWithReaction.reactions || [] }
+            : msg,
         );
         return { messages: updatedMessages };
       });
     });
 
     // New unified reaction-update handler (WebSocket-based)
-    socket.on("reaction-update", ({ messageId, reactions, message: messageWithReaction }) => {
-      set((state) => {
-        const authUser = useAuthStore.getState().authUser;
-        if (!authUser || !authUser._id) {
-          return state;
-        }
-        
-        const normalizeId = (id) => {
-          if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
-          return id.toString();
-        };
-        
-        const authUserId = normalizeId(authUser._id);
-        
-        // Use message object if provided, otherwise use messageId
-        const targetMessage = messageWithReaction || { _id: messageId };
-        const targetMessageId = normalizeId(messageId || targetMessage._id);
-        
-        // Find the message in current state to check conversation context
-        const existingMessage = state.messages.find(msg => normalizeId(msg._id) === targetMessageId);
-        
-        if (!existingMessage) {
-          return state;
-        }
-        
-        // Check if user is viewing this conversation/group
-        const isGroupMessage = !!existingMessage.groupId;
-        
-        if (isGroupMessage) {
-          const groupIdStr = normalizeId(existingMessage.groupId);
-          const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
-          // Only update if viewing this group
-          if (!isViewingThisGroup) return state;
-        } else {
-          // For direct messages, check if user is viewing this conversation
-          const senderId = normalizeId(existingMessage.senderId);
-          const receiverId = normalizeId(existingMessage.receiverId);
-          const isMyMessage = senderId === authUserId;
-          const otherUserId = isMyMessage ? receiverId : senderId;
-          const isViewingThisChat = state.selectedUser && normalizeId(state.selectedUser._id) === otherUserId;
-          
-          // Only update if viewing this conversation
-          if (!isViewingThisChat) return state;
-        }
-        
-        const updatedMessages = state.messages.map((msg) =>
-          normalizeId(msg._id) === targetMessageId 
-            ? { ...msg, reactions: reactions || [] } 
-            : msg
-        );
-        return { messages: updatedMessages };
-      });
-    });
+    socket.on(
+      "reaction-update",
+      ({ messageId, reactions, message: messageWithReaction }) => {
+        set((state) => {
+          const authUser = useAuthStore.getState().authUser;
+          if (!authUser || !authUser._id) {
+            return state;
+          }
+
+          const normalizeId = (id) => {
+            if (!id) return null;
+            if (typeof id === "string") return id;
+            if (typeof id === "object" && id._id) return id._id.toString();
+            return id.toString();
+          };
+
+          const authUserId = normalizeId(authUser._id);
+
+          // Use message object if provided, otherwise use messageId
+          const targetMessage = messageWithReaction || { _id: messageId };
+          const targetMessageId = normalizeId(messageId || targetMessage._id);
+
+          // Find the message in current state to check conversation context
+          const existingMessage = state.messages.find(
+            (msg) => normalizeId(msg._id) === targetMessageId,
+          );
+
+          if (!existingMessage) {
+            return state;
+          }
+
+          // Check if user is viewing this conversation/group
+          const isGroupMessage = !!existingMessage.groupId;
+
+          if (isGroupMessage) {
+            const groupIdStr = normalizeId(existingMessage.groupId);
+            const isViewingThisGroup =
+              state.selectedGroup &&
+              normalizeId(state.selectedGroup._id) === groupIdStr;
+            // Only update if viewing this group
+            if (!isViewingThisGroup) return state;
+          } else {
+            // For direct messages, check if user is viewing this conversation
+            const senderId = normalizeId(existingMessage.senderId);
+            const receiverId = normalizeId(existingMessage.receiverId);
+            const isMyMessage = senderId === authUserId;
+            const otherUserId = isMyMessage ? receiverId : senderId;
+            const isViewingThisChat =
+              state.selectedUser &&
+              normalizeId(state.selectedUser._id) === otherUserId;
+
+            // Only update if viewing this conversation
+            if (!isViewingThisChat) return state;
+          }
+
+          const updatedMessages = state.messages.map((msg) =>
+            normalizeId(msg._id) === targetMessageId
+              ? { ...msg, reactions: reactions || [] }
+              : msg,
+          );
+          return { messages: updatedMessages };
+        });
+      },
+    );
   },
 
   unsubscribeFromMessages: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
-    
+
     socket.off("newMessage");
     socket.off("messageSeenUpdate");
     socket.off("messageEdited");
@@ -1559,18 +1742,29 @@ export const useChatStore = create((set, get) => ({
   subscribeToTyping: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
-    
-    set({ typingUsers: [], editingUsers: [], deletingUsers: [], uploadingPhotoUsers: [], isCurrentUserUploading: false, uploadProgress: 0, uploadType: null, uploadingImagePreview: null });
+
+    set({
+      typingUsers: [],
+      editingUsers: [],
+      deletingUsers: [],
+      uploadingPhotoUsers: [],
+      isCurrentUserUploading: false,
+      uploadProgress: 0,
+      uploadType: null,
+      uploadingImagePreview: null,
+    });
 
     socket.on("typing", ({ senderId }) => {
       set((state) => ({
-        typingUsers: [...new Set([...state.typingUsers, senderId])]
+        typingUsers: [...new Set([...state.typingUsers, senderId])],
       }));
     });
 
     socket.on("stopTyping", ({ senderId }) => {
       set((state) => {
-        const updatedTypingUsers = state.typingUsers.filter(id => id !== senderId);
+        const updatedTypingUsers = state.typingUsers.filter(
+          (id) => id !== senderId,
+        );
         return { typingUsers: updatedTypingUsers };
       });
     });
@@ -1578,13 +1772,15 @@ export const useChatStore = create((set, get) => ({
     // Editing indicator listeners
     socket.on("editing", ({ senderId }) => {
       set((state) => ({
-        editingUsers: [...new Set([...state.editingUsers, senderId])]
+        editingUsers: [...new Set([...state.editingUsers, senderId])],
       }));
     });
 
     socket.on("stopEditing", ({ senderId }) => {
       set((state) => {
-        const updatedEditingUsers = state.editingUsers.filter(id => id !== senderId);
+        const updatedEditingUsers = state.editingUsers.filter(
+          (id) => id !== senderId,
+        );
         return { editingUsers: updatedEditingUsers };
       });
     });
@@ -1592,13 +1788,15 @@ export const useChatStore = create((set, get) => ({
     // Deleting indicator listeners
     socket.on("deleting", ({ senderId }) => {
       set((state) => ({
-        deletingUsers: [...new Set([...state.deletingUsers, senderId])]
+        deletingUsers: [...new Set([...state.deletingUsers, senderId])],
       }));
     });
 
     socket.on("stopDeleting", ({ senderId }) => {
       set((state) => {
-        const updatedDeletingUsers = state.deletingUsers.filter(id => id !== senderId);
+        const updatedDeletingUsers = state.deletingUsers.filter(
+          (id) => id !== senderId,
+        );
         return { deletingUsers: updatedDeletingUsers };
       });
     });
@@ -1606,13 +1804,17 @@ export const useChatStore = create((set, get) => ({
     // Uploading photo indicator listeners
     socket.on("uploadingPhoto", ({ senderId }) => {
       set((state) => ({
-        uploadingPhotoUsers: [...new Set([...state.uploadingPhotoUsers, senderId])]
+        uploadingPhotoUsers: [
+          ...new Set([...state.uploadingPhotoUsers, senderId]),
+        ],
       }));
     });
 
     socket.on("stopUploadingPhoto", ({ senderId }) => {
       set((state) => {
-        const updatedUploadingPhotoUsers = state.uploadingPhotoUsers.filter(id => id !== senderId);
+        const updatedUploadingPhotoUsers = state.uploadingPhotoUsers.filter(
+          (id) => id !== senderId,
+        );
         return { uploadingPhotoUsers: updatedUploadingPhotoUsers };
       });
     });
@@ -1621,7 +1823,7 @@ export const useChatStore = create((set, get) => ({
   unsubscribeFromTyping: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
-    
+
     socket.off("typing");
     socket.off("stopTyping");
     socket.off("editing");
@@ -1635,19 +1837,19 @@ export const useChatStore = create((set, get) => ({
   // Group functions
   getGroups: async () => {
     const authUser = useAuthStore.getState().authUser;
-    
+
     // Don't try to load groups if not authenticated
     if (!authUser) {
       set({ groups: [], groupLastMessages: {}, isGroupsLoading: false });
       return;
     }
-    
+
     const state = get();
     // Only show loading if we don't have groups data yet
     if (state.groups.length === 0) {
       set({ isGroupsLoading: true });
     }
-    
+
     // Create a safety timeout that ALWAYS clears loading state after 12 seconds
     // This prevents stuck loading in production builds where errors might not be caught
     const safetyTimeout = setTimeout(() => {
@@ -1656,11 +1858,11 @@ export const useChatStore = create((set, get) => ({
         set({ isGroupsLoading: false });
       }
     }, 12000);
-    
+
     try {
       const [groupsRes, lastMessagesRes] = await Promise.all([
         axiosInstance.get("/groups/my-groups"),
-        axiosInstance.get("/groups/last-messages")
+        axiosInstance.get("/groups/last-messages"),
       ]);
 
       // Handle standardized response format: { success: true, data: [...] }
@@ -1681,7 +1883,10 @@ export const useChatStore = create((set, get) => ({
       let lastMessagesData = [];
       if (lastMessagesRes.data) {
         // New standardized format: { success: true, data: [...] }
-        if (lastMessagesRes.data.data && Array.isArray(lastMessagesRes.data.data)) {
+        if (
+          lastMessagesRes.data.data &&
+          Array.isArray(lastMessagesRes.data.data)
+        ) {
           lastMessagesData = lastMessagesRes.data.data;
         }
         // Direct array format
@@ -1691,8 +1896,8 @@ export const useChatStore = create((set, get) => ({
       }
 
       const groupLastMessagesMap = {};
-      
-      lastMessagesData.forEach(msg => {
+
+      lastMessagesData.forEach((msg) => {
         const groupId = normalizeId(msg.groupId);
         if (groupId) {
           // Store with normalized key for consistency
@@ -1700,9 +1905,9 @@ export const useChatStore = create((set, get) => ({
         }
       });
 
-      set({ 
+      set({
         groups: groupsData,
-        groupLastMessages: groupLastMessagesMap
+        groupLastMessages: groupLastMessagesMap,
       });
     } catch (error) {
       console.error("Error loading groups:", error);
@@ -1722,8 +1927,8 @@ export const useChatStore = create((set, get) => ({
     // Define normalizeId function for use throughout this function
     const normalizeId = (id) => {
       if (!id) return null;
-      if (typeof id === 'string') return id;
-      if (typeof id === 'object' && id._id) return id._id.toString();
+      if (typeof id === "string") return id;
+      if (typeof id === "object" && id._id) return id._id.toString();
       return id.toString();
     };
 
@@ -1743,17 +1948,19 @@ export const useChatStore = create((set, get) => ({
     socket.off("newGroupMessage");
 
     socket.on("groupCreated", ({ group, memberId }) => {
-      if (!authUser || !authUser._id || memberId !== authUser._id.toString()) return;
-      set(state => ({
-        groups: [group, ...state.groups]
+      if (!authUser || !authUser._id || memberId !== authUser._id.toString())
+        return;
+      set((state) => ({
+        groups: [group, ...state.groups],
       }));
     });
 
     socket.on("addedToGroup", ({ group, memberId }) => {
-      if (!authUser || !authUser._id || memberId !== authUser._id.toString()) return;
-      set(state => {
+      if (!authUser || !authUser._id || memberId !== authUser._id.toString())
+        return;
+      set((state) => {
         // Check if group already exists
-        const groupExists = state.groups.some(g => g._id === group._id);
+        const groupExists = state.groups.some((g) => g._id === group._id);
         if (!groupExists) {
           return { groups: [group, ...state.groups] };
         }
@@ -1763,13 +1970,15 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("removedFromGroup", ({ group, memberId }) => {
-      if (!authUser || !authUser._id || memberId !== authUser._id.toString()) return;
-      set(state => ({
-        groups: state.groups.filter(g => {
-          const gId = typeof g._id === 'string' ? g._id : g._id?.toString();
-          const groupId = typeof group._id === 'string' ? group._id : group._id?.toString();
+      if (!authUser || !authUser._id || memberId !== authUser._id.toString())
+        return;
+      set((state) => ({
+        groups: state.groups.filter((g) => {
+          const gId = typeof g._id === "string" ? g._id : g._id?.toString();
+          const groupId =
+            typeof group._id === "string" ? group._id : group._id?.toString();
           return gId !== groupId;
-        })
+        }),
       }));
       toast.success(`You were removed from ${group.name}`);
     });
@@ -1778,19 +1987,27 @@ export const useChatStore = create((set, get) => ({
     socket.on("groupTyping", ({ groupId, senderId, senderName }) => {
       const authUserId = normalizeId(authUser._id);
       if (normalizeId(senderId) === authUserId) return; // Don't show own typing
-      
-      set(state => {
+
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
         // Check both normalized and original format
-        const currentTyping = state.groupTypingUsers[groupIdStr] || state.groupTypingUsers[groupId] || [];
-        const exists = currentTyping.some(u => normalizeId(u.userId) === normalizeId(senderId));
-        
+        const currentTyping =
+          state.groupTypingUsers[groupIdStr] ||
+          state.groupTypingUsers[groupId] ||
+          [];
+        const exists = currentTyping.some(
+          (u) => normalizeId(u.userId) === normalizeId(senderId),
+        );
+
         if (!exists) {
           return {
             groupTypingUsers: {
               ...state.groupTypingUsers,
-              [groupIdStr]: [...currentTyping, { userId: senderId, senderName: senderName || "Someone" }]
-            }
+              [groupIdStr]: [
+                ...currentTyping,
+                { userId: senderId, senderName: senderName || "Someone" },
+              ],
+            },
           };
         }
         return state;
@@ -1798,14 +2015,19 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("groupStopTyping", ({ groupId, senderId }) => {
-      set(state => {
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
-        const currentTyping = state.groupTypingUsers[groupIdStr] || state.groupTypingUsers[groupId] || [];
+        const currentTyping =
+          state.groupTypingUsers[groupIdStr] ||
+          state.groupTypingUsers[groupId] ||
+          [];
         return {
           groupTypingUsers: {
             ...state.groupTypingUsers,
-            [groupIdStr]: currentTyping.filter(u => normalizeId(u.userId) !== normalizeId(senderId))
-          }
+            [groupIdStr]: currentTyping.filter(
+              (u) => normalizeId(u.userId) !== normalizeId(senderId),
+            ),
+          },
         };
       });
     });
@@ -1813,19 +2035,24 @@ export const useChatStore = create((set, get) => ({
     socket.on("groupEditing", ({ groupId, senderId }) => {
       const authUserId = normalizeId(authUser._id);
       if (normalizeId(senderId) === authUserId) return; // Don't show own editing
-      
-      set(state => {
+
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
-        const currentEditing = state.groupEditingUsers[groupIdStr] || state.groupEditingUsers[groupId] || [];
+        const currentEditing =
+          state.groupEditingUsers[groupIdStr] ||
+          state.groupEditingUsers[groupId] ||
+          [];
         const senderIdStr = normalizeId(senderId);
-        const exists = currentEditing.some(id => normalizeId(id) === senderIdStr);
-        
+        const exists = currentEditing.some(
+          (id) => normalizeId(id) === senderIdStr,
+        );
+
         if (!exists) {
           return {
             groupEditingUsers: {
               ...state.groupEditingUsers,
-              [groupIdStr]: [...currentEditing, senderId]
-            }
+              [groupIdStr]: [...currentEditing, senderId],
+            },
           };
         }
         return state;
@@ -1833,15 +2060,20 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("groupStopEditing", ({ groupId, senderId }) => {
-      set(state => {
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
         const senderIdStr = normalizeId(senderId);
-        const currentEditing = state.groupEditingUsers[groupIdStr] || state.groupEditingUsers[groupId] || [];
+        const currentEditing =
+          state.groupEditingUsers[groupIdStr] ||
+          state.groupEditingUsers[groupId] ||
+          [];
         return {
           groupEditingUsers: {
             ...state.groupEditingUsers,
-            [groupIdStr]: currentEditing.filter(id => normalizeId(id) !== senderIdStr)
-          }
+            [groupIdStr]: currentEditing.filter(
+              (id) => normalizeId(id) !== senderIdStr,
+            ),
+          },
         };
       });
     });
@@ -1849,19 +2081,24 @@ export const useChatStore = create((set, get) => ({
     socket.on("groupDeleting", ({ groupId, senderId }) => {
       const authUserId = normalizeId(authUser._id);
       if (normalizeId(senderId) === authUserId) return; // Don't show own deleting
-      
-      set(state => {
+
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
         const senderIdStr = normalizeId(senderId);
-        const currentDeleting = state.groupDeletingUsers[groupIdStr] || state.groupDeletingUsers[groupId] || [];
-        const exists = currentDeleting.some(id => normalizeId(id) === senderIdStr);
-        
+        const currentDeleting =
+          state.groupDeletingUsers[groupIdStr] ||
+          state.groupDeletingUsers[groupId] ||
+          [];
+        const exists = currentDeleting.some(
+          (id) => normalizeId(id) === senderIdStr,
+        );
+
         if (!exists) {
           return {
             groupDeletingUsers: {
               ...state.groupDeletingUsers,
-              [groupIdStr]: [...currentDeleting, senderId]
-            }
+              [groupIdStr]: [...currentDeleting, senderId],
+            },
           };
         }
         return state;
@@ -1869,15 +2106,20 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("groupStopDeleting", ({ groupId, senderId }) => {
-      set(state => {
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
         const senderIdStr = normalizeId(senderId);
-        const currentDeleting = state.groupDeletingUsers[groupIdStr] || state.groupDeletingUsers[groupId] || [];
+        const currentDeleting =
+          state.groupDeletingUsers[groupIdStr] ||
+          state.groupDeletingUsers[groupId] ||
+          [];
         return {
           groupDeletingUsers: {
             ...state.groupDeletingUsers,
-            [groupIdStr]: currentDeleting.filter(id => normalizeId(id) !== senderIdStr)
-          }
+            [groupIdStr]: currentDeleting.filter(
+              (id) => normalizeId(id) !== senderIdStr,
+            ),
+          },
         };
       });
     });
@@ -1885,19 +2127,24 @@ export const useChatStore = create((set, get) => ({
     socket.on("groupUploadingPhoto", ({ groupId, senderId }) => {
       const authUserId = normalizeId(authUser._id);
       if (normalizeId(senderId) === authUserId) return; // Don't show own uploading
-      
-      set(state => {
+
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
         const senderIdStr = normalizeId(senderId);
-        const currentUploading = state.groupUploadingPhotoUsers[groupIdStr] || state.groupUploadingPhotoUsers[groupId] || [];
-        const exists = currentUploading.some(id => normalizeId(id) === senderIdStr);
-        
+        const currentUploading =
+          state.groupUploadingPhotoUsers[groupIdStr] ||
+          state.groupUploadingPhotoUsers[groupId] ||
+          [];
+        const exists = currentUploading.some(
+          (id) => normalizeId(id) === senderIdStr,
+        );
+
         if (!exists) {
           return {
             groupUploadingPhotoUsers: {
               ...state.groupUploadingPhotoUsers,
-              [groupIdStr]: [...currentUploading, senderId]
-            }
+              [groupIdStr]: [...currentUploading, senderId],
+            },
           };
         }
         return state;
@@ -1905,15 +2152,20 @@ export const useChatStore = create((set, get) => ({
     });
 
     socket.on("groupStopUploadingPhoto", ({ groupId, senderId }) => {
-      set(state => {
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
         const senderIdStr = normalizeId(senderId);
-        const currentUploading = state.groupUploadingPhotoUsers[groupIdStr] || state.groupUploadingPhotoUsers[groupId] || [];
+        const currentUploading =
+          state.groupUploadingPhotoUsers[groupIdStr] ||
+          state.groupUploadingPhotoUsers[groupId] ||
+          [];
         return {
           groupUploadingPhotoUsers: {
             ...state.groupUploadingPhotoUsers,
-            [groupIdStr]: currentUploading.filter(id => normalizeId(id) !== senderIdStr)
-          }
+            [groupIdStr]: currentUploading.filter(
+              (id) => normalizeId(id) !== senderIdStr,
+            ),
+          },
         };
       });
     });
@@ -1923,26 +2175,30 @@ export const useChatStore = create((set, get) => ({
       const authUserId = normalizeId(authUser._id);
       const msgSenderId = normalizeId(message.senderId);
       const isIncomingMessage = msgSenderId !== authUserId;
-      
-      set(state => {
+
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
         const memberIdStr = normalizeId(memberId);
-        const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
-        
+        const isViewingThisGroup =
+          state.selectedGroup &&
+          normalizeId(state.selectedGroup._id) === groupIdStr;
+
         // Only process if this message is for the current user
         if (memberIdStr !== authUserId) return state;
-        
+
         // Check for duplicates using the same deduplication mechanism
         const messageId = message._id;
-        const messageExistsInState = state.messages.some(msg => msg._id === messageId);
+        const messageExistsInState = state.messages.some(
+          (msg) => msg._id === messageId,
+        );
         const isDuplicate = isDuplicateMessage(messageId);
-        
+
         // Always update groupLastMessages for the group list (this is the global handler)
         const updatedGroupLastMessages = {
           ...state.groupLastMessages,
-          [groupIdStr]: message
+          [groupIdStr]: message,
         };
-        
+
         // Skip adding to messages if duplicate
         if (isDuplicate || messageExistsInState) {
           return {
@@ -1950,46 +2206,50 @@ export const useChatStore = create((set, get) => ({
             groupLastMessages: updatedGroupLastMessages,
           };
         }
-        
+
         // Update messages array if viewing this group
         let updatedMessages = state.messages;
         if (isViewingThisGroup) {
           updatedMessages = [...state.messages, message];
         }
-        
+
         // Update unread count if message is from someone else and not currently viewing this group
         const updatedUnreadMessages = { ...state.unreadMessages };
         if (isIncomingMessage && !isViewingThisGroup) {
-          updatedUnreadMessages[groupIdStr] = (updatedUnreadMessages[groupIdStr] || 0) + 1;
+          updatedUnreadMessages[groupIdStr] =
+            (updatedUnreadMessages[groupIdStr] || 0) + 1;
         } else if (isViewingThisGroup) {
           // Clear unread count when viewing this group
           updatedUnreadMessages[groupIdStr] = 0;
         }
-        
+
         // Add browser notification for incoming group messages (if not viewing or not from self)
         if (isIncomingMessage && !isViewingThisGroup) {
           setTimeout(() => {
             try {
               const senderName = message.senderId?.fullname || "Someone";
-              const groupName = state.groups.find(g => normalizeId(g._id) === groupIdStr)?.name || "Group";
-              
+              const groupName =
+                state.groups.find((g) => normalizeId(g._id) === groupIdStr)
+                  ?.name || "Group";
+
               // In-app notification
               useNotificationStore.getState().addNotification({
-                type: 'group_message_received',
-                message: `${senderName} in ${groupName}: ${message.text || (message.image ? 'sent a photo' : message.audio ? 'sent an audio' : 'sent a message')}`,
-                data: { message, groupId, sender: message.senderId }
+                type: "group_message_received",
+                message: `${senderName} in ${groupName}: ${message.text || (message.image ? "sent a photo" : message.audio ? "sent an audio" : "sent a message")}`,
+                data: { message, groupId, sender: message.senderId },
               });
 
               // Browser notification (when user is online)
               let body = "";
               if (message.text) {
-                body = message.text.length > 100 
-                  ? message.text.substring(0, 100) + "..." 
-                  : message.text;
+                body =
+                  message.text.length > 100
+                    ? message.text.substring(0, 100) + "..."
+                    : message.text;
               } else if (message.image && message.image.length > 0) {
                 body = "📷 Sent a photo";
               } else if (message.audio && message.audio.length > 0) {
-                body = "🎵 Sent an audio message";
+                body = "🎤 Sent an audio message";
               } else if (message.video && message.video.length > 0) {
                 body = "🎥 Sent a video";
               } else if (message.file && message.file.length > 0) {
@@ -2011,18 +2271,18 @@ export const useChatStore = create((set, get) => ({
                     senderId: message.senderId?._id || message.senderId,
                     groupId: groupId,
                   },
-                }
+                },
               );
             } catch (err) {
               console.error("Failed to show group notification:", err);
             }
           }, 100);
         }
-        
+
         return {
           messages: updatedMessages,
           groupLastMessages: updatedGroupLastMessages,
-          unreadMessages: updatedUnreadMessages
+          unreadMessages: updatedUnreadMessages,
         };
       });
     });
@@ -2031,32 +2291,37 @@ export const useChatStore = create((set, get) => ({
     socket.on("groupMessageEdited", ({ message, groupId, memberId }) => {
       const authUserId = normalizeId(authUser._id);
       const memberIdStr = normalizeId(memberId);
-      
+
       // Only process if this message is for the current user
       if (memberIdStr !== authUserId) return;
-      
-      set(state => {
+
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
-        const isViewingThisGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr;
-        
+        const isViewingThisGroup =
+          state.selectedGroup &&
+          normalizeId(state.selectedGroup._id) === groupIdStr;
+
         // Update messages array if viewing this group
         let updatedMessages = state.messages;
         if (isViewingThisGroup) {
           updatedMessages = state.messages.map((msg) =>
-            normalizeId(msg._id) === normalizeId(message._id) ? message : msg
+            normalizeId(msg._id) === normalizeId(message._id) ? message : msg,
           );
         }
-        
+
         // Always check and update groupLastMessages if this is the last message (for group list)
         // Check both normalized and original format for compatibility
         const lastMessageNormalized = state.groupLastMessages[groupIdStr];
         const lastMessageOriginal = state.groupLastMessages[groupId];
         const lastMessage = lastMessageNormalized || lastMessageOriginal;
-        
+
         const updatedGroupLastMessages = { ...state.groupLastMessages };
-        
+
         // Check if the edited message is the last message (normalize IDs for comparison)
-        if (lastMessage && normalizeId(lastMessage._id) === normalizeId(message._id)) {
+        if (
+          lastMessage &&
+          normalizeId(lastMessage._id) === normalizeId(message._id)
+        ) {
           // Update with normalized key
           updatedGroupLastMessages[groupIdStr] = message;
           // Also update original format if it exists
@@ -2064,10 +2329,10 @@ export const useChatStore = create((set, get) => ({
             updatedGroupLastMessages[groupId] = message;
           }
         }
-        
+
         return {
           messages: updatedMessages,
-          groupLastMessages: updatedGroupLastMessages
+          groupLastMessages: updatedGroupLastMessages,
         };
       });
     });
@@ -2076,25 +2341,27 @@ export const useChatStore = create((set, get) => ({
     socket.on("groupInfoUpdated", ({ group, memberId }) => {
       const authUserId = normalizeId(authUser._id);
       const memberIdStr = normalizeId(memberId);
-      
+
       // Only process if this update is for the current user
       if (memberIdStr !== authUserId) return;
-      
-      set(state => {
+
+      set((state) => {
         const groupIdStr = normalizeId(group._id);
-        const updatedGroups = state.groups.map(g => {
+        const updatedGroups = state.groups.map((g) => {
           const gId = normalizeId(g._id);
           return gId === groupIdStr ? group : g;
         });
-        
+
         // Update selectedGroup if it's the updated group
-        const updatedSelectedGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr
-          ? group
-          : state.selectedGroup;
-        
+        const updatedSelectedGroup =
+          state.selectedGroup &&
+          normalizeId(state.selectedGroup._id) === groupIdStr
+            ? group
+            : state.selectedGroup;
+
         return {
           groups: updatedGroups,
-          selectedGroup: updatedSelectedGroup
+          selectedGroup: updatedSelectedGroup,
         };
       });
     });
@@ -2102,58 +2369,62 @@ export const useChatStore = create((set, get) => ({
     socket.on("memberLeftGroup", ({ group, memberId, leftMemberId }) => {
       const authUserId = normalizeId(authUser._id);
       const memberIdStr = normalizeId(memberId);
-      
+
       // Only process if this update is for the current user
       if (memberIdStr !== authUserId) return;
-      
-      set(state => {
+
+      set((state) => {
         const groupIdStr = normalizeId(group._id);
-        const updatedGroups = state.groups.map(g => {
+        const updatedGroups = state.groups.map((g) => {
           const gId = normalizeId(g._id);
           return gId === groupIdStr ? group : g;
         });
-        
+
         // Update selectedGroup if it's the updated group
-        const updatedSelectedGroup = state.selectedGroup && normalizeId(state.selectedGroup._id) === groupIdStr
-          ? group
-          : state.selectedGroup;
-        
+        const updatedSelectedGroup =
+          state.selectedGroup &&
+          normalizeId(state.selectedGroup._id) === groupIdStr
+            ? group
+            : state.selectedGroup;
+
         return {
           groups: updatedGroups,
-          selectedGroup: updatedSelectedGroup
+          selectedGroup: updatedSelectedGroup,
         };
       });
     });
 
     socket.on("leftGroup", ({ groupId }) => {
       // User left this group - remove it from their list
-      set(state => {
+      set((state) => {
         const groupIdStr = normalizeId(groupId);
-        
+
         // Remove group from groups array
         const updatedGroups = state.groups.filter((group) => {
           const gId = normalizeId(group._id);
           return gId !== groupIdStr;
         });
-        
+
         // Remove from groupLastMessages
         const updatedGroupLastMessages = { ...state.groupLastMessages };
         delete updatedGroupLastMessages[groupIdStr];
-        
+
         // Remove from unreadMessages
         const updatedUnreadMessages = { ...state.unreadMessages };
         delete updatedUnreadMessages[groupIdStr];
-        
+
         // Clear selected group if it was the one we left
-        const currentSelectedGroupId = state.selectedGroup?._id ? normalizeId(state.selectedGroup._id) : null;
+        const currentSelectedGroupId = state.selectedGroup?._id
+          ? normalizeId(state.selectedGroup._id)
+          : null;
         const shouldClearSelectedGroup = currentSelectedGroupId === groupIdStr;
-        
+
         return {
           groups: updatedGroups,
           groupLastMessages: updatedGroupLastMessages,
           unreadMessages: updatedUnreadMessages,
           selectedGroup: shouldClearSelectedGroup ? null : state.selectedGroup,
-          messages: shouldClearSelectedGroup ? [] : state.messages
+          messages: shouldClearSelectedGroup ? [] : state.messages,
         };
       });
     });
@@ -2162,25 +2433,28 @@ export const useChatStore = create((set, get) => ({
       // Remove group from list for all members
       // Check if this event is for the current user
       if (!authUser || !authUser._id) return;
-      const authUserIdStr = typeof authUser._id === 'string' ? authUser._id.toString() : authUser._id.toString();
+      const authUserIdStr =
+        typeof authUser._id === "string"
+          ? authUser._id.toString()
+          : authUser._id.toString();
       if (memberId !== authUserIdStr) return;
-      
-      set(state => {
+
+      set((state) => {
         const normalizeId = (id) => {
           if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
+          if (typeof id === "string") return id;
+          if (typeof id === "object" && id._id) return id._id.toString();
           return id.toString();
         };
-        
+
         const groupIdStr = normalizeId(groupId);
-        
+
         // Remove group from groups array
         const updatedGroups = state.groups.filter((group) => {
           const gId = normalizeId(group._id);
           return gId !== groupIdStr;
         });
-        
+
         // Remove from groupLastMessages
         const updatedGroupLastMessages = { ...state.groupLastMessages };
         delete updatedGroupLastMessages[groupIdStr];
@@ -2190,7 +2464,7 @@ export const useChatStore = create((set, get) => ({
             delete updatedGroupLastMessages[key];
           }
         });
-        
+
         // Remove from unreadMessages
         const updatedUnreadMessages = { ...state.unreadMessages };
         delete updatedUnreadMessages[groupIdStr];
@@ -2199,23 +2473,25 @@ export const useChatStore = create((set, get) => ({
             delete updatedUnreadMessages[key];
           }
         });
-        
+
         // Clear selected group if it was deleted
-        const currentSelectedGroupId = state.selectedGroup?._id ? normalizeId(state.selectedGroup._id) : null;
+        const currentSelectedGroupId = state.selectedGroup?._id
+          ? normalizeId(state.selectedGroup._id)
+          : null;
         const shouldClearSelectedGroup = currentSelectedGroupId === groupIdStr;
-        
+
         // Clear messages if this group was selected
         const shouldClearMessages = shouldClearSelectedGroup;
-        
+
         return {
           groups: updatedGroups,
           groupLastMessages: updatedGroupLastMessages,
           unreadMessages: updatedUnreadMessages,
           selectedGroup: shouldClearSelectedGroup ? null : state.selectedGroup,
-          messages: shouldClearMessages ? [] : state.messages
+          messages: shouldClearMessages ? [] : state.messages,
         };
       });
-      
+
       toast.success("Group deleted");
     });
   },
@@ -2223,7 +2499,7 @@ export const useChatStore = create((set, get) => ({
   unsubscribeFromGroups: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
-    
+
     socket.off("groupCreated");
     socket.off("addedToGroup");
     socket.off("removedFromGroup");
@@ -2246,8 +2522,8 @@ export const useChatStore = create((set, get) => ({
   createGroup: async (groupData) => {
     try {
       const res = await axiosInstance.post("/groups/create", groupData);
-      set(state => ({
-        groups: [res.data, ...state.groups]
+      set((state) => ({
+        groups: [res.data, ...state.groups],
       }));
       toast.success("Group created successfully");
       return res.data;
@@ -2260,37 +2536,40 @@ export const useChatStore = create((set, get) => ({
   addMembersToGroup: async (groupId, memberIds) => {
     try {
       // Ensure memberIds is an array of strings
-      const normalizedMemberIds = Array.isArray(memberIds) 
-        ? memberIds.map(id => typeof id === 'string' ? id : id.toString())
+      const normalizedMemberIds = Array.isArray(memberIds)
+        ? memberIds.map((id) => (typeof id === "string" ? id : id.toString()))
         : [];
-      
+
       if (normalizedMemberIds.length === 0) {
         toast.error("Please select at least one member to add");
         throw new Error("No members selected");
       }
 
-      const res = await axiosInstance.post(`/groups/${groupId}/members`, { 
-        memberIds: normalizedMemberIds 
+      const res = await axiosInstance.post(`/groups/${groupId}/members`, {
+        memberIds: normalizedMemberIds,
       });
-      
+
       // Handle standardized response format: { success: true, data: {...} }
       const groupData = res.data?.data || res.data;
-      
-      set(state => ({
-        groups: state.groups.map(g => {
-          const normalizedGroupId = typeof g._id === 'string' ? g._id : g._id?.toString();
-          const normalizedTargetId = typeof groupId === 'string' ? groupId : groupId?.toString();
+
+      set((state) => ({
+        groups: state.groups.map((g) => {
+          const normalizedGroupId =
+            typeof g._id === "string" ? g._id : g._id?.toString();
+          const normalizedTargetId =
+            typeof groupId === "string" ? groupId : groupId?.toString();
           return normalizedGroupId === normalizedTargetId ? groupData : g;
-        })
+        }),
       }));
-      
+
       toast.success(res.data?.message || "Members added successfully");
       return groupData;
     } catch (error) {
-      const errorMessage = error.response?.data?.error || 
-                          error.response?.data?.message || 
-                          error.message || 
-                          "Failed to add members";
+      const errorMessage =
+        error.response?.data?.error ||
+        error.response?.data?.message ||
+        error.message ||
+        "Failed to add members";
       toast.error(errorMessage);
       throw error;
     }
@@ -2298,16 +2577,20 @@ export const useChatStore = create((set, get) => ({
 
   removeMemberFromGroup: async (groupId, memberId) => {
     try {
-      const res = await axiosInstance.delete(`/groups/${groupId}/members/${memberId}`);
-      set(state => ({
-        groups: state.groups.map(g => {
-const gId = normalizeId(g._id);
+      const res = await axiosInstance.delete(
+        `/groups/${groupId}/members/${memberId}`,
+      );
+      set((state) => ({
+        groups: state.groups.map((g) => {
+          const gId = normalizeId(g._id);
           const groupIdStr = normalizeId(groupId);
           return gId === groupIdStr ? res.data : g;
         }),
-        selectedGroup: state.selectedGroup && (normalizeId(state.selectedGroup._id) === normalizeId(groupId))
-          ? res.data
-          : state.selectedGroup
+        selectedGroup:
+          state.selectedGroup &&
+          normalizeId(state.selectedGroup._id) === normalizeId(groupId)
+            ? res.data
+            : state.selectedGroup,
       }));
       return res.data;
     } catch (error) {
@@ -2319,15 +2602,17 @@ const gId = normalizeId(g._id);
   updateGroupInfo: async (groupId, groupData) => {
     try {
       const res = await axiosInstance.put(`/groups/${groupId}/info`, groupData);
-      set(state => ({
-        groups: state.groups.map(g => {
-const gId = normalizeId(g._id);
+      set((state) => ({
+        groups: state.groups.map((g) => {
+          const gId = normalizeId(g._id);
           const groupIdStr = normalizeId(groupId);
           return gId === groupIdStr ? res.data : g;
         }),
-        selectedGroup: state.selectedGroup && (normalizeId(state.selectedGroup._id) === normalizeId(groupId)) 
-          ? res.data 
-          : state.selectedGroup
+        selectedGroup:
+          state.selectedGroup &&
+          normalizeId(state.selectedGroup._id) === normalizeId(groupId)
+            ? res.data
+            : state.selectedGroup,
       }));
       return res.data;
     } catch (error) {
@@ -2339,22 +2624,22 @@ const gId = normalizeId(g._id);
   leaveGroup: async (groupId) => {
     try {
       await axiosInstance.post(`/groups/${groupId}/leave`);
-      set(state => {
+      set((state) => {
         const normalizeId = (id) => {
           if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
+          if (typeof id === "string") return id;
+          if (typeof id === "object" && id._id) return id._id.toString();
           return id.toString();
         };
-        
+
         const groupIdStr = normalizeId(groupId);
-        
+
         // Remove group from groups array
         const updatedGroups = state.groups.filter((group) => {
           const gId = normalizeId(group._id);
           return gId !== groupIdStr;
         });
-        
+
         // Remove from groupLastMessages
         const updatedGroupLastMessages = { ...state.groupLastMessages };
         delete updatedGroupLastMessages[groupIdStr];
@@ -2363,7 +2648,7 @@ const gId = normalizeId(g._id);
             delete updatedGroupLastMessages[key];
           }
         });
-        
+
         // Remove from unreadMessages
         const updatedUnreadMessages = { ...state.unreadMessages };
         delete updatedUnreadMessages[groupIdStr];
@@ -2372,17 +2657,19 @@ const gId = normalizeId(g._id);
             delete updatedUnreadMessages[key];
           }
         });
-        
+
         // Clear selected group if it was the one we left
-        const currentSelectedGroupId = state.selectedGroup?._id ? normalizeId(state.selectedGroup._id) : null;
+        const currentSelectedGroupId = state.selectedGroup?._id
+          ? normalizeId(state.selectedGroup._id)
+          : null;
         const shouldClearSelectedGroup = currentSelectedGroupId === groupIdStr;
-        
+
         return {
           groups: updatedGroups,
           groupLastMessages: updatedGroupLastMessages,
           unreadMessages: updatedUnreadMessages,
           selectedGroup: shouldClearSelectedGroup ? null : state.selectedGroup,
-          messages: shouldClearSelectedGroup ? [] : state.messages
+          messages: shouldClearSelectedGroup ? [] : state.messages,
         };
       });
     } catch (error) {
@@ -2393,8 +2680,8 @@ const gId = normalizeId(g._id);
 
   getGroupMessages: async (groupId) => {
     // Don't clear messages - keep showing cached ones while loading
-    set({ 
-      isMessagesLoading: true, 
+    set({
+      isMessagesLoading: true,
       hasMoreMessages: false,
       lastLoadBeforeMessageId: null, // Reset pagination state
     });
@@ -2404,24 +2691,26 @@ const gId = normalizeId(g._id);
       // Or fallback to old format: array directly
       const messagesData = res.data.messages || res.data;
       const hasMore = res.data.hasMore || false;
-      
+
       // Keep messages in normal order (oldest first, newest last)
       const orderedMessages = Array.isArray(messagesData) ? messagesData : [];
-      
-      set({ 
+
+      set({
         messages: orderedMessages,
         hasMoreMessages: hasMore,
       });
-      
+
       // Clear unread count for this group when viewing messages
       set((state) => ({
         unreadMessages: {
           ...state.unreadMessages,
-          [groupId]: 0
-        }
+          [groupId]: 0,
+        },
       }));
     } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to load group messages");
+      toast.error(
+        error.response?.data?.error || "Failed to load group messages",
+      );
     } finally {
       set({ isMessagesLoading: false });
     }
@@ -2431,31 +2720,33 @@ const gId = normalizeId(g._id);
   loadMoreGroupMessages: async (groupId, beforeMessageId, onScrollPreserve) => {
     const { isLoadingMoreMessages, hasMoreMessages } = get();
     if (isLoadingMoreMessages || !hasMoreMessages || !beforeMessageId) return;
-    
+
     // Prevent duplicate requests for the same beforeMessageId
     const lastLoadBefore = get().lastLoadBeforeMessageId;
     if (lastLoadBefore === beforeMessageId) return;
-    
-    set({ 
+
+    set({
       isLoadingMoreMessages: true,
       lastLoadBeforeMessageId: beforeMessageId,
     });
-    
+
     try {
-      const res = await axiosInstance.get(`/groups/${groupId}/messages?before=${beforeMessageId}`);
+      const res = await axiosInstance.get(
+        `/groups/${groupId}/messages?before=${beforeMessageId}`,
+      );
       // Handle new pagination format
       const messagesData = res.data.messages || res.data;
       const hasMore = res.data.hasMore || false;
-      
+
       if (Array.isArray(messagesData) && messagesData.length > 0) {
         // Prepend older messages to the beginning of the array
         const previousScrollHeight = onScrollPreserve?.();
-        
+
         set((state) => ({
           messages: [...messagesData, ...state.messages], // Prepend older messages at the beginning
           hasMoreMessages: hasMore,
         }));
-        
+
         // Restore scroll position after DOM update
         if (onScrollPreserve && previousScrollHeight) {
           requestAnimationFrame(() => {
@@ -2484,28 +2775,59 @@ const gId = normalizeId(g._id);
 
     // === OPTIMISTIC UPDATE: Show message immediately for text-only messages ===
     // Check if arrays are empty or if single values are falsy
-    const hasImage = Array.isArray(messageData.image) ? messageData.image.length > 0 : !!messageData.image;
-    const hasAudio = Array.isArray(messageData.audio) ? messageData.audio.length > 0 : !!messageData.audio;
-    const hasVideo = Array.isArray(messageData.video) ? messageData.video.length > 0 : !!messageData.video;
-    const hasFile = Array.isArray(messageData.file) ? messageData.file.length > 0 : !!messageData.file;
-    const isTextOnly = messageData.text && !hasImage && !hasAudio && !hasVideo && !hasFile;
+    const hasImage = Array.isArray(messageData.image)
+      ? messageData.image.length > 0
+      : !!messageData.image;
+    const hasAudio = Array.isArray(messageData.audio)
+      ? messageData.audio.length > 0
+      : !!messageData.audio;
+    const hasVideo = Array.isArray(messageData.video)
+      ? messageData.video.length > 0
+      : !!messageData.video;
+    const hasFile = Array.isArray(messageData.file)
+      ? messageData.file.length > 0
+      : !!messageData.file;
+    const isTextOnly =
+      messageData.text && !hasImage && !hasAudio && !hasVideo && !hasFile;
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
+
     // Log payload for debugging multiple files
     if (hasImage || hasVideo || hasFile) {
-      console.log('Sending group message with files:', {
-        imageCount: Array.isArray(messageData.image) ? messageData.image.length : (messageData.image ? 1 : 0),
-        videoCount: Array.isArray(messageData.video) ? messageData.video.length : (messageData.video ? 1 : 0),
-        fileCount: Array.isArray(messageData.file) ? messageData.file.length : (messageData.file ? 1 : 0),
-        audioCount: Array.isArray(messageData.audio) ? messageData.audio.length : (messageData.audio ? 1 : 0),
+      console.log("Sending group message with files:", {
+        imageCount: Array.isArray(messageData.image)
+          ? messageData.image.length
+          : messageData.image
+            ? 1
+            : 0,
+        videoCount: Array.isArray(messageData.video)
+          ? messageData.video.length
+          : messageData.video
+            ? 1
+            : 0,
+        fileCount: Array.isArray(messageData.file)
+          ? messageData.file.length
+          : messageData.file
+            ? 1
+            : 0,
+        audioCount: Array.isArray(messageData.audio)
+          ? messageData.audio.length
+          : messageData.audio
+            ? 1
+            : 0,
         payload: {
-          image: Array.isArray(messageData.image) ? `[${messageData.image.length} items]` : messageData.image,
-          video: Array.isArray(messageData.video) ? `[${messageData.video.length} items]` : messageData.video,
-          file: Array.isArray(messageData.file) ? `[${messageData.file.length} items]` : messageData.file,
-        }
+          image: Array.isArray(messageData.image)
+            ? `[${messageData.image.length} items]`
+            : messageData.image,
+          video: Array.isArray(messageData.video)
+            ? `[${messageData.video.length} items]`
+            : messageData.video,
+          file: Array.isArray(messageData.file)
+            ? `[${messageData.file.length} items]`
+            : messageData.file,
+        },
       });
     }
-    
+
     if (isTextOnly) {
       const optimisticMessage = {
         _id: tempId,
@@ -2520,7 +2842,7 @@ const gId = normalizeId(g._id);
         createdAt: new Date().toISOString(),
         pending: true, // Mark as pending
       };
-      
+
       // Add optimistic message to UI immediately
       set((state) => ({
         messages: [...state.messages, optimisticMessage],
@@ -2533,48 +2855,55 @@ const gId = normalizeId(g._id);
 
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      const baseURL = axiosInstance.defaults.baseURL || import.meta.env.VITE_BACKEND_URL || '';
+      const baseURL =
+        axiosInstance.defaults.baseURL ||
+        import.meta.env.VITE_BACKEND_URL ||
+        "";
       const url = `${baseURL}/groups/${groupId}/send`;
-      
+
       // Reset progress and determine upload type
       // Only set upload state if not already uploading (for multiple files, state is set once)
       const currentState = get();
-      const uploadType = messageData.image ? 'image' : messageData.file ? 'file' : null;
-      
+      const uploadType = messageData.image
+        ? "image"
+        : messageData.file
+          ? "file"
+          : null;
+
       // Only set upload state if not already set (prevents duplicate indicators for multiple files)
       if (!currentState.isCurrentUserUploading && !isTextOnly) {
-        set({ 
-          uploadProgress: 0, 
-          uploadType, 
+        set({
+          uploadProgress: 0,
+          uploadType,
           isCurrentUserUploading: true,
-          uploadingImagePreview: messageData.image || null
+          uploadingImagePreview: messageData.image || null,
         });
       } else if (!isTextOnly) {
         // Just update progress, keep existing upload state
         set({ uploadProgress: 0 });
       }
-      
+
       // Track upload progress
-      xhr.upload.addEventListener('progress', (e) => {
+      xhr.upload.addEventListener("progress", (e) => {
         if (e.lengthComputable) {
           const percentComplete = Math.round((e.loaded / e.total) * 100);
           set({ uploadProgress: percentComplete });
         }
       });
-      
-      xhr.addEventListener('load', () => {
+
+      xhr.addEventListener("load", () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           const serverMessage = JSON.parse(xhr.responseText);
-          
+
           // Track this message ID FIRST to prevent duplicate from socket (before adding/updating)
           isDuplicateMessage(serverMessage._id);
-          
+
           // Handle message addition/update based on type
           if (isTextOnly) {
             // Replace optimistic message with server response
             set((state) => ({
               messages: state.messages.map((msg) =>
-                msg._id === tempId ? { ...serverMessage, pending: false } : msg
+                msg._id === tempId ? { ...serverMessage, pending: false } : msg,
               ),
               groupLastMessages: {
                 ...state.groupLastMessages,
@@ -2585,12 +2914,14 @@ const gId = normalizeId(g._id);
             // For images/files, add the server message to the array (no optimistic update was done)
             set((state) => {
               // Check if message already exists (from socket or previous add)
-              const messageExists = state.messages.some(msg => msg._id === serverMessage._id);
+              const messageExists = state.messages.some(
+                (msg) => msg._id === serverMessage._id,
+              );
               if (messageExists) {
                 // Update existing message
                 return {
-                  messages: state.messages.map(msg =>
-                    msg._id === serverMessage._id ? serverMessage : msg
+                  messages: state.messages.map((msg) =>
+                    msg._id === serverMessage._id ? serverMessage : msg,
                   ),
                   groupLastMessages: {
                     ...state.groupLastMessages,
@@ -2609,7 +2940,7 @@ const gId = normalizeId(g._id);
               }
             });
           }
-          
+
           set({ uploadProgress: 100 });
           // Don't clear upload state here - let the caller manage it for multiple files
           // Only reset progress
@@ -2624,43 +2955,67 @@ const gId = normalizeId(g._id);
               messages: state.messages.filter((msg) => msg._id !== tempId),
             }));
           }
-          set({ uploadProgress: 0, isCurrentUserUploading: false, uploadType: null, uploadingImagePreview: null });
+          set({
+            uploadProgress: 0,
+            isCurrentUserUploading: false,
+            uploadType: null,
+            uploadingImagePreview: null,
+          });
           const error = new Error(`HTTP ${xhr.status}`);
-          error.response = { status: xhr.status, data: JSON.parse(xhr.responseText || '{}') };
+          error.response = {
+            status: xhr.status,
+            data: JSON.parse(xhr.responseText || "{}"),
+          };
           reject(error);
         }
       });
-      
-      xhr.addEventListener('error', () => {
+
+      xhr.addEventListener("error", () => {
         // Remove optimistic message on error
         if (isTextOnly) {
           set((state) => ({
             messages: state.messages.filter((msg) => msg._id !== tempId),
           }));
         }
-        set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
-        reject(new Error('Network error'));
+        set({
+          uploadProgress: 0,
+          isCurrentUserUploading: false,
+          uploadingImagePreview: null,
+        });
+        reject(new Error("Network error"));
       });
-      
-      xhr.addEventListener('abort', () => {
+
+      xhr.addEventListener("abort", () => {
         // Remove optimistic message on abort
         if (isTextOnly) {
           set((state) => ({
             messages: state.messages.filter((msg) => msg._id !== tempId),
           }));
         }
-        set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
-        reject(new Error('Upload aborted'));
+        set({
+          uploadProgress: 0,
+          isCurrentUserUploading: false,
+          uploadingImagePreview: null,
+        });
+        reject(new Error("Upload aborted"));
       });
-      
-      xhr.open('POST', url);
+
+      xhr.open("POST", url);
       xhr.withCredentials = true; // Use cookies for authentication (same as axios)
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      
+      xhr.setRequestHeader("Content-Type", "application/json");
+
       xhr.send(JSON.stringify(messageData));
     }).catch((error) => {
-      toast.error(error.response?.data?.error || error.message || "Failed to send message");
-      set({ uploadProgress: 0, isCurrentUserUploading: false, uploadingImagePreview: null });
+      toast.error(
+        error.response?.data?.error ||
+          error.message ||
+          "Failed to send message",
+      );
+      set({
+        uploadProgress: 0,
+        isCurrentUserUploading: false,
+        uploadingImagePreview: null,
+      });
       throw error;
     });
   },
@@ -2671,19 +3026,19 @@ const gId = normalizeId(g._id);
       set((state) => {
         const normalizeId = (id) => {
           if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
+          if (typeof id === "string") return id;
+          if (typeof id === "object" && id._id) return id._id.toString();
           return id.toString();
         };
-        
+
         const groupIdStr = normalizeId(groupId);
-        
+
         // Remove group from groups array
         const updatedGroups = state.groups.filter((group) => {
           const gId = normalizeId(group._id);
           return gId !== groupIdStr;
         });
-        
+
         // Remove from groupLastMessages
         const updatedGroupLastMessages = { ...state.groupLastMessages };
         delete updatedGroupLastMessages[groupIdStr];
@@ -2692,31 +3047,34 @@ const gId = normalizeId(g._id);
             delete updatedGroupLastMessages[key];
           }
         });
-        
+
         // Remove from unreadMessages
-          const updatedUnreadMessages = { ...state.unreadMessages };
+        const updatedUnreadMessages = { ...state.unreadMessages };
         delete updatedUnreadMessages[groupIdStr];
         Object.keys(updatedUnreadMessages).forEach((key) => {
           if (normalizeId(key) === groupIdStr) {
             delete updatedUnreadMessages[key];
           }
         });
-        
+
         // Clear selected group if it was deleted
-        const currentSelectedGroupId = state.selectedGroup?._id ? normalizeId(state.selectedGroup._id) : null;
+        const currentSelectedGroupId = state.selectedGroup?._id
+          ? normalizeId(state.selectedGroup._id)
+          : null;
         const shouldClearSelectedGroup = currentSelectedGroupId === groupIdStr;
-          
-          return {
+
+        return {
           groups: updatedGroups,
           groupLastMessages: updatedGroupLastMessages,
           unreadMessages: updatedUnreadMessages,
           selectedGroup: shouldClearSelectedGroup ? null : state.selectedGroup,
-          messages: shouldClearSelectedGroup ? [] : state.messages
+          messages: shouldClearSelectedGroup ? [] : state.messages,
         };
       });
 
       // Fire API call in background
-      axiosInstance.delete(`/groups/${groupId}`)
+      axiosInstance
+        .delete(`/groups/${groupId}`)
         .then((res) => {
           // Socket event will confirm and handle proper state updates
         })
@@ -2731,7 +3089,7 @@ const gId = normalizeId(g._id);
       console.error("Failed to delete group:", error);
       toast.error(error.response?.data?.error || "Failed to delete group");
       throw error;
-      }
+    }
   },
 
   subscribeToGroupMessages: () => {
@@ -2743,12 +3101,15 @@ const gId = normalizeId(g._id);
 
     // Clear group status indicators when switching groups
     const groupId = selectedGroup._id;
-        set(state => ({
+    set((state) => ({
       groupTypingUsers: { ...state.groupTypingUsers, [groupId]: [] },
       groupEditingUsers: { ...state.groupEditingUsers, [groupId]: [] },
       groupDeletingUsers: { ...state.groupDeletingUsers, [groupId]: [] },
-      groupUploadingPhotoUsers: { ...state.groupUploadingPhotoUsers, [groupId]: [] }
-        }));
+      groupUploadingPhotoUsers: {
+        ...state.groupUploadingPhotoUsers,
+        [groupId]: [],
+      },
+    }));
 
     // Remove existing listeners first to prevent duplicates
     // Note: We don't remove "newGroupMessage" or group status events here because they're handled globally in subscribeToGroups
@@ -2763,47 +3124,39 @@ const gId = normalizeId(g._id);
     // Group status events (typing, editing, deleting, uploading) are also handled globally for the group list
     // Local handlers below update the state for the currently selected group
 
-    socket.on("groupMessageDeleted", ({ messageId, groupId, memberId, deleteType = "forEveryone" }) => {
-      // Update messages if viewing this group
-      if (!authUser || !authUser._id || groupId !== selectedGroup._id || memberId !== authUser._id) return;
-      if (groupId === selectedGroup._id && memberId === authUser._id) {
-        set(state => {
-          // Remove message from messages array
-          const updatedMessages = state.messages.filter((msg) => msg._id !== messageId);
+    socket.on(
+      "groupMessageDeleted",
+      ({ messageId, groupId, memberId, deleteType = "forEveryone" }) => {
+        // Update messages if viewing this group
+        if (
+          !authUser ||
+          !authUser._id ||
+          groupId !== selectedGroup._id ||
+          memberId !== authUser._id
+        )
+          return;
+        if (groupId === selectedGroup._id && memberId === authUser._id) {
+          set((state) => {
+            // Remove message from messages array
+            const updatedMessages = state.messages.filter(
+              (msg) => msg._id !== messageId,
+            );
 
-          // Update groupLastMessages if this was the last message
-          const lastMessage = state.groupLastMessages[groupId];
-          const updatedGroupLastMessages = { ...state.groupLastMessages };
-          
-          if (lastMessage && lastMessage._id === messageId) {
-            const newLastMessage = updatedMessages
-              .filter((msg) => msg.groupId && msg.groupId.toString() === groupId.toString())
-              .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
-            
-            if (newLastMessage) {
-              updatedGroupLastMessages[groupId] = newLastMessage;
-            } else {
-              delete updatedGroupLastMessages[groupId];
-            }
-          }
-
-          return {
-            messages: updatedMessages,
-            groupLastMessages: updatedGroupLastMessages
-          };
-        });
-      } else {
-        // Update groupLastMessages even if not viewing (only for "forEveryone")
-        if (deleteType === "forEveryone") {
-          set(state => {
+            // Update groupLastMessages if this was the last message
             const lastMessage = state.groupLastMessages[groupId];
             const updatedGroupLastMessages = { ...state.groupLastMessages };
-            
+
             if (lastMessage && lastMessage._id === messageId) {
-              const newLastMessage = state.messages
-                .filter((msg) => msg.groupId && msg.groupId.toString() === groupId.toString() && msg._id !== messageId)
-                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
-              
+              const newLastMessage = updatedMessages
+                .filter(
+                  (msg) =>
+                    msg.groupId &&
+                    msg.groupId.toString() === groupId.toString(),
+                )
+                .sort(
+                  (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+                )[0];
+
               if (newLastMessage) {
                 updatedGroupLastMessages[groupId] = newLastMessage;
               } else {
@@ -2812,28 +3165,68 @@ const gId = normalizeId(g._id);
             }
 
             return {
-              groupLastMessages: updatedGroupLastMessages
+              messages: updatedMessages,
+              groupLastMessages: updatedGroupLastMessages,
             };
           });
+        } else {
+          // Update groupLastMessages even if not viewing (only for "forEveryone")
+          if (deleteType === "forEveryone") {
+            set((state) => {
+              const lastMessage = state.groupLastMessages[groupId];
+              const updatedGroupLastMessages = { ...state.groupLastMessages };
+
+              if (lastMessage && lastMessage._id === messageId) {
+                const newLastMessage = state.messages
+                  .filter(
+                    (msg) =>
+                      msg.groupId &&
+                      msg.groupId.toString() === groupId.toString() &&
+                      msg._id !== messageId,
+                  )
+                  .sort(
+                    (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+                  )[0];
+
+                if (newLastMessage) {
+                  updatedGroupLastMessages[groupId] = newLastMessage;
+                } else {
+                  delete updatedGroupLastMessages[groupId];
+                }
+              }
+
+              return {
+                groupLastMessages: updatedGroupLastMessages,
+              };
+            });
+          }
         }
-      }
-    });
+      },
+    );
 
     // Group typing indicators
     socket.on("groupTyping", ({ groupId, senderId, senderName }) => {
-      
-      if (groupId !== selectedGroup._id || normalizeId(senderId) === normalizeId(authUser._id)) return;
-      
-      set(state => {
+      if (
+        groupId !== selectedGroup._id ||
+        normalizeId(senderId) === normalizeId(authUser._id)
+      )
+        return;
+
+      set((state) => {
         const currentTyping = state.groupTypingUsers[groupId] || [];
-        const exists = currentTyping.some(u => normalizeId(u.userId) === normalizeId(senderId));
-        
+        const exists = currentTyping.some(
+          (u) => normalizeId(u.userId) === normalizeId(senderId),
+        );
+
         if (!exists) {
           return {
             groupTypingUsers: {
               ...state.groupTypingUsers,
-              [groupId]: [...currentTyping, { userId: senderId, senderName: senderName || "Someone" }]
-            }
+              [groupId]: [
+                ...currentTyping,
+                { userId: senderId, senderName: senderName || "Someone" },
+              ],
+            },
           };
         }
         return state;
@@ -2841,33 +3234,37 @@ const gId = normalizeId(g._id);
     });
 
     socket.on("groupStopTyping", ({ groupId, senderId }) => {
-      
       if (groupId !== selectedGroup._id) return;
-      
-      set(state => {
+
+      set((state) => {
         const currentTyping = state.groupTypingUsers[groupId] || [];
         return {
           groupTypingUsers: {
             ...state.groupTypingUsers,
-            [groupId]: currentTyping.filter(u => normalizeId(u.userId) !== normalizeId(senderId))
-          }
+            [groupId]: currentTyping.filter(
+              (u) => normalizeId(u.userId) !== normalizeId(senderId),
+            ),
+          },
         };
       });
     });
 
     // Group editing indicator
     socket.on("groupEditing", ({ groupId, senderId }) => {
-      
-      if (groupId !== selectedGroup._id || normalizeId(senderId) === normalizeId(authUser._id)) return;
-      
-      set(state => {
+      if (
+        groupId !== selectedGroup._id ||
+        normalizeId(senderId) === normalizeId(authUser._id)
+      )
+        return;
+
+      set((state) => {
         const currentEditing = state.groupEditingUsers[groupId] || [];
         if (!currentEditing.includes(senderId)) {
           return {
             groupEditingUsers: {
               ...state.groupEditingUsers,
-              [groupId]: [...currentEditing, senderId]
-            }
+              [groupId]: [...currentEditing, senderId],
+            },
           };
         }
         return state;
@@ -2876,31 +3273,34 @@ const gId = normalizeId(g._id);
 
     socket.on("groupStopEditing", ({ groupId, senderId }) => {
       if (groupId !== selectedGroup._id) return;
-      
-      set(state => {
+
+      set((state) => {
         const currentEditing = state.groupEditingUsers[groupId] || [];
         return {
           groupEditingUsers: {
             ...state.groupEditingUsers,
-            [groupId]: currentEditing.filter(id => id !== senderId)
-          }
+            [groupId]: currentEditing.filter((id) => id !== senderId),
+          },
         };
       });
     });
 
     // Group deleting indicator
     socket.on("groupDeleting", ({ groupId, senderId }) => {
-      
-      if (groupId !== selectedGroup._id || normalizeId(senderId) === normalizeId(authUser._id)) return;
-      
-      set(state => {
+      if (
+        groupId !== selectedGroup._id ||
+        normalizeId(senderId) === normalizeId(authUser._id)
+      )
+        return;
+
+      set((state) => {
         const currentDeleting = state.groupDeletingUsers[groupId] || [];
         if (!currentDeleting.includes(senderId)) {
           return {
             groupDeletingUsers: {
               ...state.groupDeletingUsers,
-              [groupId]: [...currentDeleting, senderId]
-            }
+              [groupId]: [...currentDeleting, senderId],
+            },
           };
         }
         return state;
@@ -2909,31 +3309,34 @@ const gId = normalizeId(g._id);
 
     socket.on("groupStopDeleting", ({ groupId, senderId }) => {
       if (groupId !== selectedGroup._id) return;
-      
-      set(state => {
+
+      set((state) => {
         const currentDeleting = state.groupDeletingUsers[groupId] || [];
         return {
           groupDeletingUsers: {
             ...state.groupDeletingUsers,
-            [groupId]: currentDeleting.filter(id => id !== senderId)
-          }
+            [groupId]: currentDeleting.filter((id) => id !== senderId),
+          },
         };
       });
     });
 
     // Group uploading photo indicator
     socket.on("groupUploadingPhoto", ({ groupId, senderId }) => {
-      
-      if (groupId !== selectedGroup._id || normalizeId(senderId) === normalizeId(authUser._id)) return;
-      
-      set(state => {
+      if (
+        groupId !== selectedGroup._id ||
+        normalizeId(senderId) === normalizeId(authUser._id)
+      )
+        return;
+
+      set((state) => {
         const currentUploading = state.groupUploadingPhotoUsers[groupId] || [];
         if (!currentUploading.includes(senderId)) {
           return {
             groupUploadingPhotoUsers: {
               ...state.groupUploadingPhotoUsers,
-              [groupId]: [...currentUploading, senderId]
-            }
+              [groupId]: [...currentUploading, senderId],
+            },
           };
         }
         return state;
@@ -2942,14 +3345,14 @@ const gId = normalizeId(g._id);
 
     socket.on("groupStopUploadingPhoto", ({ groupId, senderId }) => {
       if (groupId !== selectedGroup._id) return;
-      
-      set(state => {
+
+      set((state) => {
         const currentUploading = state.groupUploadingPhotoUsers[groupId] || [];
         return {
           groupUploadingPhotoUsers: {
             ...state.groupUploadingPhotoUsers,
-            [groupId]: currentUploading.filter(id => id !== senderId)
-          }
+            [groupId]: currentUploading.filter((id) => id !== senderId),
+          },
         };
       });
     });
@@ -2957,54 +3360,60 @@ const gId = normalizeId(g._id);
     // Group message seen status update
     socket.on("groupMessageSeenUpdate", ({ messageId, groupId, seenBy }) => {
       if (groupId !== selectedGroup._id) return;
-      
+
       // Deduplicate seenBy array on frontend
-      
+
       const deduplicatedSeenBy = [];
       if (Array.isArray(seenBy)) {
         const seenMap = new Map();
         seenBy.forEach((seen) => {
           const userId = seen.userId;
-          const userIdStr = normalizeId(typeof userId === 'object' ? userId._id : userId);
-          
+          const userIdStr = normalizeId(
+            typeof userId === "object" ? userId._id : userId,
+          );
+
           if (userIdStr && !seenMap.has(userIdStr)) {
             seenMap.set(userIdStr, seen);
           } else if (userIdStr && seenMap.has(userIdStr)) {
             // Keep the earliest seenAt time
             const existing = seenMap.get(userIdStr);
-            const existingSeenAt = existing.seenAt ? new Date(existing.seenAt).getTime() : 0;
-            const currentSeenAt = seen.seenAt ? new Date(seen.seenAt).getTime() : 0;
-            
-            if (currentSeenAt > 0 && (existingSeenAt === 0 || currentSeenAt < existingSeenAt)) {
+            const existingSeenAt = existing.seenAt
+              ? new Date(existing.seenAt).getTime()
+              : 0;
+            const currentSeenAt = seen.seenAt
+              ? new Date(seen.seenAt).getTime()
+              : 0;
+
+            if (
+              currentSeenAt > 0 &&
+              (existingSeenAt === 0 || currentSeenAt < existingSeenAt)
+            ) {
               seenMap.set(userIdStr, seen);
             }
           }
         });
         deduplicatedSeenBy.push(...Array.from(seenMap.values()));
       }
-      
-      set(state => ({
+
+      set((state) => ({
         messages: state.messages.map((msg) =>
-          msg._id === messageId 
-            ? { ...msg, seenBy: deduplicatedSeenBy } 
-            : msg
+          msg._id === messageId ? { ...msg, seenBy: deduplicatedSeenBy } : msg,
         ),
       }));
     });
-
   },
 
   unsubscribeFromGroupMessages: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
-    
+
     // Note: We don't remove "newGroupMessage" or group status events here because they're handled globally in subscribeToGroups
     // The global handlers always run to update groupLastMessages and status indicators for the group list
     // We only remove listeners that are specific to the local selected group view
     socket.off("groupMessageEdited");
     socket.off("groupMessageDeleted");
     socket.off("groupMessageSeenUpdate");
-    
+
     // Group status events (typing, editing, deleting, uploading) are shared between global and local handlers
     // Don't remove them here - they're needed for both the group list and the chat view
   },
@@ -3012,19 +3421,20 @@ const gId = normalizeId(g._id);
   // Contact Request Functions
   getContacts: async () => {
     const authUser = useAuthStore.getState().authUser;
-    
+
     // Don't try to load contacts if not authenticated
     if (!authUser) {
       set({ contacts: [], isContactsLoading: false });
       return;
     }
-    
+
     set({ isContactsLoading: true });
     try {
       const res = await axiosInstance.get("/contacts");
       // Handle standardized response format: { success: true, data: [...] }
       // Also supports old format (direct array) for backward compatibility
-      const contactsData = res.data?.data || (Array.isArray(res.data) ? res.data : []);
+      const contactsData =
+        res.data?.data || (Array.isArray(res.data) ? res.data : []);
       set({ contacts: contactsData });
     } catch (error) {
       if (error.response?.status !== 401) {
@@ -3132,9 +3542,11 @@ const gId = normalizeId(g._id);
       set((state) => {
         // Add to pending requests if not already present
         const requestExists = state.pendingRequests.some(
-          (req) => req._id === data.requestId || (req.senderId && req.senderId._id === data.senderId._id)
+          (req) =>
+            req._id === data.requestId ||
+            (req.senderId && req.senderId._id === data.senderId._id),
         );
-        
+
         if (!requestExists) {
           return {
             pendingRequests: [
@@ -3150,7 +3562,7 @@ const gId = normalizeId(g._id);
         }
         return {};
       });
-      
+
       // Refresh pending requests to ensure consistency
       get().getPendingRequests();
     });
@@ -3160,24 +3572,24 @@ const gId = normalizeId(g._id);
       set((state) => {
         // Remove from pending requests
         const updatedPendingRequests = state.pendingRequests.filter(
-          (req) => req._id !== data.requestId
+          (req) => req._id !== data.requestId,
         );
-        
+
         // Add to contacts if not already present
         const contactExists = state.contacts.some(
-          (contact) => contact._id === data.contact._id
+          (contact) => contact._id === data.contact._id,
         );
-        
+
         const updatedContacts = contactExists
           ? state.contacts
           : [data.contact, ...state.contacts];
-        
+
         return {
           pendingRequests: updatedPendingRequests,
           contacts: updatedContacts,
         };
       });
-      
+
       // Refresh contacts, requests, and users to ensure consistency
       get().getContacts();
       get().getPendingRequests();
@@ -3189,14 +3601,14 @@ const gId = normalizeId(g._id);
       set((state) => {
         // Remove from pending requests
         const updatedPendingRequests = state.pendingRequests.filter(
-          (req) => req._id !== data.requestId
+          (req) => req._id !== data.requestId,
         );
-        
+
         return {
           pendingRequests: updatedPendingRequests,
         };
       });
-      
+
       // Refresh pending requests to ensure consistency
       get().getPendingRequests();
     });
@@ -3206,7 +3618,7 @@ const gId = normalizeId(g._id);
   unsubscribeFromContactRequests: () => {
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
-    
+
     socket.off("newContactRequest");
     socket.off("contactRequestAccepted");
     socket.off("contactRequestRejected");
@@ -3215,76 +3627,79 @@ const gId = normalizeId(g._id);
   // Delete conversation (all messages between two users)
   deleteConversation: async (otherUserId, deleteType = "forEveryone") => {
     // Optimistically update UI FIRST for instant feedback (like Telegram)
-        const normalizeId = (id) => {
-          if (!id) return null;
-          if (typeof id === 'string') return id;
-          if (typeof id === 'object' && id._id) return id._id.toString();
-          return id.toString();
-        };
-        
-        const userIdStr = normalizeId(otherUserId);
-        
+    const normalizeId = (id) => {
+      if (!id) return null;
+      if (typeof id === "string") return id;
+      if (typeof id === "object" && id._id) return id._id.toString();
+      return id.toString();
+    };
+
+    const userIdStr = normalizeId(otherUserId);
+
     set((state) => {
-        // Remove from lastMessages - check all keys and remove matching ones
-        const updatedLastMessages = { ...state.lastMessages };
-        const keysToDelete = [];
-        Object.keys(updatedLastMessages).forEach((key) => {
-          const normalizedKey = normalizeId(key);
-          if (normalizedKey === userIdStr) {
-            keysToDelete.push(key);
-          }
-        });
-        keysToDelete.forEach(key => {
-          delete updatedLastMessages[key];
-        });
-        
-        // Remove from unreadMessages - check all keys and remove matching ones
-        const updatedUnreadMessages = { ...state.unreadMessages };
-        const unreadKeysToDelete = [];
-        Object.keys(updatedUnreadMessages).forEach((key) => {
-          const normalizedKey = normalizeId(key);
-          if (normalizedKey === userIdStr) {
-            unreadKeysToDelete.push(key);
-          }
-        });
-        unreadKeysToDelete.forEach(key => {
-          delete updatedUnreadMessages[key];
-        });
-        
-        // Clear messages if this conversation was selected
-        const currentSelectedUserId = state.selectedUser?._id ? normalizeId(state.selectedUser._id) : null;
-        const shouldClearMessages = currentSelectedUserId === userIdStr;
-        
-        return {
-          lastMessages: updatedLastMessages,
-          unreadMessages: updatedUnreadMessages,
-          messages: shouldClearMessages ? [] : state.messages,
-          selectedUser: shouldClearMessages ? null : state.selectedUser
-        };
+      // Remove from lastMessages - check all keys and remove matching ones
+      const updatedLastMessages = { ...state.lastMessages };
+      const keysToDelete = [];
+      Object.keys(updatedLastMessages).forEach((key) => {
+        const normalizedKey = normalizeId(key);
+        if (normalizedKey === userIdStr) {
+          keysToDelete.push(key);
+        }
       });
+      keysToDelete.forEach((key) => {
+        delete updatedLastMessages[key];
+      });
+
+      // Remove from unreadMessages - check all keys and remove matching ones
+      const updatedUnreadMessages = { ...state.unreadMessages };
+      const unreadKeysToDelete = [];
+      Object.keys(updatedUnreadMessages).forEach((key) => {
+        const normalizedKey = normalizeId(key);
+        if (normalizedKey === userIdStr) {
+          unreadKeysToDelete.push(key);
+        }
+      });
+      unreadKeysToDelete.forEach((key) => {
+        delete updatedUnreadMessages[key];
+      });
+
+      // Clear messages if this conversation was selected
+      const currentSelectedUserId = state.selectedUser?._id
+        ? normalizeId(state.selectedUser._id)
+        : null;
+      const shouldClearMessages = currentSelectedUserId === userIdStr;
+
+      return {
+        lastMessages: updatedLastMessages,
+        unreadMessages: updatedUnreadMessages,
+        messages: shouldClearMessages ? [] : state.messages,
+        selectedUser: shouldClearMessages ? null : state.selectedUser,
+      };
+    });
 
     // Fire API call in background (don't block UI)
     // Socket events will handle real-time sync with other users
-    axiosInstance.delete(`/messages/conversation/${otherUserId}`, {
-      data: { deleteType }
-    })
-    .then((res) => {
-            // Socket event will confirm and handle proper state updates if needed
-    })
-    .catch((error) => {
-      // Only handle errors - if delete fails, restore state
-      console.error("Failed to delete conversation:", error);
-      // Reload to restore state on error
-      get().getUsers();
-      throw error; // Re-throw so caller can handle if needed
-    });
+    axiosInstance
+      .delete(`/messages/conversation/${otherUserId}`, {
+        data: { deleteType },
+      })
+      .then((res) => {
+        // Socket event will confirm and handle proper state updates if needed
+      })
+      .catch((error) => {
+        // Only handle errors - if delete fails, restore state
+        console.error("Failed to delete conversation:", error);
+        // Reload to restore state on error
+        get().getUsers();
+        throw error; // Re-throw so caller can handle if needed
+      });
   },
 
   // Delete individual media from message
   deleteMessageMedia: async (messageId, mediaType) => {
     try {
       const res = await axiosInstance.delete(`/messages/media/${messageId}`, {
-        data: { mediaType }
+        data: { mediaType },
       });
       return res.data;
     } catch (error) {
@@ -3335,7 +3750,7 @@ const gId = normalizeId(g._id);
   getSavedMessages: async (page = 1, limit = 50) => {
     try {
       const res = await axiosInstance.get(`/messages/saved/all`, {
-        params: { page, limit }
+        params: { page, limit },
       });
       return res.data;
     } catch (error) {

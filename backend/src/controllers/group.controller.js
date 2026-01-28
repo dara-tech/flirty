@@ -61,7 +61,7 @@ export const createGroup = async (req, res) => {
     if (memberIds && Array.isArray(memberIds) && memberIds.length > 0) {
       // Remove duplicates and filter out admin
       const uniqueMemberIds = [...new Set(memberIds)].filter(
-        (id) => id.toString() !== adminId.toString()
+        (id) => id.toString() !== adminId.toString(),
       );
 
       if (uniqueMemberIds.length > 0) {
@@ -208,7 +208,7 @@ export const addMembersToGroup = async (req, res) => {
     const newMemberIds = memberIds.filter(
       (id) =>
         !existingMemberIds.includes(id.toString()) &&
-        id.toString() !== group.admin.toString()
+        id.toString() !== group.admin.toString(),
     );
 
     if (newMemberIds.length === 0) {
@@ -361,6 +361,8 @@ export const getGroupMessagesByType = async (req, res) => {
     const messages = await Message.find(query)
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
+      .populate("listenedBy.userId", "fullname profilePic") // Populate voice listened users
+      .populate("reactions.userId", "fullname profilePic") // Populate reaction users
       .populate({
         path: "replyTo",
         select: "text image audio video file senderId receiverId createdAt",
@@ -429,6 +431,7 @@ export const getGroupMessages = async (req, res) => {
     const messages = await Message.find(query)
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
+      .populate("listenedBy.userId", "fullname profilePic") // Populate voice listened users
       .populate("reactions.userId", "fullname profilePic")
       .populate({
         path: "replyTo",
@@ -703,60 +706,60 @@ export const sendGroupMessage = async (req, res) => {
         const mobilePushResult = await sendMobileGroupMessageNotification(
           memberIdStr,
           messageObj,
-          group
+          group,
         );
 
         if (mobilePushResult.success) {
-          logger.info("✅ [Push] Mobile group notification sent", {
-            requestId: req.requestId,
-            memberId: memberIdStr,
-            groupId: groupId,
-            messageId: messageObj._id,
-            sent: mobilePushResult.sent,
-            failed: mobilePushResult.failed,
-            total: mobilePushResult.total,
-            userOnline: !!memberSocketId,
-          });
+          // logger.info("✅ [Push] Mobile group notification sent", {
+          //   requestId: req.requestId,
+          //   memberId: memberIdStr,
+          //   groupId: groupId,
+          //   messageId: messageObj._id,
+          //   sent: mobilePushResult.sent,
+          //   failed: mobilePushResult.failed,
+          //   total: mobilePushResult.total,
+          //   userOnline: !!memberSocketId,
+          // });
         } else {
-          logger.debug(
-            `⚠️ [Push] Mobile group push failed: ${mobilePushResult.error}, trying web push`,
-            {
-              requestId: req.requestId,
-              memberId: memberIdStr,
-              groupId: groupId,
-            }
-          );
+          // logger.debug(
+          //   `⚠️ [Push] Mobile group push failed: ${mobilePushResult.error}, trying web push`,
+          //   {
+          //     requestId: req.requestId,
+          //     memberId: memberIdStr,
+          //     groupId: groupId,
+          //   },
+          // );
 
           // Fallback to web push (for web browsers)
           const pushResult = await sendGroupMessageNotification(
             memberIdStr,
             messageObj,
-            group
+            group,
           );
 
-          if (pushResult.success) {
-            logger.info("✅ [Push] Web group notification sent", {
-              requestId: req.requestId,
-              memberId: memberIdStr,
-              groupId: groupId,
-              messageId: messageObj._id,
-              sent: pushResult.sent,
-              failed: pushResult.failed,
-              total: pushResult.total,
-              userOnline: !!memberSocketId,
-            });
-          } else {
-            logger.debug(
-              `⚠️ [Push] No group notifications sent: ${pushResult.error}`,
-              {
-                requestId: req.requestId,
-                memberId: memberIdStr,
-                groupId: groupId,
-                messageId: messageObj._id,
-                userOnline: !!memberSocketId,
-              }
-            );
-          }
+          // if (pushResult.success) {
+          //   logger.info("✅ [Push] Web group notification sent", {
+          //     requestId: req.requestId,
+          //     memberId: memberIdStr,
+          //     groupId: groupId,
+          //     messageId: messageObj._id,
+          //     sent: pushResult.sent,
+          //     failed: pushResult.failed,
+          //     total: pushResult.total,
+          //     userOnline: !!memberSocketId,
+          //   });
+          // } else {
+          //   // logger.debug(
+          //   //   `⚠️ [Push] No group notifications sent: ${pushResult.error}`,
+          //   //   {
+          //   //     requestId: req.requestId,
+          //   //     memberId: memberIdStr,
+          //   //     groupId: groupId,
+          //   //     messageId: messageObj._id,
+          //   //     userOnline: !!memberSocketId,
+          //   //   }
+          //   // );
+          // }
         }
       } catch (pushError) {
         logger.error("❌ [Push] Failed to send group push notification:", {
@@ -821,6 +824,8 @@ export const getGroupLastMessages = async (req, res) => {
       .sort({ createdAt: -1 })
       .populate("senderId", "fullname profilePic")
       .populate("seenBy.userId", "fullname profilePic")
+      .populate("listenedBy.userId", "fullname profilePic")
+      .populate("reactions.userId", "fullname profilePic") // Populate reaction users
       .populate({
         path: "replyTo",
         select: "text image audio video file senderId receiverId createdAt",
@@ -1018,7 +1023,7 @@ export const leaveGroup = async (req, res) => {
 
     // Remove member from group
     group.members = group.members.filter(
-      (m) => m.toString() !== userId.toString()
+      (m) => m.toString() !== userId.toString(),
     );
     await group.save();
     await group.populate("admin", "fullname profilePic");

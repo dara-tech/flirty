@@ -237,7 +237,7 @@ export const getLastMessages = async (req, res) => {
         hasMore,
         skip,
       },
-      "Messages retrieved successfully"
+      "Messages retrieved successfully",
     );
   } catch (error) {
     logger.error("Error in getLastMessages", {
@@ -345,7 +345,7 @@ export const getUsersForSidebar = async (req, res) => {
           $count: "total",
         },
       ],
-      { allowDiskUse: true }
+      { allowDiskUse: true },
     );
 
     const total = totalCount[0]?.total || 0;
@@ -363,7 +363,7 @@ export const getUsersForSidebar = async (req, res) => {
         totalPages,
         hasMore,
       },
-      "Users retrieved successfully"
+      "Users retrieved successfully",
     );
   } catch (error) {
     logger.error("Error in getUsersForSidebar", {
@@ -426,7 +426,7 @@ export const getAllUsers = async (req, res) => {
         ? `Found ${users.length} user${
             users.length !== 1 ? "s" : ""
           } matching "${searchQuery}"`
-        : "All users retrieved successfully"
+        : "All users retrieved successfully",
     );
   } catch (error) {
     logger.error("Error in getAllUsers", {
@@ -491,6 +491,10 @@ export const getMessages = async (req, res) => {
         select: "fullname profilePic",
       })
       .populate({
+        path: "listenedBy.userId",
+        select: "fullname profilePic",
+      })
+      .populate({
         path: "replyTo",
         select:
           "text image audio video file sticker senderId receiverId createdAt",
@@ -538,10 +542,10 @@ export const normalizeToArray = (value) => {
   if (!value) return [];
   if (Array.isArray(value))
     return value.filter(
-      (v) => v && (typeof v === "string" ? v.length > 0 : true)
+      (v) => v && (typeof v === "string" ? v.length > 0 : true),
     );
   return [value].filter(
-    (v) => v && (typeof v === "string" ? v.length > 0 : true)
+    (v) => v && (typeof v === "string" ? v.length > 0 : true),
   );
 };
 
@@ -653,7 +657,7 @@ export const sendMessage = async (req, res) => {
                     typeof img === "string"
                       ? img.substring(0, 50) + "..."
                       : "non-string"
-                  }`
+                  }`,
               )
             : [],
         videoUrls:
@@ -664,7 +668,7 @@ export const sendMessage = async (req, res) => {
                     typeof vid === "string"
                       ? vid.substring(0, 50) + "..."
                       : "non-string"
-                  }`
+                  }`,
               )
             : [],
         fileUrls:
@@ -675,7 +679,7 @@ export const sendMessage = async (req, res) => {
                     typeof f === "string"
                       ? f.substring(0, 50) + "..."
                       : "non-string"
-                  }`
+                  }`,
               )
             : [],
       });
@@ -891,18 +895,18 @@ export const sendMessage = async (req, res) => {
         savedImageCount: Array.isArray(newMessage.image)
           ? newMessage.image.length
           : newMessage.image
-          ? 1
-          : 0,
+            ? 1
+            : 0,
         savedVideoCount: Array.isArray(newMessage.video)
           ? newMessage.video.length
           : newMessage.video
-          ? 1
-          : 0,
+            ? 1
+            : 0,
         savedFileCount: Array.isArray(newMessage.file)
           ? newMessage.file.length
           : newMessage.file
-          ? 1
-          : 0,
+            ? 1
+            : 0,
       });
     }
     await newMessage.populate("senderId", "fullname profilePic");
@@ -960,7 +964,7 @@ export const sendMessage = async (req, res) => {
           requestId: req.requestId,
           userId: senderId,
           messageId: newMessage._id,
-        }
+        },
       );
     } else {
       // Send notification only if it's NOT a saved message
@@ -968,7 +972,7 @@ export const sendMessage = async (req, res) => {
         // Try mobile push first (FCM/APNs for iOS/Android apps)
         const mobilePushResult = await sendMobileMessageNotification(
           receiverId,
-          messageObj
+          messageObj,
         );
 
         if (mobilePushResult.success) {
@@ -987,13 +991,13 @@ export const sendMessage = async (req, res) => {
             {
               requestId: req.requestId,
               receiverId,
-            }
+            },
           );
 
           // Fallback to web push (for web browsers)
           const pushResult = await sendMessageNotification(
             receiverId,
-            messageObj
+            messageObj,
           );
 
           if (pushResult.success) {
@@ -1014,7 +1018,7 @@ export const sendMessage = async (req, res) => {
                 receiverId,
                 messageId: newMessage._id,
                 userOnline: !!receiverSocketId,
-              }
+              },
             );
           }
         }
@@ -1420,10 +1424,10 @@ export const deleteMessage = async (req, res) => {
       if (deletedMessageReceiverId) {
         // Use ObjectId for proper database comparison
         const senderObjectId = new mongoose.Types.ObjectId(
-          deletedMessageSenderId
+          deletedMessageSenderId,
         );
         const receiverObjectId = new mongoose.Types.ObjectId(
-          deletedMessageReceiverId
+          deletedMessageReceiverId,
         );
 
         // Find the most recent remaining message in this conversation
@@ -1812,8 +1816,11 @@ export const getMessagesByType = async (req, res) => {
     const messages = await Message.find(query)
       .populate("senderId", "fullname profilePic")
       .populate("receiverId", "fullname profilePic")
+      .populate("listenedBy.userId", "fullname profilePic") // Populate voice listened users
+      .populate("reactions.userId", "fullname profilePic") // Populate reaction users
       .sort({ createdAt: -1 })
-      .limit(100); // Limit to 100 most recent
+      .limit(100) // Limit to 100 most recent
+      .lean(); // Use lean() for read-only queries (faster)
 
     res.status(200).json({
       success: true,
@@ -1866,7 +1873,7 @@ export const pinMessage = async (req, res) => {
     if (message.groupId) {
       await Message.updateMany(
         { groupId: message.groupId, pinned: true, _id: { $ne: messageId } },
-        { pinned: false, pinnedAt: null, pinnedBy: null }
+        { pinned: false, pinnedAt: null, pinnedBy: null },
       );
     } else {
       const conversationQuery = {
@@ -1946,7 +1953,7 @@ export const pinMessage = async (req, res) => {
             });
             io.to(memberSocketId).emit(
               "newMessage",
-              pinStatusMessage.toObject()
+              pinStatusMessage.toObject(),
             );
             notifiedCount++;
           }
@@ -1956,7 +1963,7 @@ export const pinMessage = async (req, res) => {
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString()
+        message.receiverId.toString(),
       );
       const senderSocketId = getReceiverSocketId(message.senderId.toString());
       if (receiverSocketId) {
@@ -2061,7 +2068,7 @@ export const unpinMessage = async (req, res) => {
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString()
+        message.receiverId.toString(),
       );
       const senderSocketId = getReceiverSocketId(message.senderId.toString());
       if (receiverSocketId) {
@@ -2114,7 +2121,7 @@ export const addReaction = async (req, res) => {
 
     // Remove existing reaction from this user if exists
     message.reactions = message.reactions.filter(
-      (r) => r.userId.toString() !== userId.toString()
+      (r) => r.userId.toString() !== userId.toString(),
     );
 
     // Add new reaction
@@ -2233,7 +2240,7 @@ export const removeReaction = async (req, res) => {
     // Remove user's reaction
     const initialLength = message.reactions.length;
     message.reactions = message.reactions.filter(
-      (r) => r.userId.toString() !== userId.toString()
+      (r) => r.userId.toString() !== userId.toString(),
     );
 
     if (message.reactions.length === initialLength) {
@@ -2430,7 +2437,7 @@ export const deleteMessageMedia = async (req, res) => {
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString()
+        message.receiverId.toString(),
       );
       const senderSocketId = getReceiverSocketId(message.senderId.toString());
       if (receiverSocketId) {
@@ -2699,7 +2706,7 @@ export const deleteIndividualMediaItem = async (req, res) => {
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString()
+        message.receiverId.toString(),
       );
       const senderSocketId = getReceiverSocketId(message.senderId.toString());
 
@@ -2751,7 +2758,7 @@ export const markVoiceAsListened = async (req, res) => {
 
     // Check if already listened
     const alreadyListened = message.listenedBy.some(
-      (l) => l.userId.toString() === userId.toString()
+      (l) => l.userId.toString() === userId.toString(),
     );
 
     if (!alreadyListened) {
@@ -2805,7 +2812,7 @@ export const markVoiceAsListened = async (req, res) => {
       }
     } else {
       const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString()
+        message.receiverId.toString(),
       );
       const senderSocketId = getReceiverSocketId(message.senderId.toString());
       if (receiverSocketId) {
@@ -2838,7 +2845,7 @@ export const saveMessage = async (req, res) => {
 
     // Check if already saved
     const alreadySaved = message.savedBy.some(
-      (s) => s.userId.toString() === userId.toString()
+      (s) => s.userId.toString() === userId.toString(),
     );
 
     if (alreadySaved) {
@@ -2873,7 +2880,7 @@ export const unsaveMessage = async (req, res) => {
 
     const initialLength = message.savedBy.length;
     message.savedBy = message.savedBy.filter(
-      (s) => s.userId.toString() !== userId.toString()
+      (s) => s.userId.toString() !== userId.toString(),
     );
 
     if (message.savedBy.length === initialLength) {
