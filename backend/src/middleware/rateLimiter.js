@@ -36,6 +36,13 @@ const RATE_LIMIT_CONFIG = {
     maxDev: 50, // Development: frequent reconnects
     maxProd: 20, // Production: prevent abuse
   },
+  // 🔍 SEARCH: Dedicated rate limit for search operations
+  // Prevents server overload when 100+ users search simultaneously
+  search: {
+    windowMs: 1 * 60 * 1000, // 1 minute window
+    maxDev: 60, // Development: 60 searches/minute per user
+    maxProd: 30, // Production: 30 searches/minute per user (stricter)
+  },
 };
 
 /**
@@ -304,7 +311,7 @@ const handleRateLimitError = (error, req, res) => {
   // Don't block requests on rate limiter errors
   // Fail open to maintain availability
   logger.warn(
-    "Rate limiter failed, allowing request through (fail-open policy)"
+    "Rate limiter failed, allowing request through (fail-open policy)",
   );
 };
 
@@ -427,6 +434,34 @@ export const connectionLimiter = createRateLimiter({
   message: "Too many connection attempts, please wait before reconnecting",
 });
 
+/**
+ * 🔍 Search rate limiter
+ *
+ * **Purpose:** Prevent server overload when 100+ users search simultaneously
+ *
+ * **Protection layers:**
+ * 1. Rate limit per user (30 req/min in production)
+ * 2. Works with frontend debouncing (400ms)
+ * 3. Combined with MongoDB query limits
+ *
+ * **Usage:**
+ * - Search messages: GET /api/messages/search/:conversationId
+ * - Get messages around: GET /api/messages/around/:conversationId/:messageId
+ */
+export const searchLimiter = createRateLimiter({
+  windowMs: RATE_LIMIT_CONFIG.search.windowMs,
+  max:
+    process.env.NODE_ENV === "development"
+      ? RATE_LIMIT_CONFIG.search.maxDev
+      : RATE_LIMIT_CONFIG.search.maxProd,
+  message: "Too many search requests, please slow down",
+  // Custom key generator: rate limit per user, not per IP
+  // This is fairer for shared networks (offices, schools)
+  keyGenerator: (req) => {
+    return req.user?._id?.toString() || req.ip;
+  },
+});
+
 // ============================================================================
 // SOCKET.IO RATE LIMITING
 // ============================================================================
@@ -436,7 +471,7 @@ export const connectionLimiter = createRateLimiter({
  * Track connection attempts per IP/user to prevent abuse
  */
 const socketConnectionStore = new MemoryStoreWithCleanup(
-  RATE_LIMIT_CONFIG.connection.windowMs
+  RATE_LIMIT_CONFIG.connection.windowMs,
 );
 
 /**

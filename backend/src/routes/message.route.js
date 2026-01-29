@@ -22,14 +22,35 @@ import {
   saveMessage,
   unsaveMessage,
   getSavedMessages,
+  searchMessages,
+  getMessagesAround,
 } from "../controllers/message.controller.js";
-import { messageLimiter, apiLimiter } from "../middleware/rateLimiter.js";
+import {
+  messageLimiter,
+  apiLimiter,
+  searchLimiter,
+} from "../middleware/rateLimiter.js";
 
 const router = express.Router();
 
 router.get("/users", protectRoute, getUsersForSidebar);
 router.get("/users/all", protectRoute, getAllUsers); // Get all users for contacts page
 router.get("/last-messages", protectRoute, getLastMessages);
+
+// 🔍 Search endpoints with dedicated rate limiter (prevents server overload)
+router.get(
+  "/search/:conversationId",
+  searchLimiter,
+  protectRoute,
+  searchMessages,
+);
+router.get(
+  "/around/:conversationId/:messageId",
+  searchLimiter,
+  protectRoute,
+  getMessagesAround,
+);
+
 router.get("/by-type/:id", protectRoute, getMessagesByType);
 router.get("/:id", protectRoute, getMessages);
 

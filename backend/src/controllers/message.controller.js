@@ -3032,3 +3032,355 @@ export const getSavedMessages = async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 };
+
+/**
+ * Search messages in a conversation (personal or group)
+ *
+ * @description Telegram-style message search within a specific conversation
+ * - Supports text search with case-insensitive matching
+ * - Works for both personal chats and group chats
+ * - Returns messages sorted by relevance and date
+ * - Pagination support for large result sets
+ *
+ * @route GET /api/messages/search/:conversationId
+ * @query {string} q - Search query (required, min 1 character)
+ * @query {number} page - Page number (default: 1)
+ * @query {number} limit - Results per page (default: 20, max: 100)
+ * @query {string} type - Conversation type: 'personal' or 'group' (required)
+ *
+ * @returns {Object} { messages: Message[], pagination: { page, limit, total, pages } }
+ */
+export const searchMessages = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { q: searchQuery, page = 1, limit = 20, type } = req.query;
+    const userId = req.user._id;
+
+    // ✅ VALIDATION: Search query required
+    if (!searchQuery || searchQuery.trim().length === 0) {
+      return res.status(400).json({
+        error: "Search query is required",
+        code: "SEARCH_QUERY_REQUIRED",
+      });
+    }
+
+    // ✅ VALIDATION: Conversation type required
+    if (!type || !["personal", "group"].includes(type)) {
+      return res.status(400).json({
+        error: "Conversation type must be 'personal' or 'group'",
+        code: "INVALID_CONVERSATION_TYPE",
+      });
+    }
+
+    // ✅ VALIDATION: Limit bounds
+    const parsedPage = Math.max(1, parseInt(page) || 1);
+    const parsedLimit = Math.min(100, Math.max(1, parseInt(limit) || 20));
+    const skip = (parsedPage - 1) * parsedLimit;
+
+    // ✅ SECURITY: Escape regex special characters to prevent ReDoS
+    const escapedQuery = searchQuery
+      .trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const searchRegex = new RegExp(escapedQuery, "i");
+
+    let query;
+    let isParticipant = false;
+
+    if (type === "group") {
+      // ✅ GROUP CHAT SEARCH
+      const Group = (await import("../model/group.model.js")).default;
+      const group = await Group.findById(conversationId);
+
+      if (!group) {
+        return res.status(404).json({
+          error: "Group not found",
+          code: "GROUP_NOT_FOUND",
+        });
+      }
+
+      // ✅ SECURITY: Verify user is a member of the group
+      const userIdStr = userId.toString();
+      isParticipant =
+        group.admin.toString() === userIdStr ||
+        group.members.some((m) => m.toString() === userIdStr);
+
+      if (!isParticipant) {
+        return res.status(403).json({
+          error: "You are not a member of this group",
+          code: "NOT_GROUP_MEMBER",
+        });
+      }
+
+      query = {
+        groupId: conversationId,
+        $or: [
+          { text: { $regex: searchRegex } },
+          { fileName: { $regex: searchRegex } },
+        ],
+      };
+    } else {
+      // ✅ PERSONAL CHAT SEARCH
+      const otherUserId = conversationId;
+
+      // Verify the other user exists
+      const User = (await import("../model/user.model.js")).default;
+      const otherUser = await User.findById(otherUserId);
+      if (!otherUser) {
+        return res.status(404).json({
+          error: "User not found",
+          code: "USER_NOT_FOUND",
+        });
+      }
+
+      // Search in both directions of the conversation
+      query = {
+        $and: [
+          {
+            $or: [
+              { senderId: userId, receiverId: otherUserId },
+              { senderId: otherUserId, receiverId: userId },
+            ],
+          },
+          {
+            $or: [
+              { text: { $regex: searchRegex } },
+              { fileName: { $regex: searchRegex } },
+            ],
+          },
+        ],
+        groupId: { $exists: false }, // Exclude group messages
+      };
+    }
+
+    // ✅ PERFORMANCE: Use compound index for efficient search
+    // Count total matches for pagination
+    const total = await Message.countDocuments(query);
+
+    // Fetch matching messages with pagination
+    const messages = await Message.find(query)
+      .sort({ createdAt: -1 }) // Newest first (Telegram-style)
+      .skip(skip)
+      .limit(parsedLimit)
+      .populate("senderId", "fullname profilePic")
+      .populate("receiverId", "fullname profilePic")
+      .populate("groupId", "name profilePic")
+      .populate("reactions.userId", "fullname profilePic")
+      .populate("seenBy.userId", "fullname profilePic")
+      .populate("listenedBy.userId", "fullname profilePic")
+      .populate({
+        path: "replyTo",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
+      })
+      .lean();
+
+    res.status(200).json({
+      messages,
+      query: searchQuery.trim(),
+      pagination: {
+        page: parsedPage,
+        limit: parsedLimit,
+        total,
+        pages: Math.ceil(total / parsedLimit),
+        hasMore: skip + messages.length < total,
+      },
+    });
+  } catch (error) {
+    console.error("Error searching messages:", error);
+    res.status(500).json({
+      error: "Internal server error",
+      code: "SEARCH_ERROR",
+    });
+  }
+};
+
+/**
+ * Get messages around a specific message ID (for search result navigation)
+ *
+ * **Use Case:**
+ * When user taps a search result, we need to load messages around that message
+ * to provide context (messages before and after the target message).
+ *
+ * **Request:**
+ * GET /api/messages/around/:conversationId/:messageId
+ *
+ * **Query Params:**
+ * - type: 'personal' | 'group' (required)
+ * - before: number (messages before target, default 15)
+ * - after: number (messages after target, default 15)
+ *
+ * **Response:**
+ * {
+ *   messages: Message[],         // Sorted by createdAt DESC (newest first)
+ *   targetIndex: number,         // Index of target message in array
+ *   hasMoreBefore: boolean,      // Can load more older messages
+ *   hasMoreAfter: boolean,       // Can load more newer messages
+ * }
+ */
+export const getMessagesAround = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { conversationId, messageId } = req.params;
+    const { type = "personal", before = 15, after = 15 } = req.query;
+
+    // ✅ VALIDATION: Required params
+    if (!conversationId || !messageId) {
+      return res.status(400).json({
+        error: "conversationId and messageId are required",
+        code: "MISSING_PARAMS",
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({
+        error: "Invalid messageId format",
+        code: "INVALID_MESSAGE_ID",
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+      return res.status(400).json({
+        error: "Invalid conversationId format",
+        code: "INVALID_CONVERSATION_ID",
+      });
+    }
+
+    if (!["personal", "group"].includes(type)) {
+      return res.status(400).json({
+        error: "Conversation type must be 'personal' or 'group'",
+        code: "INVALID_CONVERSATION_TYPE",
+      });
+    }
+
+    const parsedBefore = Math.min(50, Math.max(1, parseInt(before) || 15));
+    const parsedAfter = Math.min(50, Math.max(1, parseInt(after) || 15));
+
+    // ✅ Get the target message first
+    const targetMessage = await Message.findById(messageId).lean();
+    if (!targetMessage) {
+      return res.status(404).json({
+        error: "Message not found",
+        code: "MESSAGE_NOT_FOUND",
+      });
+    }
+
+    const targetCreatedAt = targetMessage.createdAt;
+
+    let baseQuery;
+    let isParticipant = false;
+
+    if (type === "group") {
+      // ✅ GROUP CHAT
+      const Group = (await import("../model/group.model.js")).default;
+      const group = await Group.findById(conversationId);
+
+      if (!group) {
+        return res.status(404).json({
+          error: "Group not found",
+          code: "GROUP_NOT_FOUND",
+        });
+      }
+
+      // Verify user is a member
+      const userIdStr = userId.toString();
+      isParticipant =
+        group.admin.toString() === userIdStr ||
+        group.members.some((m) => m.toString() === userIdStr);
+
+      if (!isParticipant) {
+        return res.status(403).json({
+          error: "You are not a member of this group",
+          code: "NOT_GROUP_MEMBER",
+        });
+      }
+
+      baseQuery = { groupId: conversationId };
+    } else {
+      // ✅ PERSONAL CHAT
+      const otherUserId = conversationId;
+      baseQuery = {
+        $or: [
+          { senderId: userId, receiverId: otherUserId },
+          { senderId: otherUserId, receiverId: userId },
+        ],
+        groupId: { $exists: false },
+      };
+    }
+
+    // ✅ Get messages BEFORE target (older messages)
+    const messagesBefore = await Message.find({
+      ...baseQuery,
+      createdAt: { $lt: targetCreatedAt },
+    })
+      .sort({ createdAt: -1 }) // Newest of the older messages first
+      .limit(parsedBefore)
+      .populate("senderId", "fullname profilePic")
+      .populate("receiverId", "fullname profilePic")
+      .populate("groupId", "name profilePic")
+      .populate("reactions.userId", "fullname profilePic")
+      .populate("seenBy.userId", "fullname profilePic")
+      .populate({
+        path: "replyTo",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
+        populate: { path: "senderId", select: "fullname profilePic" },
+      })
+      .lean();
+
+    // ✅ Get messages AFTER target (newer messages, including target)
+    const messagesAfter = await Message.find({
+      ...baseQuery,
+      createdAt: { $gte: targetCreatedAt },
+    })
+      .sort({ createdAt: 1 }) // Oldest of the newer messages first
+      .limit(parsedAfter + 1) // +1 to include target message
+      .populate("senderId", "fullname profilePic")
+      .populate("receiverId", "fullname profilePic")
+      .populate("groupId", "name profilePic")
+      .populate("reactions.userId", "fullname profilePic")
+      .populate("seenBy.userId", "fullname profilePic")
+      .populate({
+        path: "replyTo",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
+        populate: { path: "senderId", select: "fullname profilePic" },
+      })
+      .lean();
+
+    // ✅ Check if there are more messages
+    const hasMoreBefore = messagesBefore.length === parsedBefore;
+    const hasMoreAfter = messagesAfter.length > parsedAfter;
+
+    // ✅ Combine and sort: newest first (match normal chat view order)
+    // messagesAfter: [oldest, ..., target, ..., newest] → reverse to [newest, ..., target, ..., oldest]
+    // messagesBefore: [newest-of-older, ..., oldest] (already in desc order)
+    const combinedMessages = [
+      ...messagesAfter.reverse(), // Newer messages (including target)
+      ...messagesBefore, // Older messages
+    ];
+
+    // ✅ Find target index in combined array
+    const targetIndex = combinedMessages.findIndex(
+      (m) => m._id.toString() === messageId,
+    );
+
+    res.status(200).json({
+      messages: combinedMessages,
+      targetIndex,
+      targetMessageId: messageId,
+      hasMoreBefore,
+      hasMoreAfter,
+      count: combinedMessages.length,
+    });
+  } catch (error) {
+    console.error("Error getting messages around:", error);
+    res.status(500).json({
+      error: "Internal server error",
+      code: "AROUND_ERROR",
+    });
+  }
+};
