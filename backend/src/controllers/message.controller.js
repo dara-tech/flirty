@@ -2160,6 +2160,30 @@ export const addReaction = async (req, res) => {
       });
     }
 
+    // ✅ FIX: If user reacts, they must have seen the message - add to seenBy if not already
+    // Skip if user is the sender (sender doesn't "see" their own message)
+    const messageSenderId = message.senderId._id
+      ? message.senderId._id.toString()
+      : message.senderId.toString();
+    const userIdStr = userId.toString();
+
+    if (messageSenderId !== userIdStr && message.groupId) {
+      const alreadySeen = message.seenBy.some((s) => {
+        if (!s || !s.userId) return false;
+        const seenUserId = s.userId._id
+          ? s.userId._id.toString()
+          : s.userId.toString();
+        return seenUserId === userIdStr;
+      });
+
+      if (!alreadySeen) {
+        message.seenBy.push({
+          userId: userId,
+          seenAt: new Date(),
+        });
+      }
+    }
+
     // Remove existing reaction from this user if exists
     message.reactions = message.reactions.filter(
       (r) => r.userId.toString() !== userId.toString(),
@@ -2176,6 +2200,10 @@ export const addReaction = async (req, res) => {
     await message.populate("reactions.userId", "fullname profilePic");
     await message.populate("senderId", "fullname profilePic");
     await message.populate("receiverId", "fullname profilePic");
+    // ✅ FIX: Also populate seenBy since we may have added user to it
+    if (message.groupId) {
+      await message.populate("seenBy.userId", "fullname profilePic");
+    }
 
     const messageObj = message.toObject ? message.toObject() : message;
 
@@ -2797,6 +2825,30 @@ export const markVoiceAsListened = async (req, res) => {
       return res.status(400).json({ error: "Message does not have audio" });
     }
 
+    // ✅ FIX: If user listens, they must have seen the message - add to seenBy if not already
+    // Skip if user is the sender (sender doesn't "see" their own message)
+    const messageSenderId = message.senderId._id
+      ? message.senderId._id.toString()
+      : message.senderId.toString();
+    const userIdStr = userId.toString();
+
+    if (messageSenderId !== userIdStr && message.groupId) {
+      const alreadySeen = message.seenBy.some((s) => {
+        if (!s || !s.userId) return false;
+        const seenUserId = s.userId._id
+          ? s.userId._id.toString()
+          : s.userId.toString();
+        return seenUserId === userIdStr;
+      });
+
+      if (!alreadySeen) {
+        message.seenBy.push({
+          userId: userId,
+          seenAt: new Date(),
+        });
+      }
+    }
+
     // Check if already listened
     const alreadyListened = message.listenedBy.some(
       (l) => l.userId.toString() === userId.toString(),
@@ -2807,8 +2859,9 @@ export const markVoiceAsListened = async (req, res) => {
         userId: userId,
         listenedAt: new Date(),
       });
-      await message.save();
     }
+
+    await message.save();
 
     await message.populate("listenedBy.userId", "fullname profilePic");
     await message.populate("senderId", "fullname profilePic");

@@ -751,6 +751,30 @@ io.on("connection", (socket) => {
         return;
       }
 
+      // ✅ FIX: If user reacts, they must have seen the message - add to seenBy if not already
+      // Skip if user is the sender (sender doesn't "see" their own message)
+      const messageSenderId = message.senderId._id
+        ? message.senderId._id.toString()
+        : message.senderId.toString();
+      const userIdStr = userId.toString();
+
+      if (messageSenderId !== userIdStr && message.groupId) {
+        const alreadySeen = message.seenBy.some((s) => {
+          if (!s || !s.userId) return false;
+          const seenUserId = s.userId._id
+            ? s.userId._id.toString()
+            : s.userId.toString();
+          return seenUserId === userIdStr;
+        });
+
+        if (!alreadySeen) {
+          message.seenBy.push({
+            userId: userId,
+            seenAt: new Date(),
+          });
+        }
+      }
+
       // ✅ PRODUCTION: Find existing reaction from this user
       const existingReactionIndex = message.reactions.findIndex(
         (r) => r.userId.toString() === userId.toString() && r.emoji === emoji,
@@ -801,6 +825,10 @@ io.on("connection", (socket) => {
         await message.populate("reactions.userId", "fullname profilePic");
         await message.populate("senderId", "fullname profilePic");
         await message.populate("receiverId", "fullname profilePic");
+        // ✅ FIX: Also populate seenBy since we may have added user to it
+        if (message.groupId) {
+          await message.populate("seenBy.userId", "fullname profilePic");
+        }
       } catch (populateError) {
         logger.error("[SOCKET] Failed to populate reaction message", {
           error: populateError.message,
@@ -1024,6 +1052,20 @@ io.on("connection", (socket) => {
 
       // Populate seenBy for sending to clients (do this for both new and existing)
       await message.populate("seenBy.userId", "fullname profilePic");
+      // ✅ FIX: Also populate full message data (like reactions do)
+      // This ensures clients receive updated senderId.fullname and other fields
+      await message.populate("senderId", "fullname profilePic");
+      await message.populate("reactions.userId", "fullname profilePic");
+      await message.populate("listenedBy.userId", "fullname profilePic");
+      await message.populate({
+        path: "replyTo",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
+      });
 
       // Deduplicate seenBy before sending (in case of any duplicates from population)
       const seenByMap = new Map();
@@ -1036,6 +1078,10 @@ io.on("connection", (socket) => {
       });
       const deduplicatedSeenBy = Array.from(seenByMap.values());
 
+      // ✅ FIX: Convert to object and include full message data
+      const messageObj = message.toObject ? message.toObject() : message;
+      messageObj.seenBy = deduplicatedSeenBy; // Use deduplicated seenBy
+
       // Notify all group members about the seen update
       // Even if alreadySeen=true, other members need to know the current seenBy status
       // ✅ FIX: Use emitToUser to notify ALL devices of each member (not just first socket)
@@ -1047,6 +1093,7 @@ io.on("connection", (socket) => {
           groupId,
           seenBy: deduplicatedSeenBy,
           userId: userId,
+          message: messageObj, // ✅ FIX: Include full message for UI consistency
         });
       });
     } catch (error) {
