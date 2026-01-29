@@ -13,6 +13,7 @@ import {
   getMessagesByType,
   pinMessage,
   unpinMessage,
+  getPinnedMessages,
   addReaction,
   removeReaction,
   deleteMessageMedia,
@@ -37,6 +38,7 @@ router.put("/edit/:id", protectRoute, editMessage);
 router.put("/update-image/:id", protectRoute, updateMessageImage);
 router.put("/pin/:id", protectRoute, pinMessage);
 router.put("/unpin/:id", protectRoute, unpinMessage);
+router.get("/pinned/:id", protectRoute, getPinnedMessages); // Get all pinned messages for conversation
 router.put("/reaction/:id", protectRoute, addReaction);
 router.delete("/reaction/:id", protectRoute, removeReaction);
 router.delete("/media/:id", protectRoute, deleteMessageMedia);

@@ -1851,27 +1851,9 @@ export const pinMessage = async (req, res) => {
       }
     }
 
-    // Unpin any previously pinned message in this conversation
-    if (message.groupId) {
-      await Message.updateMany(
-        { groupId: message.groupId, pinned: true, _id: { $ne: messageId } },
-        { pinned: false, pinnedAt: null, pinnedBy: null },
-      );
-    } else {
-      const conversationQuery = {
-        $or: [
-          { senderId: message.senderId, receiverId: message.receiverId },
-          { senderId: message.receiverId, receiverId: message.senderId },
-        ],
-        pinned: true,
-        _id: { $ne: messageId },
-      };
-      await Message.updateMany(conversationQuery, {
-        pinned: false,
-        pinnedAt: null,
-        pinnedBy: null,
-      });
-    }
+    // NOTE: We now support multiple pinned messages per conversation (like Telegram)
+    // The old logic that unpinned other messages has been removed to allow
+    // users to pin multiple important messages that can be navigated through
 
     // Pin the message
     message.pinned = true;
@@ -2063,6 +2045,83 @@ export const unpinMessage = async (req, res) => {
 
     res.status(200).json(message);
   } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * Get all pinned messages for a conversation (personal or group)
+ * Supports multiple pinned messages per conversation (Telegram-style)
+ * @route GET /api/messages/pinned/:id
+ * @param {string} id - User ID (for personal chat) or Group ID
+ * @query {string} type - 'user' for personal chat, 'group' for group chat
+ */
+export const getPinnedMessages = async (req, res) => {
+  try {
+    const { id: targetId } = req.params;
+    const { type = "user" } = req.query; // 'user' or 'group'
+    const myId = req.user._id;
+
+    let query;
+
+    if (type === "group") {
+      // Verify user is member of the group
+      const Group = (await import("../model/group.model.js")).default;
+      const group = await Group.findById(targetId);
+      if (!group) {
+        return res.status(404).json({ error: "Group not found" });
+      }
+
+      const isMember =
+        group.admin.toString() === myId.toString() ||
+        group.members.some((m) => m.toString() === myId.toString());
+      if (!isMember) {
+        return res
+          .status(403)
+          .json({ error: "You are not a member of this group" });
+      }
+
+      query = {
+        groupId: new mongoose.Types.ObjectId(targetId),
+        pinned: true,
+      };
+    } else {
+      // Personal chat - both directions
+      const myObjectId = new mongoose.Types.ObjectId(myId);
+      const otherUserObjectId = new mongoose.Types.ObjectId(targetId);
+
+      query = {
+        $or: [
+          { senderId: myObjectId, receiverId: otherUserObjectId },
+          { senderId: otherUserObjectId, receiverId: myObjectId },
+        ],
+        pinned: true,
+      };
+    }
+
+    // Fetch all pinned messages, sorted by pinnedAt (most recent first)
+    const pinnedMessages = await Message.find(query)
+      .populate("senderId", "fullname profilePic")
+      .populate("receiverId", "fullname profilePic")
+      .populate("pinnedBy", "fullname profilePic")
+      .populate({
+        path: "replyTo",
+        select:
+          "text image audio video file sticker senderId receiverId createdAt",
+        populate: {
+          path: "senderId",
+          select: "fullname profilePic",
+        },
+      })
+      .sort({ pinnedAt: -1 }) // Most recently pinned first
+      .lean();
+
+    res.status(200).json({
+      pinnedMessages: pinnedMessages,
+      count: pinnedMessages.length,
+    });
+  } catch (error) {
+    console.error("[getPinnedMessages] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
