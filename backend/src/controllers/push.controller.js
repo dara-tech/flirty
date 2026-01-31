@@ -54,7 +54,6 @@ export const registerPushToken = async (req, res) => {
         lastUsed: new Date(),
         createdAt: user.pushTokens[existingTokenIndex].createdAt,
       };
-      console.log("🔄 [Push] Token updated (already existed)");
     } else {
       // Add new token
       user.pushTokens.push({
