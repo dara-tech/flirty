@@ -14,10 +14,6 @@ const VAPID_SUBJECT =
 
 if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-  logger.info("VAPID keys configured for push notifications", {
-    subject: VAPID_SUBJECT,
-    publicKeyPrefix: VAPID_PUBLIC_KEY.substring(0, 20) + "...",
-  });
 } else {
   logger.warn(
     "VAPID keys not configured - push notifications will be disabled",
@@ -37,7 +33,6 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 export const sendPushNotification = async (userId, payload) => {
   try {
     if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
-      logger.warn("VAPID keys not configured. Push notifications disabled.");
       return { success: false, error: "VAPID keys not configured" };
     }
 
@@ -54,17 +49,6 @@ export const sendPushNotification = async (userId, payload) => {
         total: 0,
       };
     }
-
-    logger.info(`📤 Attempting to send push notification to user ${userId}`, {
-      subscriptionCount: subscriptions.length,
-      title: payload.title,
-      body: payload.body,
-      subscriptions: subscriptions.map((s) => ({
-        id: s._id,
-        endpoint: s.endpoint.substring(0, 50) + "...",
-        isActive: s.isActive,
-      })),
-    });
 
     // Ensure icon URL is absolute for better compatibility
     let iconUrl = payload.icon || "/favicon.ico";
@@ -121,14 +105,6 @@ export const sendPushNotification = async (userId, payload) => {
             : isGoogleEndpoint
               ? "Google/Chrome"
               : "Other";
-          logger.info(
-            `✅ Push notification sent successfully to user ${userId}`,
-            {
-              subscriptionId: subscription._id,
-              endpoint: subscription.endpoint.substring(0, 60) + "...",
-              endpointType,
-            },
-          );
 
           return { success: true, subscriptionId: subscription._id };
         } catch (error) {
@@ -155,11 +131,6 @@ export const sendPushNotification = async (userId, payload) => {
             body: error.body,
             stack: error.stack?.substring(0, 200), // First 200 chars of stack
           };
-
-          logger.error(
-            `❌ Failed to send push notification to subscription ${subscription._id}:`,
-            errorDetails,
-          );
 
           // Handle different error status codes
           if (error.statusCode === 410 || error.statusCode === 404) {

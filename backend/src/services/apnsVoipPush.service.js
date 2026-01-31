@@ -81,7 +81,6 @@ const initialize = () => {
       try {
         apnsKey = fs.readFileSync(p8Path, "utf8");
         apnsKeyPath = p8Path;
-        logger.info(`✅ [APNs] Loaded key from: ${p8Path}`);
         break;
       } catch (e) {
         logger.warn(`⚠️ [APNs] Failed to read ${p8Path}:`, e.message);
@@ -90,33 +89,13 @@ const initialize = () => {
   }
 
   if (!apnsKey) {
-    logger.warn("⚠️ [APNs VoIP] No APNs key found. VoIP push disabled.");
-    logger.warn("   Expected locations:");
     p8Paths.forEach((p) => logger.warn(`   - ${p}`));
-    logger.warn("   See config/APNS_SETUP.md for setup instructions.");
     return false;
   }
 
   if (!config.keyId || !config.teamId) {
-    logger.warn(
-      "⚠️ [APNs VoIP] Missing APNS_KEY_ID or APNS_TEAM_ID environment variables.",
-    );
-    logger.warn("   Required environment variables:");
-    logger.warn("   - APNS_KEY_ID: Key ID from Apple Developer Portal");
-    logger.warn("   - APNS_TEAM_ID: Your Apple Developer Team ID");
-    logger.warn(
-      "   - APNS_BUNDLE_ID: App bundle identifier (optional, defaults to com.sre999.garage)",
-    );
     return false;
   }
-
-  logger.info("✅ [APNs VoIP] Service initialized successfully");
-  logger.info(`   ├─ Key ID: ${config.keyId}`);
-  logger.info(`   ├─ Team ID: ${config.teamId}`);
-  logger.info(`   ├─ Bundle ID: ${config.bundleId}`);
-  logger.info(
-    `   └─ Environment: ${config.isProduction ? "production" : "sandbox"}`,
-  );
 
   return true;
 };
@@ -156,7 +135,6 @@ const getJwtToken = () => {
       },
     );
     jwtIssuedAt = now;
-    logger.debug("🔑 [APNs] Generated new JWT token");
     return jwtToken;
   } catch (error) {
     logger.error("❌ [APNs] Failed to generate JWT:", error.message);
@@ -181,14 +159,11 @@ const getConnection = async () => {
       ? APNS_HOST_PRODUCTION
       : APNS_HOST_DEVELOPMENT;
 
-    logger.debug(`🔌 [APNs] Connecting to ${host}...`);
-
     const client = http2.connect(`https://${host}:${APNS_PORT}`, {
       timeout: config.connectionTimeout,
     });
 
     client.on("connect", () => {
-      logger.info(`✅ [APNs] Connected to ${host}`);
       apnsClient = client;
       connectionPromise = null;
       resolve(client);
@@ -320,10 +295,6 @@ export const sendVoipPush = async (voipToken, payload) => {
 
         if (status === 200) {
           const apnsId = headers["apns-id"];
-          logger.info(`✅ [APNs VoIP] Push sent successfully:`, {
-            apnsId,
-            token: voipToken.substring(0, 20) + "...",
-          });
           resolve({ success: true, apnsId });
         } else {
           // Error response - collect body for details

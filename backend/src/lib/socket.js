@@ -1393,9 +1393,6 @@ io.on("connection", (socket) => {
       // This prevents multi-device race conditions where second socket overwrites
       // the answeredBySocketId, causing WebRTC offers to go to wrong socket
       if (callInfo.status === "answered" && callInfo.answeredBySocketId) {
-        console.log(
-          `⚠️ [Call] Call ${callId} already answered on socket ${callInfo.answeredBySocketId}, ignoring duplicate from ${socket.id}`,
-        );
         // Notify this socket that call was answered elsewhere
         io.to(socket.id).emit("call:answered-elsewhere", {
           callId,
@@ -1412,10 +1409,6 @@ io.on("connection", (socket) => {
       callInfo.answeredBySocketId = socket.id;
       activeCalls.set(callId, callInfo);
 
-      console.log(
-        `✅ [Call] Call ${callId} answered by ${userId} on socket ${socket.id}`,
-      );
-
       // ═══════════════════════════════════════════════════════════════════════
       // MULTI-DEVICE: Notify receiver's OTHER devices that call was answered elsewhere
       // This stops ringing on other devices (like Telegram/WhatsApp behavior)
@@ -1430,24 +1423,11 @@ io.on("connection", (socket) => {
           message: "Call was answered on another device",
         },
       );
-
-      logger.info("📞 [Call] Notified other devices about answered call", {
-        callId,
-        receiverId: callInfo.receiverId,
-        answeringSocketId: socket.id,
-        otherDevicesNotified:
-          getAllUserSocketIds(callInfo.receiverId).length - 1,
-      });
-
       // MULTI-DEVICE: Notify ALL caller's devices that call was answered
       const callerDeviceCount = emitToUser(callInfo.callerId, "call:answered", {
         callId,
         receiverId: userId,
       });
-
-      console.log(
-        `📤 [Call] Emitted call:answered to ${callerDeviceCount} caller device(s) for caller ${callInfo.callerId}`,
-      );
 
       // Forward WebRTC answer if provided (only to the specific caller socket that initiated)
       // For now, send to all caller devices - the WebRTC logic will handle which one connects
@@ -1483,16 +1463,11 @@ io.on("connection", (socket) => {
       }
 
       if (!callInfo) {
-        console.log(`⚠️ [Call] Call not found for reject: ${callId}`);
         return;
       }
 
       // Determine status based on reason
       const status = reason === "busy" ? "busy" : "rejected";
-
-      console.log(
-        `🚫 [Call] Call ${callId} rejected by ${userId} (reason: ${status})`,
-      );
 
       // Save rejected call to database
       try {
@@ -1745,10 +1720,6 @@ io.on("connection", (socket) => {
   // WebRTC Offer - MULTI-DEVICE: Send to ALL receiver sockets (handles engine restart)
   socket.on("webrtc:offer", ({ callId, offer, receiverId }) => {
     try {
-      console.log(`📤 [WebRTC] Offer received from ${userId}:`);
-      console.log(`   ├─ callId: ${callId}`);
-      console.log(`   └─ receiverId: ${receiverId}`);
-
       // 🔥 CRITICAL FIX: Send offer to ALL sockets for the receiver
       // This handles the case where the receiver's Flutter engine restarts
       // after accepting the call, creating a NEW socket connection.
@@ -1766,21 +1737,11 @@ io.on("connection", (socket) => {
           });
           sentCount++;
         }
-        console.log(
-          `✅ [WebRTC] Offer forwarded to ${sentCount} socket(s) for receiver ${receiverId}`,
-        );
-
-        // Log which sockets received the offer
-        console.log(`   └─ Sockets: ${allReceiverSockets.join(", ")}`);
-
         // Also log if the answeredBySocketId is still in the list
         const callInfo = activeCalls.get(callId);
         if (callInfo && callInfo.answeredBySocketId) {
           const stillActive = allReceiverSockets.includes(
             callInfo.answeredBySocketId,
-          );
-          console.log(
-            `   └─ Original answering socket ${callInfo.answeredBySocketId}: ${stillActive ? "still active" : "DISCONNECTED"}`,
           );
         }
       } else {
@@ -1794,10 +1755,6 @@ io.on("connection", (socket) => {
   // WebRTC Answer - MULTI-DEVICE: Send to ALL caller sockets
   socket.on("webrtc:answer", ({ callId, answer, callerId }) => {
     try {
-      console.log(`📤 [WebRTC] Answer received from ${userId}:`);
-      console.log(`   ├─ callId: ${callId}`);
-      console.log(`   └─ callerId: ${callerId}`);
-
       // 🔥 CRITICAL FIX: Send answer to ALL sockets for the caller
       // This handles the case where the caller might have multiple sockets
       const allCallerSockets = getReceiverSocketIds(callerId);
@@ -1812,9 +1769,6 @@ io.on("connection", (socket) => {
           });
           sentCount++;
         }
-        console.log(
-          `✅ [WebRTC] Answer forwarded to ${sentCount} socket(s) for caller ${callerId}`,
-        );
       } else {
         console.log(`⚠️ [WebRTC] Caller ${callerId} not connected`);
       }

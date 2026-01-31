@@ -48,12 +48,7 @@ try {
     "../../config/firebase-service-account.json",
   );
 
-  logger.info(
-    `🔍 [Firebase] Checking for service account at: ${serviceAccountPath}`,
-  );
-
   if (fs.existsSync(serviceAccountPath)) {
-    logger.info("📄 [Firebase] Service account file found, loading...");
     const serviceAccount = JSON.parse(
       fs.readFileSync(serviceAccountPath, "utf8"),
     );
@@ -67,14 +62,11 @@ try {
       throw new Error("Invalid service account file: missing required fields");
     }
 
-    logger.info(`🔑 [Firebase] Project ID: ${serviceAccount.project_id}`);
-
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
 
     firebaseInitialized = true;
-    logger.info("✅ [Firebase] Firebase Admin SDK initialized successfully");
   } else {
     logger.warn(
       "⚠️ [Firebase] Service account not found. Mobile push notifications will be disabled.",
@@ -750,19 +742,6 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
             timestamp: String(Date.now()),
           };
 
-          // 🔥 LOG FULL PAYLOAD for iOS VoIP debugging
-          logger.debug("📤 [iOS VoIP] Push payload:");
-          logger.debug(`   ├─ id: ${message.data.id}`);
-          logger.debug(`   ├─ nameCaller: ${message.data.nameCaller}`);
-          logger.debug(`   ├─ handle: ${message.data.handle}`);
-          logger.debug(`   ├─ type: ${message.data.type}`);
-          logger.debug(`   ├─ callerId: ${message.data.callerId}`);
-          logger.debug(`   ├─ receiverId: ${message.data.receiverId}`);
-          logger.debug(`   ├─ callType: ${message.data.callType}`);
-          logger.debug(
-            `   └─ avatar: ${message.data.avatar ? "present" : "none"}`,
-          );
-
           // ✅ CRITICAL: Use high-priority background notification for iOS
           // This wakes the app and allows Flutter to show CallKit
           // Note: True VoIP push requires VoIP certificate (not FCM)
@@ -847,11 +826,6 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
           ),
         ]);
 
-        logger.debug(`✅ [Mobile Call] Push sent to ${tokenData.platform}:`, {
-          token: tokenData.token.substring(0, 20) + "...",
-          messageId: response,
-        });
-
         sent++;
         results.push({
           success: true,
@@ -874,12 +848,6 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
         );
 
         // Log readable error message
-        console.error(`\n💥 [Push Error] ${error.message}`);
-        console.error(`   ├─ Code: ${error.code || "unknown"}`);
-        console.error(`   ├─ Platform: ${tokenData.platform}`);
-        console.error(`   ├─ Token: ${tokenData.token.substring(0, 20)}...`);
-        console.error(`   └─ Stack: ${error.stack}\n`);
-
         failed++;
         results.push({
           success: false,
