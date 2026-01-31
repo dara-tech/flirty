@@ -13,6 +13,10 @@ import {
   deleteGroup,
   updateGroupInfo,
   leaveGroup,
+  transferAdmin,
+  promoteToAdmin,
+  demoteFromAdmin,
+  batchUpdateMembers,
   searchGroups,
 } from "../controllers/group.controller.js";
 
@@ -29,6 +33,10 @@ router.post("/:id/members", protectRoute, addMembersToGroup);
 router.delete("/:id/members/:memberId", protectRoute, removeMemberFromGroup);
 router.post("/:id/send", protectRoute, sendGroupMessage);
 router.put("/:id/info", protectRoute, updateGroupInfo);
+router.put("/:id/transfer-admin", protectRoute, transferAdmin);
+router.put("/:id/promote-admin", protectRoute, promoteToAdmin);
+router.put("/:id/demote-admin", protectRoute, demoteFromAdmin);
+router.put("/:id/batch-update-members", protectRoute, batchUpdateMembers);
 router.post("/:id/leave", protectRoute, leaveGroup);
 router.delete("/:id", protectRoute, deleteGroup);
 

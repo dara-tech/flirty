@@ -9,6 +9,16 @@ import { sendMobileGroupMessageNotification } from "../services/mobilePushNotifi
 import { sendGroupMessageNotification } from "../services/pushNotification.service.js";
 import logger from "../lib/logger.js";
 
+// Helper function to check if user is admin (primary or co-admin)
+const isGroupAdmin = (group, userId) => {
+  const userIdStr = userId.toString();
+  return (
+    group.admin.toString() === userIdStr ||
+    (group.admins &&
+      group.admins.some((adminId) => adminId.toString() === userIdStr))
+  );
+};
+
 // Helper function to check if users are contacts
 const areContacts = async (userId, memberIds) => {
   if (!memberIds || memberIds.length === 0) return true;
@@ -50,28 +60,41 @@ const areContacts = async (userId, memberIds) => {
 // Create a new group
 export const createGroup = async (req, res) => {
   try {
-    const { name, description, groupPic, memberIds } = req.body;
-    const adminId = req.user._id;
+    const { name, description, groupPic, memberIds, adminIds } = req.body;
+    const creatorId = req.user._id;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "Group name is required" });
     }
 
-    // Validate that all memberIds are valid users (no contact requirement)
-    if (memberIds && Array.isArray(memberIds) && memberIds.length > 0) {
-      // Remove duplicates and filter out admin
-      const uniqueMemberIds = [...new Set(memberIds)].filter(
-        (id) => id.toString() !== adminId.toString(),
-      );
+    // Collect all user IDs to validate (members + co-admins)
+    const allUserIds = new Set();
 
-      if (uniqueMemberIds.length > 0) {
-        // Validate that all memberIds are valid users
-        const validUsers = await User.find({ _id: { $in: uniqueMemberIds } });
-        if (validUsers.length !== uniqueMemberIds.length) {
-          return res.status(400).json({
-            error: "Some user IDs are invalid",
-          });
+    // Add member IDs
+    if (memberIds && Array.isArray(memberIds)) {
+      memberIds.forEach((id) => {
+        if (id.toString() !== creatorId.toString()) {
+          allUserIds.add(id.toString());
         }
+      });
+    }
+
+    // Add co-admin IDs (excluding creator)
+    if (adminIds && Array.isArray(adminIds)) {
+      adminIds.forEach((id) => {
+        if (id.toString() !== creatorId.toString()) {
+          allUserIds.add(id.toString());
+        }
+      });
+    }
+
+    // Validate all user IDs
+    if (allUserIds.size > 0) {
+      const validUsers = await User.find({ _id: { $in: [...allUserIds] } });
+      if (validUsers.length !== allUserIds.size) {
+        return res.status(400).json({
+          error: "Some user IDs are invalid",
+        });
       }
     }
 
@@ -81,14 +104,28 @@ export const createGroup = async (req, res) => {
       groupPicUrl = groupPic;
     }
 
-    // Create group - admin is separate, members array should not include admin
+    // Process co-admins (excluding creator)
+    const coAdmins = [];
+    if (adminIds && Array.isArray(adminIds)) {
+      adminIds.forEach((id) => {
+        const idStr = id.toString();
+        if (
+          idStr !== creatorId.toString() &&
+          !coAdmins.some((a) => a.toString() === idStr)
+        ) {
+          coAdmins.push(id);
+        }
+      });
+    }
+
+    // Process members (excluding creator and co-admins)
     const members = [];
     if (memberIds && Array.isArray(memberIds)) {
-      // Add other members, avoiding duplicates and excluding admin
       memberIds.forEach((id) => {
         const idStr = id.toString();
         if (
-          idStr !== adminId.toString() &&
+          idStr !== creatorId.toString() &&
+          !coAdmins.some((a) => a.toString() === idStr) &&
           !members.some((m) => m.toString() === idStr)
         ) {
           members.push(id);
@@ -100,31 +137,29 @@ export const createGroup = async (req, res) => {
       name: name.trim(),
       description: description || "",
       groupPic: groupPicUrl,
-      admin: adminId,
-      members, // members array does NOT include admin
+      admin: creatorId,
+      admins: coAdmins,
+      members, // members array does NOT include admin or co-admins
     });
 
     await newGroup.save();
     await newGroup.populate("admin", "fullname profilePic");
+    await newGroup.populate("admins", "fullname profilePic");
     await newGroup.populate("members", "fullname profilePic");
 
-    // Notify all members via socket (targeted)
-    // console.log("\n════════════════════════════════════════");
-    // console.log("🆕 [GROUP] Group created:", newGroup.name);
-    // console.log("════════════════════════════════════════");
+    // Notify all participants via socket (targeted)
+    const allParticipants = [...coAdmins, ...members];
     let notifiedCount = 0;
-    members.forEach((memberId) => {
-      const memberSocketId = getReceiverSocketId(memberId.toString());
-      if (memberSocketId) {
-        io.to(memberSocketId).emit("groupCreated", {
+    allParticipants.forEach((participantId) => {
+      const participantSocketId = getReceiverSocketId(participantId.toString());
+      if (participantSocketId) {
+        io.to(participantSocketId).emit("groupCreated", {
           group: newGroup,
-          memberId,
+          participantId,
         });
         notifiedCount++;
       }
     });
-    // console.log("✅ Notified", notifiedCount, "members ⚡"); // [DEBUG - Removed for production]
-    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     res.status(201).json(newGroup);
   } catch (error) {
@@ -139,9 +174,10 @@ export const getMyGroups = async (req, res) => {
     const userId = req.user._id;
 
     const groups = await Group.find({
-      $or: [{ admin: userId }, { members: userId }],
+      $or: [{ admin: userId }, { admins: userId }, { members: userId }],
     })
       .populate("admin", "fullname profilePic")
+      .populate("admins", "fullname profilePic")
       .populate("members", "fullname profilePic")
       .sort({ updatedAt: -1 })
       .lean(); // Use lean() for read-only queries (faster)
@@ -165,9 +201,10 @@ export const getGroup = async (req, res) => {
 
     const group = await Group.findOne({
       _id: id,
-      $or: [{ admin: userId }, { members: userId }],
+      $or: [{ admin: userId }, { admins: userId }, { members: userId }],
     })
       .populate("admin", "fullname profilePic")
+      .populate("admins", "fullname profilePic")
       .populate("members", "fullname profilePic");
 
     if (!group) {
@@ -198,17 +235,20 @@ export const addMembersToGroup = async (req, res) => {
       return res.status(404).json({ error: "Group not found" });
     }
 
-    // Check if user is admin
-    if (group.admin.toString() !== userId.toString()) {
-      return res.status(403).json({ error: "Only admin can add members" });
+    // Check if user is admin (primary or co-admin)
+    if (!isGroupAdmin(group, userId)) {
+      return res.status(403).json({ error: "Only admins can add members" });
     }
 
-    // Validate that all new members are contacts
-    const existingMemberIds = group.members.map((m) => m.toString());
+    // Get all existing participant IDs (admin + co-admins + members)
+    const existingParticipantIds = [
+      group.admin.toString(),
+      ...(group.admins || []).map((a) => a.toString()),
+      ...group.members.map((m) => m.toString()),
+    ];
+
     const newMemberIds = memberIds.filter(
-      (id) =>
-        !existingMemberIds.includes(id.toString()) &&
-        id.toString() !== group.admin.toString(),
+      (id) => !existingParticipantIds.includes(id.toString()),
     );
 
     if (newMemberIds.length === 0) {
@@ -226,12 +266,10 @@ export const addMembersToGroup = async (req, res) => {
     group.members.push(...newMemberIds);
     await group.save();
     await group.populate("admin", "fullname profilePic");
+    await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
     // Notify new members via socket (targeted)
-    // console.log("\n════════════════════════════════════════");
-    // console.log("➕ [GROUP] Members added to:", group.name);
-    // console.log("════════════════════════════════════════");
     let notifiedCount = 0;
     newMemberIds.forEach((memberId) => {
       const memberSocketId = getReceiverSocketId(memberId.toString());
@@ -240,8 +278,6 @@ export const addMembersToGroup = async (req, res) => {
         notifiedCount++;
       }
     });
-    // console.log("✅ Notified", notifiedCount, "new members ⚡"); // [DEBUG - Removed for production]
-    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     res.status(200).json({
       success: true,
@@ -270,33 +306,45 @@ export const removeMemberFromGroup = async (req, res) => {
       return res.status(404).json({ error: "Group not found" });
     }
 
-    // Check if user is admin
-    if (group.admin.toString() !== userId.toString()) {
-      return res.status(403).json({ error: "Only admin can remove members" });
+    // Check if user is admin (primary or co-admin)
+    if (!isGroupAdmin(group, userId)) {
+      return res.status(403).json({ error: "Only admins can remove members" });
     }
 
-    // Cannot remove admin
+    // Cannot remove primary admin
     if (group.admin.toString() === memberId) {
-      return res.status(400).json({ error: "Cannot remove admin from group" });
+      return res
+        .status(400)
+        .json({ error: "Cannot remove primary admin from group" });
     }
 
+    // Check if removing a co-admin (only primary admin can remove co-admins)
+    const isTargetCoAdmin =
+      group.admins && group.admins.some((a) => a.toString() === memberId);
+    if (isTargetCoAdmin && group.admin.toString() !== userId.toString()) {
+      return res
+        .status(403)
+        .json({ error: "Only primary admin can remove co-admins" });
+    }
+
+    // Remove from admins array if co-admin
+    if (isTargetCoAdmin) {
+      group.admins = group.admins.filter((a) => a.toString() !== memberId);
+    }
+
+    // Remove from members array
     group.members = group.members.filter((m) => m.toString() !== memberId);
+
     await group.save();
     await group.populate("admin", "fullname profilePic");
+    await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
     // Notify removed member via socket (targeted)
-    // console.log("\n════════════════════════════════════════"); // [DEBUG - Removed for production]
-    // console.log("➖ [GROUP] Member removed from:", group.name); // [DEBUG - Removed for production]
-    // console.log("════════════════════════════════════════"); // [DEBUG - Removed for production]
     const memberSocketId = getReceiverSocketId(memberId);
     if (memberSocketId) {
       io.to(memberSocketId).emit("removedFromGroup", { group, memberId });
-      // console.log("✅ Notified member ⚡"); // [DEBUG - Removed for production]
-    } else {
-      // console.log("⚠️ Member offline"); // [DEBUG - Removed for production]
     }
-    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     res.status(200).json(group);
   } catch (error) {
@@ -325,7 +373,7 @@ export const getGroupMessagesByType = async (req, res) => {
     }
 
     const isMember =
-      group.admin.toString() === userId.toString() ||
+      isGroupAdmin(group, userId) ||
       group.members.some((m) => m.toString() === userId.toString());
 
     if (!isMember) {
@@ -403,7 +451,7 @@ export const getGroupMessages = async (req, res) => {
     }
 
     const isMember =
-      group.admin.toString() === userId.toString() ||
+      isGroupAdmin(group, userId) ||
       group.members.some((m) => m.toString() === userId.toString());
 
     if (!isMember) {
@@ -545,7 +593,7 @@ export const sendGroupMessage = async (req, res) => {
     }
 
     const isMember =
-      group.admin.toString() === senderId.toString() ||
+      isGroupAdmin(group, senderId) ||
       group.members.some((m) => m.toString() === senderId.toString());
 
     if (!isMember) {
@@ -899,15 +947,19 @@ export const deleteGroup = async (req, res) => {
       return res.status(404).json({ error: "Group not found" });
     }
 
-    // Check if user is the admin/owner of the group
+    // Check if user is the primary admin/owner of the group (only primary admin can delete)
     if (group.admin.toString() !== userId.toString()) {
       return res
         .status(403)
         .json({ error: "Only the group owner can delete the group" });
     }
 
-    // Get all members before deletion for socket notification
-    const allMembers = [group.admin, ...group.members];
+    // Get all participants before deletion for socket notification
+    const allParticipants = [
+      group.admin,
+      ...(group.admins || []),
+      ...group.members,
+    ];
     const groupIdStr = groupId.toString();
 
     // Delete all messages in the group
@@ -916,16 +968,15 @@ export const deleteGroup = async (req, res) => {
     // Delete the group
     await Group.findByIdAndDelete(groupId);
 
-    // Notify all members via socket that group was deleted
-    allMembers.forEach((memberId) => {
-      const memberIdStr = memberId.toString();
-      const memberSocketId = getReceiverSocketId(memberIdStr);
-      if (memberSocketId) {
-        io.to(memberSocketId).emit("groupDeleted", {
+    // Notify all participants via socket that group was deleted
+    allParticipants.forEach((participantId) => {
+      const participantIdStr = participantId.toString();
+      const participantSocketId = getReceiverSocketId(participantIdStr);
+      if (participantSocketId) {
+        io.to(participantSocketId).emit("groupDeleted", {
           groupId: groupIdStr,
-          memberId: memberIdStr,
+          participantId: participantIdStr,
         });
-      } else {
       }
     });
 
@@ -952,11 +1003,11 @@ export const updateGroupInfo = async (req, res) => {
       return res.status(404).json({ error: "Group not found" });
     }
 
-    // Check if user is admin
-    if (group.admin.toString() !== userId.toString()) {
+    // Check if user is admin (primary or co-admin)
+    if (!isGroupAdmin(group, userId)) {
       return res
         .status(403)
-        .json({ error: "Only admin can update group info" });
+        .json({ error: "Only admins can update group info" });
     }
 
     // Update name if provided
@@ -1008,7 +1059,7 @@ export const updateGroupInfo = async (req, res) => {
   }
 };
 
-// Leave group (members can leave, admin must transfer or delete)
+// Leave group (members can leave, primary admin must transfer or delete)
 export const leaveGroup = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1020,55 +1071,66 @@ export const leaveGroup = async (req, res) => {
       return res.status(404).json({ error: "Group not found" });
     }
 
-    // Check if user is a member
-    const isAdmin = group.admin.toString() === userId.toString();
-    const isMember =
-      isAdmin || group.members.some((m) => m.toString() === userId.toString());
+    // Check if user is primary admin, co-admin, or member
+    const isPrimaryAdmin = group.admin.toString() === userId.toString();
+    const isCoAdmin =
+      group.admins &&
+      group.admins.some((a) => a.toString() === userId.toString());
+    const isRegularMember = group.members.some(
+      (m) => m.toString() === userId.toString(),
+    );
 
-    if (!isMember) {
+    if (!isPrimaryAdmin && !isCoAdmin && !isRegularMember) {
       return res
         .status(403)
         .json({ error: "You are not a member of this group" });
     }
 
-    // Admin cannot leave - must transfer admin or delete group
-    if (isAdmin) {
+    // Primary admin cannot leave - must transfer admin or delete group
+    if (isPrimaryAdmin) {
       return res.status(400).json({
         error:
           "Admin cannot leave group. Please transfer admin role or delete the group.",
       });
     }
 
-    // Remove member from group
+    // If co-admin is leaving, remove from admins array
+    if (isCoAdmin) {
+      group.admins = group.admins.filter(
+        (a) => a.toString() !== userId.toString(),
+      );
+    }
+
+    // Remove from members array (in case they're in both)
     group.members = group.members.filter(
       (m) => m.toString() !== userId.toString(),
     );
     await group.save();
     await group.populate("admin", "fullname profilePic");
+    await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify all remaining members via socket (targeted)
-    // console.log("\n════════════════════════════════════════");
-    // console.log("🚻 [GROUP] Member left:", group.name);
-    // console.log("════════════════════════════════════════");
-    const allMembers = [group.admin, ...group.members];
+    // Notify all remaining participants via socket (targeted)
+    const allParticipants = [
+      group.admin,
+      ...(group.admins || []),
+      ...group.members,
+    ];
     let notifiedCount = 0;
-    allMembers.forEach((memberId) => {
-      const memberIdStr = memberId._id
-        ? memberId._id.toString()
-        : memberId.toString();
-      const memberSocketId = getReceiverSocketId(memberIdStr);
-      if (memberSocketId) {
-        io.to(memberSocketId).emit("memberLeftGroup", {
+    allParticipants.forEach((participantId) => {
+      const participantIdStr = participantId._id
+        ? participantId._id.toString()
+        : participantId.toString();
+      const participantSocketId = getReceiverSocketId(participantIdStr);
+      if (participantSocketId) {
+        io.to(participantSocketId).emit("memberLeftGroup", {
           group,
-          memberId: memberIdStr,
+          participantId: participantIdStr,
           leftMemberId: userId.toString(),
         });
         notifiedCount++;
       }
     });
-    // console.log("✅ Notified", notifiedCount, "remaining members ⚡"); // [DEBUG - Removed for production]
-    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     // Notify the user who left
     const userSocketId = getReceiverSocketId(userId.toString());
@@ -1081,6 +1143,106 @@ export const leaveGroup = async (req, res) => {
     res.status(200).json({ message: "Left group successfully" });
   } catch (error) {
     console.error("Error in leaveGroup: ", error.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// Transfer admin role to another member
+export const transferAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newAdminId } = req.body;
+    const currentUserId = req.user._id;
+
+    if (!newAdminId) {
+      return res.status(400).json({ error: "New admin ID is required" });
+    }
+
+    const group = await Group.findById(id);
+
+    if (!group) {
+      return res.status(404).json({ error: "Group not found" });
+    }
+
+    // Only current admin can transfer admin role
+    if (group.admin.toString() !== currentUserId.toString()) {
+      return res
+        .status(403)
+        .json({ error: "Only the group admin can transfer admin role" });
+    }
+
+    // New admin must be a co-admin or member of the group
+    const isCoAdmin =
+      group.admins &&
+      group.admins.some((a) => a.toString() === newAdminId.toString());
+    const isMember = group.members.some(
+      (m) => m.toString() === newAdminId.toString(),
+    );
+
+    if (!isCoAdmin && !isMember) {
+      return res
+        .status(400)
+        .json({ error: "New admin must be a member of the group" });
+    }
+
+    // Validate new admin user exists
+    const newAdmin = await User.findById(newAdminId);
+    if (!newAdmin) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Transfer primary admin role:
+    // 1. Remove new admin from admins/members
+    // 2. Add old admin to members
+    // 3. Set new admin as primary admin
+    const oldAdminId = group.admin;
+
+    // Remove from co-admins if they were one
+    if (isCoAdmin) {
+      group.admins = group.admins.filter(
+        (a) => a.toString() !== newAdminId.toString(),
+      );
+    }
+    // Remove from members if they were one
+    group.members = group.members.filter(
+      (m) => m.toString() !== newAdminId.toString(),
+    );
+    // Add old admin to members (not as co-admin, just regular member)
+    group.members.push(oldAdminId);
+    group.admin = newAdminId;
+
+    await group.save();
+    await group.populate("admin", "fullname profilePic");
+    await group.populate("admins", "fullname profilePic");
+    await group.populate("members", "fullname profilePic");
+
+    // Notify all participants via socket
+    const allParticipants = [
+      group.admin,
+      ...(group.admins || []),
+      ...group.members,
+    ];
+    allParticipants.forEach((participant) => {
+      const participantIdStr = participant._id
+        ? participant._id.toString()
+        : participant.toString();
+      const participantSocketId = getReceiverSocketId(participantIdStr);
+      if (participantSocketId) {
+        io.to(participantSocketId).emit("groupAdminChanged", {
+          group,
+          oldAdminId: oldAdminId.toString(),
+          newAdminId: newAdminId.toString(),
+        });
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Admin role transferred successfully",
+      data: group,
+    });
+  } catch (error) {
+    console.error("Error in transferAdmin: ", error.message);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -1141,5 +1303,438 @@ export const searchGroups = async (req, res) => {
       success: false,
       message: "Internal server error",
     });
+  }
+};
+
+// Promote member to co-admin
+export const promoteToAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { memberId } = req.body;
+    const currentUserId = req.user._id;
+
+    if (!memberId) {
+      return res.status(400).json({ error: "Member ID is required" });
+    }
+
+    const group = await Group.findById(id);
+
+    if (!group) {
+      return res.status(404).json({ error: "Group not found" });
+    }
+
+    // Only admins can promote members
+    if (!isGroupAdmin(group, currentUserId)) {
+      return res.status(403).json({ error: "Only admins can promote members" });
+    }
+
+    // Check if user is already admin
+    if (group.admin.toString() === memberId.toString()) {
+      return res.status(400).json({ error: "User is already primary admin" });
+    }
+
+    const isAlreadyCoAdmin =
+      group.admins &&
+      group.admins.some((a) => a.toString() === memberId.toString());
+    if (isAlreadyCoAdmin) {
+      return res.status(400).json({ error: "User is already a co-admin" });
+    }
+
+    // Check if user is a member
+    const isMember = group.members.some(
+      (m) => m.toString() === memberId.toString(),
+    );
+    if (!isMember) {
+      return res
+        .status(400)
+        .json({ error: "User is not a member of this group" });
+    }
+
+    // Validate user exists
+    const user = await User.findById(memberId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Promote: Remove from members, add to admins
+    group.members = group.members.filter(
+      (m) => m.toString() !== memberId.toString(),
+    );
+    if (!group.admins) {
+      group.admins = [];
+    }
+    group.admins.push(memberId);
+
+    await group.save();
+    await group.populate("admin", "fullname profilePic");
+    await group.populate("admins", "fullname profilePic");
+    await group.populate("members", "fullname profilePic");
+
+    // Notify all participants via socket
+    const allParticipants = [
+      group.admin,
+      ...(group.admins || []),
+      ...group.members,
+    ];
+    allParticipants.forEach((participant) => {
+      const participantIdStr = participant._id
+        ? participant._id.toString()
+        : participant.toString();
+      const participantSocketId = getReceiverSocketId(participantIdStr);
+      if (participantSocketId) {
+        io.to(participantSocketId).emit("memberPromotedToAdmin", {
+          group,
+          promotedMemberId: memberId.toString(),
+        });
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Member promoted to admin successfully",
+      data: group,
+    });
+  } catch (error) {
+    console.error("Error in promoteToAdmin: ", error.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// Demote co-admin to regular member
+export const demoteFromAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { adminId } = req.body;
+    const currentUserId = req.user._id;
+
+    if (!adminId) {
+      return res.status(400).json({ error: "Admin ID is required" });
+    }
+
+    const group = await Group.findById(id);
+
+    if (!group) {
+      return res.status(404).json({ error: "Group not found" });
+    }
+
+    // Only primary admin can demote co-admins
+    if (group.admin.toString() !== currentUserId.toString()) {
+      return res
+        .status(403)
+        .json({ error: "Only primary admin can demote co-admins" });
+    }
+
+    // Cannot demote primary admin
+    if (group.admin.toString() === adminId.toString()) {
+      return res.status(400).json({ error: "Cannot demote primary admin" });
+    }
+
+    // Check if user is a co-admin
+    const isCoAdmin =
+      group.admins &&
+      group.admins.some((a) => a.toString() === adminId.toString());
+    if (!isCoAdmin) {
+      return res.status(400).json({ error: "User is not a co-admin" });
+    }
+
+    // Demote: Remove from admins, add to members
+    group.admins = group.admins.filter(
+      (a) => a.toString() !== adminId.toString(),
+    );
+    group.members.push(adminId);
+
+    await group.save();
+    await group.populate("admin", "fullname profilePic");
+    await group.populate("admins", "fullname profilePic");
+    await group.populate("members", "fullname profilePic");
+
+    // Notify all participants via socket
+    const allParticipants = [
+      group.admin,
+      ...(group.admins || []),
+      ...group.members,
+    ];
+    allParticipants.forEach((participant) => {
+      const participantIdStr = participant._id
+        ? participant._id.toString()
+        : participant.toString();
+      const participantSocketId = getReceiverSocketId(participantIdStr);
+      if (participantSocketId) {
+        io.to(participantSocketId).emit("adminDemoted", {
+          group,
+          demotedAdminId: adminId.toString(),
+        });
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Admin demoted to member successfully",
+      data: group,
+    });
+  } catch (error) {
+    console.error("Error in demoteFromAdmin: ", error.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BATCH UPDATE MEMBERS - Single endpoint for all member changes
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * PUT /api/groups/:id/batch-update-members
+ *
+ * Performs all member changes in a single atomic operation:
+ * - Add new members
+ * - Remove members
+ * - Promote members to admin
+ * - Demote admins to members
+ *
+ * This is more efficient than making multiple API calls and avoids race conditions.
+ *
+ * @body {string[]} membersToAdd - User IDs to add as regular members
+ * @body {string[]} membersToRemove - User IDs to remove from group
+ * @body {string[]} membersToPromote - User IDs to promote to co-admin
+ * @body {string[]} adminsToDemote - Co-admin user IDs to demote to member
+ */
+export const batchUpdateMembers = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      membersToAdd = [],
+      membersToRemove = [],
+      membersToPromote = [],
+      adminsToDemote = [],
+    } = req.body;
+    const currentUserId = req.user._id;
+
+    // Validate input
+    if (
+      !Array.isArray(membersToAdd) ||
+      !Array.isArray(membersToRemove) ||
+      !Array.isArray(membersToPromote) ||
+      !Array.isArray(adminsToDemote)
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Invalid input: all fields must be arrays" });
+    }
+
+    // Skip if no changes
+    const hasChanges =
+      membersToAdd.length > 0 ||
+      membersToRemove.length > 0 ||
+      membersToPromote.length > 0 ||
+      adminsToDemote.length > 0;
+    if (!hasChanges) {
+      return res.status(200).json({
+        success: true,
+        message: "No changes to apply",
+        data: null,
+      });
+    }
+
+    const group = await Group.findById(id);
+    if (!group) {
+      return res.status(404).json({ error: "Group not found" });
+    }
+
+    // Only admins can update members
+    if (!isGroupAdmin(group, currentUserId)) {
+      return res
+        .status(403)
+        .json({ error: "Only admins can update group members" });
+    }
+
+    const primaryAdminId = group.admin.toString();
+    const changes = {
+      added: [],
+      removed: [],
+      promoted: [],
+      demoted: [],
+      errors: [],
+    };
+
+    // Get all existing participant IDs for validation
+    const existingMemberIds = new Set(group.members.map((m) => m.toString()));
+    const existingAdminIds = new Set(
+      (group.admins || []).map((a) => a.toString()),
+    );
+
+    // ============================================
+    // STEP 1: ADD NEW MEMBERS
+    // ============================================
+    if (membersToAdd.length > 0) {
+      const allExistingIds = new Set([
+        primaryAdminId,
+        ...existingAdminIds,
+        ...existingMemberIds,
+      ]);
+
+      const validNewMembers = membersToAdd.filter(
+        (id) => !allExistingIds.has(id.toString()),
+      );
+
+      if (validNewMembers.length > 0) {
+        // Validate users exist
+        const validUsers = await User.find({ _id: { $in: validNewMembers } });
+        const validUserIds = validUsers.map((u) => u._id.toString());
+
+        for (const userId of validUserIds) {
+          if (!group.members.some((m) => m.toString() === userId)) {
+            group.members.push(userId);
+            changes.added.push(userId);
+            existingMemberIds.add(userId); // Update local set for subsequent operations
+          }
+        }
+      }
+    }
+
+    // ============================================
+    // STEP 2: PROMOTE MEMBERS TO ADMIN
+    // ============================================
+    for (const memberId of membersToPromote) {
+      const memberIdStr = memberId.toString();
+
+      // Skip if already admin or primary admin
+      if (memberIdStr === primaryAdminId || existingAdminIds.has(memberIdStr)) {
+        continue;
+      }
+
+      // Must be a member to promote (includes newly added)
+      const isMember =
+        existingMemberIds.has(memberIdStr) ||
+        group.members.some((m) => m.toString() === memberIdStr);
+      if (!isMember) {
+        changes.errors.push({
+          userId: memberIdStr,
+          error: "User is not a member",
+        });
+        continue;
+      }
+
+      // Remove from members, add to admins
+      group.members = group.members.filter((m) => m.toString() !== memberIdStr);
+      if (!group.admins) group.admins = [];
+      if (!group.admins.some((a) => a.toString() === memberIdStr)) {
+        group.admins.push(memberId);
+        changes.promoted.push(memberIdStr);
+        existingMemberIds.delete(memberIdStr);
+        existingAdminIds.add(memberIdStr);
+      }
+    }
+
+    // ============================================
+    // STEP 3: DEMOTE ADMINS TO MEMBERS
+    // ============================================
+    for (const adminId of adminsToDemote) {
+      const adminIdStr = adminId.toString();
+
+      // Cannot demote primary admin
+      if (adminIdStr === primaryAdminId) {
+        changes.errors.push({
+          userId: adminIdStr,
+          error: "Cannot demote primary admin",
+        });
+        continue;
+      }
+
+      // Must be a co-admin to demote
+      const isCoAdmin =
+        existingAdminIds.has(adminIdStr) ||
+        (group.admins && group.admins.some((a) => a.toString() === adminIdStr));
+      if (!isCoAdmin) {
+        continue;
+      }
+
+      // Remove from admins, add to members
+      group.admins = (group.admins || []).filter(
+        (a) => a.toString() !== adminIdStr,
+      );
+      if (!group.members.some((m) => m.toString() === adminIdStr)) {
+        group.members.push(adminId);
+        changes.demoted.push(adminIdStr);
+        existingAdminIds.delete(adminIdStr);
+        existingMemberIds.add(adminIdStr);
+      }
+    }
+
+    // ============================================
+    // STEP 4: REMOVE MEMBERS
+    // ============================================
+    for (const memberId of membersToRemove) {
+      const memberIdStr = memberId.toString();
+
+      // Cannot remove primary admin
+      if (memberIdStr === primaryAdminId) {
+        changes.errors.push({
+          userId: memberIdStr,
+          error: "Cannot remove primary admin",
+        });
+        continue;
+      }
+
+      // Remove from both members and admins arrays
+      const wasAdmin =
+        group.admins && group.admins.some((a) => a.toString() === memberIdStr);
+      const wasMember = group.members.some((m) => m.toString() === memberIdStr);
+
+      if (wasAdmin || wasMember) {
+        group.members = group.members.filter(
+          (m) => m.toString() !== memberIdStr,
+        );
+        group.admins = (group.admins || []).filter(
+          (a) => a.toString() !== memberIdStr,
+        );
+        changes.removed.push(memberIdStr);
+      }
+    }
+
+    // Save all changes in single database write
+    await group.save();
+    await group.populate("admin", "fullname profilePic");
+    await group.populate("admins", "fullname profilePic");
+    await group.populate("members", "fullname profilePic");
+
+    // Notify all participants via socket (single notification)
+    const allParticipants = [
+      group.admin,
+      ...(group.admins || []),
+      ...group.members,
+    ];
+
+    allParticipants.forEach((participant) => {
+      const participantIdStr = participant._id
+        ? participant._id.toString()
+        : participant.toString();
+      const participantSocketId = getReceiverSocketId(participantIdStr);
+      if (participantSocketId) {
+        io.to(participantSocketId).emit("groupMembersUpdated", {
+          group,
+          changes,
+        });
+      }
+    });
+
+    // Also notify removed members
+    changes.removed.forEach((removedId) => {
+      const removedSocketId = getReceiverSocketId(removedId);
+      if (removedSocketId) {
+        io.to(removedSocketId).emit("removedFromGroup", {
+          groupId: id,
+          memberId: removedId,
+        });
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Members updated successfully",
+      data: group,
+      changes,
+    });
+  } catch (error) {
+    console.error("Error in batchUpdateMembers: ", error.message);
+    res.status(500).json({ error: "Internal server error" });
   }
 };
