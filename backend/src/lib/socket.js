@@ -541,14 +541,21 @@ io.on("connection", (socket) => {
   });
 
   // Helper function to emit to all group members except sender
+  // 🔥 FIX: Include co-admins (admins array) in group event emissions
   const emitToGroupMembers = async (groupId, senderId, event, data) => {
     try {
       const group = await Group.findById(groupId)
         .populate("admin", "fullname profilePic")
+        .populate("admins", "fullname profilePic") // Include co-admins
         .populate("members", "fullname profilePic");
       if (!group) return;
 
-      const allMembers = [group.admin, ...group.members];
+      // Include admin, co-admins (admins), and members
+      const allMembers = [
+        group.admin,
+        ...(group.admins || []),
+        ...group.members,
+      ];
       allMembers.forEach((member) => {
         const memberIdStr = member._id
           ? member._id.toString()
@@ -730,8 +737,11 @@ io.on("connection", (socket) => {
         const group = await Group.findById(message.groupId);
         if (group) {
           const userIdStr = userId.toString();
+          // 🔥 FIX: Include co-admins (admins array) in participant check
           isParticipant =
             group.admin.toString() === userIdStr ||
+            (group.admins &&
+              group.admins.some((a) => a.toString() === userIdStr)) ||
             group.members.some((m) => m.toString() === userIdStr);
         }
       } else {
@@ -849,7 +859,12 @@ io.on("connection", (socket) => {
       if (message.groupId) {
         const group = await Group.findById(message.groupId);
         if (group) {
-          const allMembers = [group.admin, ...group.members];
+          // 🔥 FIX: Include co-admins (admins array)
+          const allMembers = [
+            group.admin,
+            ...(group.admins || []),
+            ...group.members,
+          ];
           let broadcastCount = 0;
 
           // Determine legacy event name based on action type
@@ -996,8 +1011,11 @@ io.on("connection", (socket) => {
 
       // Check if user is a member
       const userIdStr = userId.toString();
+      // 🔥 FIX: Include co-admins (admins array) in member check
       const isMember =
         group.admin.toString() === userIdStr ||
+        (group.admins &&
+          group.admins.some((a) => a.toString() === userIdStr)) ||
         group.members.some((m) => m.toString() === userIdStr);
       if (!isMember) {
         // console.log("❌ [GROUP_SEEN] User not a member"); // [DEBUG - Removed for production]
@@ -1085,7 +1103,12 @@ io.on("connection", (socket) => {
       // Notify all group members about the seen update
       // Even if alreadySeen=true, other members need to know the current seenBy status
       // ✅ FIX: Use emitToUser to notify ALL devices of each member (not just first socket)
-      const allMembers = [group.admin, ...group.members];
+      // 🔥 FIX: Include co-admins (admins array)
+      const allMembers = [
+        group.admin,
+        ...(group.admins || []),
+        ...group.members,
+      ];
       allMembers.forEach((memberId) => {
         const memberIdStr = memberId.toString();
         emitToUser(memberIdStr, "groupMessageSeenUpdate", {
@@ -1838,8 +1861,11 @@ io.on("connection", (socket) => {
         }
 
         const userIdStr = userId.toString();
+        // 🔥 FIX: Include co-admins (admins array) in member check
         const isMember =
           group.admin.toString() === userIdStr ||
+          (group.admins &&
+            group.admins.some((a) => a.toString() === userIdStr)) ||
           group.members.some((m) => m.toString() === userIdStr);
         if (!isMember) {
           io.to(socket.id).emit("groupcall:error", {
@@ -1862,7 +1888,12 @@ io.on("connection", (socket) => {
           groupCallRooms.set(roomId, room);
 
           // If this is a new room, notify all group members about the group call
-          const allMembers = [group.admin, ...group.members];
+          // 🔥 FIX: Include co-admins (admins array)
+          const allMembers = [
+            group.admin,
+            ...(group.admins || []),
+            ...group.members,
+          ];
 
           // 🔥 Send push notifications AND socket events to all members
           for (const memberId of allMembers) {

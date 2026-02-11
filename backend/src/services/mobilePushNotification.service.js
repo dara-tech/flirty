@@ -269,14 +269,20 @@ export const sendMobilePushNotification = async (userId, payload) => {
           apns: {
             payload: {
               aps: {
+                // 🔥 iOS FIX: Include alert object for visible notifications
+                alert: {
+                  title: payload.title || "New Message",
+                  body: payload.body || "",
+                },
                 sound: "default",
                 badge: 1,
-                contentAvailable: true,
+                mutableContent: true, // Required for iOS 15+ notification extensions
                 category: "MESSAGE",
               },
             },
             headers: {
               "apns-priority": "10",
+              "apns-push-type": "alert", // 🔥 iOS 13+ requires explicit push type
             },
           },
         };
@@ -533,6 +539,8 @@ export const sendMobileGroupMessageNotification = async (
         messageData.text.length > 150
           ? messageData.text.substring(0, 150) + "..."
           : messageData.text;
+    } else if (messageData.sticker) {
+      body += "🎨 Sent a sticker";
     } else if (messageData.image && messageData.image.length > 0) {
       body += "📷 Sent a photo";
     } else if (messageData.audio && messageData.audio.length > 0) {

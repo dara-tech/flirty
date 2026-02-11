@@ -58,6 +58,16 @@ const messageSchema = new mongoose.Schema(
       type: [String], // Support multiple audio files (array)
       default: undefined,
     },
+    audioDuration: {
+      type: [Number], // Duration in seconds for each audio file (array)
+      default: undefined,
+    },
+    audioWaveform: {
+      type: [mongoose.Schema.Types.Mixed], // Waveform data - supports both:
+      // - Base64 string (compact Telegram-style, ~28 chars for 32 samples)
+      // - Array of numbers (backward compat, 32-64 amplitude values 0-100)
+      default: undefined,
+    },
     video: {
       type: [String], // Support multiple videos (array)
       default: undefined,
@@ -203,7 +213,7 @@ const messageSchema = new mongoose.Schema(
       },
     ],
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Indexes for query performance

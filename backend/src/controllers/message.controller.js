@@ -580,6 +580,8 @@ export const sendMessage = async (req, res) => {
       text,
       image,
       audio,
+      audioDuration, // Duration in seconds for voice messages
+      audioWaveform, // Waveform data (array of amplitude values 0-100)
       video,
       file,
       fileName,
@@ -633,6 +635,19 @@ export const sendMessage = async (req, res) => {
     // Normalize inputs to arrays (supports both single values and arrays for backward compatibility)
     const images = normalizeToArray(image);
     const audios = normalizeToArray(audio);
+    const audioDurations = normalizeToArray(audioDuration)
+      .map((d) => {
+        // Ensure duration is a valid number (in seconds)
+        const parsed = parseFloat(d);
+        return isNaN(parsed) ? null : Math.round(parsed);
+      })
+      .filter((d) => d !== null);
+    // Normalize audioWaveform - can be single array or array of arrays
+    const audioWaveforms = audioWaveform
+      ? Array.isArray(audioWaveform[0])
+        ? audioWaveform
+        : [audioWaveform]
+      : [];
     const videos = normalizeToArray(video);
     const files = normalizeToArray(file);
     const fileNames = normalizeToArray(fileName);
@@ -780,11 +795,14 @@ export const sendMessage = async (req, res) => {
           // Group message - verify user is member
           const Group = (await import("../model/group.model.js")).default;
           const group = await Group.findById(replyToMessage.groupId)
-            .select("admin members")
+            .select("admin admins members") // 🔥 FIX: Include admins in select
             .lean();
           if (group) {
+            // 🔥 FIX: Include co-admins (admins array) in access check
             hasAccess =
               group.admin.toString() === userIdStr ||
+              (group.admins &&
+                group.admins.some((a) => a.toString() === userIdStr)) ||
               group.members.some((m) => m.toString() === userIdStr);
           }
         } else {
@@ -860,6 +878,8 @@ export const sendMessage = async (req, res) => {
       text: text || "", // Provide empty string if no text
       image: imageUrls.length > 0 ? imageUrls : undefined,
       audio: audioUrls.length > 0 ? audioUrls : undefined,
+      audioDuration: audioDurations.length > 0 ? audioDurations : undefined,
+      audioWaveform: audioWaveforms.length > 0 ? audioWaveforms : undefined,
       video: videoUrls.length > 0 ? videoUrls : undefined,
       file: fileUrls.length > 0 ? fileUrls : undefined,
       fileName: fileNames.length > 0 ? fileNames : undefined,
@@ -958,14 +978,14 @@ export const sendMessage = async (req, res) => {
     const isSavedMessage = senderId.toString() === receiverId.toString();
 
     if (isSavedMessage) {
-      logger.debug(
-        "💾 [Push] Skipping notification for Saved Message (self-chat)",
-        {
-          requestId: req.requestId,
-          userId: senderId,
-          messageId: newMessage._id,
-        },
-      );
+      // logger.debug(
+      //   "💾 [Push] Skipping notification for Saved Message (self-chat)",
+      //   {
+      //     requestId: req.requestId,
+      //     userId: senderId,
+      //     messageId: newMessage._id,
+      //   },
+      // );
     } else {
       // Send notification only if it's NOT a saved message
       try {
@@ -1257,7 +1277,12 @@ export const editMessage = async (req, res) => {
       const group = await Group.findById(message.groupId);
 
       if (group) {
-        const allMembers = [group.admin, ...group.members];
+        // 🔥 FIX: Include co-admins (admins array)
+        const allMembers = [
+          group.admin,
+          ...(group.admins || []),
+          ...group.members,
+        ];
         // console.log( // [DEBUG - Removed for production]
         // "\n📤 [SOCKET] Emitting groupMessageEdited to ALL group members"
         // );
@@ -1516,7 +1541,12 @@ export const deleteMessage = async (req, res) => {
         const group = await Group.findById(message.groupId);
 
         if (group) {
-          const allMembers = [group.admin, ...group.members];
+          // 🔥 FIX: Include co-admins (admins array)
+          const allMembers = [
+            group.admin,
+            ...(group.admins || []),
+            ...group.members,
+          ];
           // console.log(
           //   "\n📤 [SOCKET] Emitting groupMessageDeleted to ALL group members"
           // );
@@ -1835,8 +1865,11 @@ export const pinMessage = async (req, res) => {
       if (!group) {
         return res.status(404).json({ error: "Group not found" });
       }
+      // 🔥 FIX: Include co-admins (admins array) in member check
       const isMember =
         group.admin.toString() === userId.toString() ||
+        (group.admins &&
+          group.admins.some((a) => a.toString() === userId.toString())) ||
         group.members.some((m) => m.toString() === userId.toString());
       if (!isMember) {
         return res
@@ -1902,7 +1935,12 @@ export const pinMessage = async (req, res) => {
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
-        const allMembers = [group.admin, ...group.members];
+        // 🔥 FIX: Include co-admins (admins array)
+        const allMembers = [
+          group.admin,
+          ...(group.admins || []),
+          ...group.members,
+        ];
         // console.log("\n════════════════════════════════════════"); // [DEBUG - Removed for production]
         // console.log("📌 [PIN] Group message pinned"); // [DEBUG - Removed for production]
         // console.log("════════════════════════════════════════"); // [DEBUG - Removed for production]
@@ -1971,8 +2009,11 @@ export const unpinMessage = async (req, res) => {
       if (!group) {
         return res.status(404).json({ error: "Group not found" });
       }
+      // 🔥 FIX: Include co-admins (admins array) in member check
       const isMember =
         group.admin.toString() === userId.toString() ||
+        (group.admins &&
+          group.admins.some((a) => a.toString() === userId.toString())) ||
         group.members.some((m) => m.toString() === userId.toString());
       if (!isMember) {
         return res
@@ -2001,7 +2042,12 @@ export const unpinMessage = async (req, res) => {
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
-        const allMembers = [group.admin, ...group.members];
+        // 🔥 FIX: Include co-admins (admins array)
+        const allMembers = [
+          group.admin,
+          ...(group.admins || []),
+          ...group.members,
+        ];
         const messageObj = message.toObject();
 
         // console.log("\n══════════════════════════════════════"); // [DEBUG - Removed for production]
@@ -2072,8 +2118,11 @@ export const getPinnedMessages = async (req, res) => {
         return res.status(404).json({ error: "Group not found" });
       }
 
+      // 🔥 FIX: Include co-admins (admins array) in member check
       const isMember =
         group.admin.toString() === myId.toString() ||
+        (group.admins &&
+          group.admins.some((a) => a.toString() === myId.toString())) ||
         group.members.some((m) => m.toString() === myId.toString());
       if (!isMember) {
         return res
@@ -2143,15 +2192,21 @@ export const addReaction = async (req, res) => {
 
     // Check if user is part of the conversation/group
     const Group = (await import("../model/group.model.js")).default;
-    const isParticipant =
-      message.senderId.toString() === userId.toString() ||
-      (message.receiverId &&
-        message.receiverId.toString() === userId.toString()) ||
-      (message.groupId &&
-        (await Group.exists({
-          _id: message.groupId,
-          $or: [{ admin: userId }, { members: userId }],
-        })));
+
+    const isSender = message.senderId.toString() === userId.toString();
+    const isReceiver =
+      message.receiverId && message.receiverId.toString() === userId.toString();
+    let isGroupMember = false;
+
+    if (message.groupId) {
+      // Check admin, admins (co-admins), AND members arrays
+      isGroupMember = await Group.exists({
+        _id: message.groupId,
+        $or: [{ admin: userId }, { admins: userId }, { members: userId }],
+      });
+    }
+
+    const isParticipant = isSender || isReceiver || isGroupMember;
 
     if (!isParticipant) {
       return res.status(403).json({
@@ -2209,10 +2264,15 @@ export const addReaction = async (req, res) => {
 
     // Emit socket event for real-time update
     if (message.groupId) {
-      // Group message - targeted emission to all members
+      // Group message - targeted emission to all members (admin, co-admins, members)
       const group = await Group.findById(message.groupId);
       if (group) {
-        const allMembers = [group.admin, ...group.members];
+        // Include admin, co-admins (admins array), and members
+        const allMembers = [
+          group.admin,
+          ...(group.admins || []),
+          ...group.members,
+        ];
         // console.log("\n════════════════════════════════════════");
         // console.log("😍 [REACTION] Group reaction added");
         // console.log("════════════════════════════════════════");
@@ -2292,6 +2352,7 @@ export const addReaction = async (req, res) => {
 
     res.status(200).json(message);
   } catch (error) {
+    console.error("[addReaction] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -2299,6 +2360,7 @@ export const addReaction = async (req, res) => {
 export const removeReaction = async (req, res) => {
   try {
     const { id: messageId } = req.params;
+    const { emoji } = req.body;
     const userId = req.user._id;
 
     const message = await Message.findById(messageId);
@@ -2306,11 +2368,13 @@ export const removeReaction = async (req, res) => {
       return res.status(404).json({ error: "Message not found" });
     }
 
-    // Remove user's reaction
+    // Remove user's reaction (matching both userId AND emoji if provided)
     const initialLength = message.reactions.length;
-    message.reactions = message.reactions.filter(
-      (r) => r.userId.toString() !== userId.toString(),
-    );
+    message.reactions = message.reactions.filter((r) => {
+      const matchesUser = r.userId.toString() === userId.toString();
+      const matchesEmoji = emoji ? r.emoji === emoji : true;
+      return !(matchesUser && matchesEmoji);
+    });
 
     if (message.reactions.length === initialLength) {
       return res.status(400).json({ error: "Reaction not found" });
@@ -2325,11 +2389,16 @@ export const removeReaction = async (req, res) => {
 
     // Emit socket event for real-time update
     if (message.groupId) {
-      // Group message - targeted emission to all members
+      // Group message - targeted emission to all members (admin, co-admins, members)
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
-        const allMembers = [group.admin, ...group.members];
+        // Include admin, co-admins (admins array), and members
+        const allMembers = [
+          group.admin,
+          ...(group.admins || []),
+          ...group.members,
+        ];
         // console.log("\n════════════════════════════════════════");
         // console.log("🚫 [REACTION] Group reaction removed");
         // console.log("════════════════════════════════════════");
@@ -2476,7 +2545,12 @@ export const deleteMessageMedia = async (req, res) => {
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
-        const allMembers = [group.admin, ...group.members];
+        // 🔥 FIX: Include co-admins (admins array)
+        const allMembers = [
+          group.admin,
+          ...(group.admins || []),
+          ...group.members,
+        ];
 
         // console.log("\n══════════════════════════════════════");
         // console.log("✏️ [EDIT] Group message edit (media deleted)");
@@ -2756,7 +2830,12 @@ export const deleteIndividualMediaItem = async (req, res) => {
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
-        const allMembers = [group.admin, ...group.members];
+        // 🔥 FIX: Include co-admins (admins array)
+        const allMembers = [
+          group.admin,
+          ...(group.admins || []),
+          ...group.members,
+        ];
         let onlineCount = 0;
         let offlineCount = 0;
 
@@ -2876,7 +2955,12 @@ export const markVoiceAsListened = async (req, res) => {
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
-        const allMembers = [group.admin, ...group.members];
+        // 🔥 FIX: Include co-admins (admins array)
+        const allMembers = [
+          group.admin,
+          ...(group.admins || []),
+          ...group.members,
+        ];
 
         // console.log("\n══════════════════════════════════════");
         // console.log("🎤👂 [VOICE] Voice message listened");
@@ -3100,8 +3184,11 @@ export const searchMessages = async (req, res) => {
 
       // ✅ SECURITY: Verify user is a member of the group
       const userIdStr = userId.toString();
+      // 🔥 FIX: Include co-admins (admins array) in participant check
       isParticipant =
         group.admin.toString() === userIdStr ||
+        (group.admins &&
+          group.admins.some((a) => a.toString() === userIdStr)) ||
         group.members.some((m) => m.toString() === userIdStr);
 
       if (!isParticipant) {
@@ -3287,8 +3374,11 @@ export const getMessagesAround = async (req, res) => {
 
       // Verify user is a member
       const userIdStr = userId.toString();
+      // 🔥 FIX: Include co-admins (admins array) in participant check
       isParticipant =
         group.admin.toString() === userIdStr ||
+        (group.admins &&
+          group.admins.some((a) => a.toString() === userIdStr)) ||
         group.members.some((m) => m.toString() === userIdStr);
 
       if (!isParticipant) {

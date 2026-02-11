@@ -528,6 +528,8 @@ export const sendGroupMessage = async (req, res) => {
       text,
       image,
       audio,
+      audioDuration, // Duration in seconds for voice messages
+      audioWaveform, // Waveform data for voice message visualization
       video,
       file,
       fileName,
@@ -557,6 +559,19 @@ export const sendGroupMessage = async (req, res) => {
     // Normalize inputs to arrays (supports both single values and arrays for backward compatibility)
     const images = normalizeToArray(image);
     const audios = normalizeToArray(audio);
+    const audioDurations = normalizeToArray(audioDuration)
+      .map((d) => {
+        // Ensure duration is a valid number (in seconds)
+        const parsed = parseFloat(d);
+        return isNaN(parsed) ? null : Math.round(parsed);
+      })
+      .filter((d) => d !== null);
+    // Normalize waveform data (array of arrays for multiple audio files)
+    const audioWaveforms = audioWaveform
+      ? Array.isArray(audioWaveform[0])
+        ? audioWaveform
+        : [audioWaveform]
+      : [];
     const videos = normalizeToArray(video);
     const files = normalizeToArray(file);
     const fileNames = normalizeToArray(fileName);
@@ -680,6 +695,8 @@ export const sendGroupMessage = async (req, res) => {
       text: text || "",
       image: imageUrls.length > 0 ? imageUrls : undefined,
       audio: audioUrls.length > 0 ? audioUrls : undefined,
+      audioDuration: audioDurations.length > 0 ? audioDurations : undefined,
+      audioWaveform: audioWaveforms.length > 0 ? audioWaveforms : undefined,
       video: videoUrls.length > 0 ? videoUrls : undefined,
       file: fileUrls.length > 0 ? fileUrls : undefined,
       fileName: fileNames.length > 0 ? fileNames : undefined,
@@ -712,8 +729,9 @@ export const sendGroupMessage = async (req, res) => {
     // Convert Mongoose document to plain object for socket emit
     const messageObj = newMessage.toObject ? newMessage.toObject() : newMessage;
 
-    // Prepare list of all group members (admin + members)
-    const allMembers = [group.admin, ...group.members];
+    // Prepare list of all group members (admin + co-admins + members)
+    // 🔥 FIX: Include co-admins (admins array) in group message broadcast
+    const allMembers = [group.admin, ...(group.admins || []), ...group.members];
 
     // console.log("\n📤 [SOCKET] Emitting newMessage to group members");
     // console.log("   ├─ Event: 'newMessage' (same as personal)");
@@ -867,9 +885,10 @@ export const getGroupLastMessages = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    // Get all groups user is part of
+    // Get all groups user is part of (including co-admins)
+    // 🔥 FIX: Include 'admins' array to check if user is a co-admin
     const groups = await Group.find({
-      $or: [{ admin: userId }, { members: userId }],
+      $or: [{ admin: userId }, { admins: userId }, { members: userId }],
     }).select("_id");
 
     const groupIds = groups.map((g) => g._id);
@@ -1028,13 +1047,15 @@ export const updateGroupInfo = async (req, res) => {
 
     await group.save();
     await group.populate("admin", "fullname profilePic");
+    await group.populate("admins", "fullname profilePic"); // Include co-admins
     await group.populate("members", "fullname profilePic");
 
     // Notify all members via socket (targeted)
     // console.log("\n════════════════════════════════════════");
     // console.log("ℹ️ [GROUP] Group info updated:", group.name);
     // console.log("════════════════════════════════════════");
-    const allMembers = [group.admin, ...group.members];
+    // 🔥 FIX: Include co-admins (admins array)
+    const allMembers = [group.admin, ...(group.admins || []), ...group.members];
     let notifiedCount = 0;
     allMembers.forEach((memberId) => {
       const memberIdStr = memberId._id
