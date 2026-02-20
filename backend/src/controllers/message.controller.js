@@ -1792,11 +1792,22 @@ export const pinMessage = async (req, res) => {
     const pinStatusText = `📌 ${pinnedByUserName} pinned ${messageType}`;
 
     // Create system message
+    // ✅ CRITICAL FIX: For personal chats, receiverId must be the OTHER participant.
+    // If the pinner IS the original receiver, we need to send TO the original sender.
+    // Without this, both senderId and receiverId would be the same user when the
+    // receiver pins → _isRelevantMessage filters it out → notification never shows.
+    const pinNotificationReceiverId = message.groupId
+      ? null
+      : message.senderId.toString() === userId.toString()
+        ? message.receiverId // Pinner is sender → send to receiver
+        : message.senderId; // Pinner is receiver → send to sender
+
     const pinStatusMessage = new Message({
       senderId: userId,
-      receiverId: message.groupId ? null : message.receiverId,
+      receiverId: pinNotificationReceiverId,
       groupId: message.groupId || null,
       text: pinStatusText,
+      replyTo: messageId, // Reference to the exact pinned message for tap-to-scroll
     });
 
     await pinStatusMessage.save();
@@ -1820,14 +1831,14 @@ export const pinMessage = async (req, res) => {
         // console.log("📌 [PIN] Group message pinned"); // [DEBUG - Removed for production]
         // console.log("════════════════════════════════════════"); // [DEBUG - Removed for production]
         // ✅ BUG FIX: Use emitToUser for multi-device support
-        const pinPayload = {
-          message: message.toObject(),
-          groupId: message.groupId,
-        };
+        // ✅ CRITICAL FIX: Emit FLAT message payload (same as personal chat).
+        // Previously sent WRAPPED { message: {...}, groupId, memberId } which
+        // caused Flutter to read eventData['_id'] as null → no UI update.
+        const msgObj = message.toObject();
         const pinMsgPayload = pinStatusMessage.toObject();
         allMembers.forEach((memberId) => {
           const mId = memberId.toString();
-          emitToUser(mId, "messagePinned", { ...pinPayload, memberId: mId });
+          emitToUser(mId, "messagePinned", msgObj);
           emitToUser(mId, "newMessage", pinMsgPayload);
         });
         // console.log("✅ Notified", notifiedCount, "members ⚡"); // [DEBUG - Removed for production]
@@ -1835,12 +1846,19 @@ export const pinMessage = async (req, res) => {
       }
     } else {
       // ✅ BUG FIX: Use emitToUser for multi-device support
+      // ✅ SAFETY: Extract _id from populated objects to avoid [object Object]
       const msgObj = message.toObject();
       const pinMsgObj = pinStatusMessage.toObject();
-      emitToUser(message.receiverId.toString(), "messagePinned", msgObj);
-      emitToUser(message.receiverId.toString(), "newMessage", pinMsgObj);
-      emitToUser(message.senderId.toString(), "messagePinned", msgObj);
-      emitToUser(message.senderId.toString(), "newMessage", pinMsgObj);
+      const receiverIdStr = message.receiverId?._id
+        ? message.receiverId._id.toString()
+        : message.receiverId.toString();
+      const senderIdStr = message.senderId?._id
+        ? message.senderId._id.toString()
+        : message.senderId.toString();
+      emitToUser(receiverIdStr, "messagePinned", msgObj);
+      emitToUser(receiverIdStr, "newMessage", pinMsgObj);
+      emitToUser(senderIdStr, "messagePinned", msgObj);
+      emitToUser(senderIdStr, "newMessage", pinMsgObj);
     }
 
     res.status(200).json(message);
@@ -1899,10 +1917,27 @@ export const unpinMessage = async (req, res) => {
     message.pinnedBy = null;
     await message.save();
 
+    // 📌 Delete pin notification message(s) from the database.
+    // These are the system messages ("📌 User pinned a photo") created by pinMessage.
+    // Uses deleteMany to clean up duplicates from previous pin/unpin cycles.
+    // The IDs are included in the socket payload so clients can remove them from UI.
+    const pinNotifications = await Message.find({
+      replyTo: messageId,
+      text: { $regex: /^📌/ },
+    })
+      .select("_id")
+      .lean();
+    const pinNotificationIds = pinNotifications.map((n) => n._id.toString());
+    if (pinNotificationIds.length > 0) {
+      await Message.deleteMany({
+        _id: { $in: pinNotifications.map((n) => n._id) },
+      });
+    }
+
     await message.populate("senderId", "fullname profilePic");
     await message.populate("receiverId", "fullname profilePic");
 
-    // Emit socket event
+    // Emit socket event (include pinNotificationIds so clients remove them from UI)
     if (message.groupId) {
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
@@ -1913,7 +1948,7 @@ export const unpinMessage = async (req, res) => {
           ...(group.admins || []),
           ...group.members,
         ];
-        const messageObj = message.toObject();
+        const messageObj = { ...message.toObject(), pinNotificationIds };
 
         // console.log("\n══════════════════════════════════════"); // [DEBUG - Removed for production]
         // console.log("📌❌ [UNPIN] Group message unpin"); // [DEBUG - Removed for production]
@@ -1935,9 +1970,16 @@ export const unpinMessage = async (req, res) => {
       }
     } else {
       // ✅ BUG FIX: Use emitToUser for multi-device support
-      const msgObj = message.toObject();
-      emitToUser(message.receiverId.toString(), "messageUnpinned", msgObj);
-      emitToUser(message.senderId.toString(), "messageUnpinned", msgObj);
+      // ✅ SAFETY: Extract _id from populated objects to avoid [object Object]
+      const msgObj = { ...message.toObject(), pinNotificationIds };
+      const receiverIdStr = message.receiverId?._id
+        ? message.receiverId._id.toString()
+        : message.receiverId.toString();
+      const senderIdStr = message.senderId?._id
+        ? message.senderId._id.toString()
+        : message.senderId.toString();
+      emitToUser(receiverIdStr, "messageUnpinned", msgObj);
+      emitToUser(senderIdStr, "messageUnpinned", msgObj);
     }
 
     res.status(200).json(message);
