@@ -1,6 +1,7 @@
 import { generateToken } from "../lib/utils.js";
 import { AuthService } from "../services/auth.service.js";
 import { asyncHandler } from "../middleware/error.middleware.js";
+import { io } from "../lib/socket.js";
 
 // Signup controller
 export const signup = asyncHandler(async (req, res) => {
@@ -135,9 +136,19 @@ export const updateProfile = asyncHandler(async (req, res) => {
     });
   }
 
+  // ── Telegram-like: broadcast profile change to ALL connected clients ──
+  // Every online user receives this event so their chat list UI updates
+  // the name / avatar of this user in real time — no refresh needed.
+  const userPayload = AuthService.formatUserResponse(updatedUser);
+  io.emit("profileUpdated", {
+    userId: userId.toString(),
+    fullname: userPayload.fullname,
+    profilePic: userPayload.profilePic,
+  });
+
   res.status(200).json({
     success: true,
-    data: AuthService.formatUserResponse(updatedUser),
+    data: userPayload,
   });
 });
 
@@ -187,7 +198,7 @@ export const changePassword = asyncHandler(async (req, res) => {
   // Verify current password
   const isMatch = await AuthService.verifyPassword(
     currentPassword,
-    user.password
+    user.password,
   );
   if (!isMatch) {
     return res.status(401).json({

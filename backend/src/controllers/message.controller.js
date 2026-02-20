@@ -1,6 +1,11 @@
 import User from "../model/user.model.js";
 import Message from "../model/message.model.js";
-import { getReceiverSocketId, io } from "../lib/socket.js";
+import {
+  getReceiverSocketId,
+  getReceiverSocketIds,
+  io,
+  emitToUser,
+} from "../lib/socket.js";
 import { toPlainObject } from "../lib/utils.js";
 import logger from "../lib/logger.js";
 import { paginatedResponse } from "../lib/apiResponse.js";
@@ -952,118 +957,71 @@ export const sendMessage = async (req, res) => {
     // Convert Mongoose document to plain object for socket emit
     const messageObj = newMessage.toObject ? newMessage.toObject() : newMessage;
 
-    // Emit to both sender and receiver for real-time updates
-    const receiverSocketId = getReceiverSocketId(receiverId);
-    // console.log("🔍 [SOCKET EMIT] Looking up receiver socket:", {
-    //   receiverId,
-    //   receiverSocketId,
-    //   found: !!receiverSocketId,
-    // });
-    if (receiverSocketId) {
-      io.to(receiverSocketId).emit("newMessage", messageObj);
-      // console.log("📤 [SOCKET EMIT] Emitted newMessage to receiver:", {
-      //   receiverId,
-      //   socketId: receiverSocketId,
-      //   messageId: newMessage._id,
-      // });
-    }
+    // ✅ CRITICAL FIX: Emit to BOTH sender and receiver BEFORE push notification
+    // The sender MUST receive "newMessage" before any "messageSeenUpdate" event.
+    // Previously, push notification handling (await) delayed sender emit by 100-2000ms,
+    // allowing the receiver to emit "messageSeen" → backend emits "messageSeenUpdate"
+    // to sender BEFORE the sender received "newMessage". This race condition caused
+    // the sender's read receipt to be permanently stuck on single-check (✓).
+    emitToUser(receiverId, "newMessage", messageObj);
+    emitToUser(senderId.toString(), "newMessage", messageObj);
 
-    // Always attempt to send push notification (even if user is online)
-    // The frontend will suppress duplicate notifications if user is viewing the chat
-    // This ensures notifications work when app is closed or in background
-
-    // ✅ BEST PRACTICE: Skip notification for "Saved Messages" (messages to self)
-    // When user sends message to their own account, don't trigger alert notification
-    // This prevents annoying self-notifications like Telegram's "Saved Messages" feature
+    // ✅ BEST PRACTICE: Fire-and-forget push notification (non-blocking)
+    // Push notifications should NOT delay the Socket.IO event flow
     const isSavedMessage = senderId.toString() === receiverId.toString();
 
-    if (isSavedMessage) {
-      // logger.debug(
-      //   "💾 [Push] Skipping notification for Saved Message (self-chat)",
-      //   {
-      //     requestId: req.requestId,
-      //     userId: senderId,
-      //     messageId: newMessage._id,
-      //   },
-      // );
-    } else {
-      // Send notification only if it's NOT a saved message
-      try {
-        // Try mobile push first (FCM/APNs for iOS/Android apps)
-        const mobilePushResult = await sendMobileMessageNotification(
-          receiverId,
-          messageObj,
-        );
-
-        if (mobilePushResult.success) {
-          logger.info("✅ [Push] Mobile notification sent", {
-            requestId: req.requestId,
-            receiverId,
-            messageId: newMessage._id,
-            sent: mobilePushResult.sent,
-            failed: mobilePushResult.failed,
-            total: mobilePushResult.total,
-            userOnline: !!receiverSocketId,
-          });
-        } else {
-          logger.debug(
-            `⚠️ [Push] Mobile push failed: ${mobilePushResult.error}, trying web push`,
-            {
-              requestId: req.requestId,
-              receiverId,
-            },
-          );
-
-          // Fallback to web push (for web browsers)
-          const pushResult = await sendMessageNotification(
+    if (!isSavedMessage) {
+      // Fire-and-forget: Don't await push notification
+      (async () => {
+        try {
+          const mobilePushResult = await sendMobileMessageNotification(
             receiverId,
             messageObj,
           );
 
-          if (pushResult.success) {
-            logger.info("✅ [Push] Web notification sent", {
+          if (mobilePushResult.success) {
+            logger.info("✅ [Push] Mobile notification sent", {
               requestId: req.requestId,
               receiverId,
               messageId: newMessage._id,
-              sent: pushResult.sent,
-              failed: pushResult.failed,
-              total: pushResult.total,
-              userOnline: !!receiverSocketId,
+              sent: mobilePushResult.sent,
+              failed: mobilePushResult.failed,
+              total: mobilePushResult.total,
             });
           } else {
             logger.debug(
-              `⚠️ [Push] No notifications sent: ${pushResult.error}`,
+              `⚠️ [Push] Mobile push failed: ${mobilePushResult.error}, trying web push`,
               {
                 requestId: req.requestId,
                 receiverId,
-                messageId: newMessage._id,
-                userOnline: !!receiverSocketId,
               },
             );
+
+            const pushResult = await sendMessageNotification(
+              receiverId,
+              messageObj,
+            );
+
+            if (pushResult.success) {
+              logger.info("✅ [Push] Web notification sent", {
+                requestId: req.requestId,
+                receiverId,
+                messageId: newMessage._id,
+                sent: pushResult.sent,
+                failed: pushResult.failed,
+                total: pushResult.total,
+              });
+            }
           }
+        } catch (pushError) {
+          logger.error("❌ [Push] Failed to send push notification:", {
+            error: pushError.message,
+            stack: pushError.stack,
+            receiverId,
+            messageId: newMessage._id,
+          });
         }
-      } catch (pushError) {
-        logger.error("❌ [Push] Failed to send push notification:", {
-          error: pushError.message,
-          stack: pushError.stack,
-          receiverId,
-          messageId: newMessage._id,
-          type: pushError.constructor.name,
-        });
-        // Don't fail the request if push notification fails
-      }
-    } // End of isSavedMessage check
-
-    // Also emit to sender so they see their own message in real-time
-    const senderSocketId = getReceiverSocketId(senderId.toString());
-
-    if (senderSocketId) {
-      io.to(senderSocketId).emit("newMessage", messageObj);
-    } else {
-      console.log(
-        "❌ [SOCKET EMIT] Sender socket NOT FOUND:",
-        senderId.toString(),
-      );
+      })();
     }
 
     res.status(201).json(newMessage);
@@ -1229,33 +1187,11 @@ export const editMessage = async (req, res) => {
           ? message.receiverId._id.toString()
           : message.receiverId.toString();
 
-      const receiverSocketId = getReceiverSocketId(receiverIdStr);
-      // console.log(`📝 Editing message ${messageId}:`);
-      // console.log(`   Sender: ${userId.toString()}`);
-      // console.log(`   Receiver: ${receiverIdStr}`);
-      // console.log(`   Receiver socket: ${receiverSocketId || "OFFLINE"}`);
-      // console.log(`   New text: "${text.trim()}"`);
-
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("messageEdited", messageObj);
-        // console.log( // [DEBUG - Removed for production]
-        // `✅ Emitted messageEdited to receiver: ${receiverSocketId}`
-        // );
-      } else {
-        // console.log(`⚠️ Receiver ${receiverIdStr} is offline`); // [DEBUG - Removed for production]
-      }
-
-      // Also notify sender
       const senderIdStr = userId.toString();
-      const senderSocketId = getReceiverSocketId(senderIdStr);
-      // console.log(`   Sender socket: ${senderSocketId || "OFFLINE"}`);
 
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messageEdited", messageObj);
-        // console.log(`✅ Emitted messageEdited to sender: ${senderSocketId}`); // [DEBUG - Removed for production]
-      } else {
-        // console.log(`⚠️ Sender ${senderIdStr} socket not found`); // [DEBUG - Removed for production]
-      }
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      emitToUser(receiverIdStr, "messageEdited", messageObj);
+      emitToUser(senderIdStr, "messageEdited", messageObj);
     } else if (message.groupId) {
       // Group message - notify all group members
       const groupIdStr = message.groupId.toString();
@@ -1288,22 +1224,9 @@ export const editMessage = async (req, res) => {
         // );
         // console.log("   └─ Total members:", allMembers.length); // [DEBUG - Removed for production]
 
-        let onlineCount = 0;
-        let offlineCount = 0;
-
+        // ✅ BUG FIX: Use emitToUser for multi-device support
         allMembers.forEach((memberId) => {
-          const memberIdStr = memberId.toString();
-          const memberSocketId = getReceiverSocketId(memberIdStr);
-
-          if (memberSocketId) {
-            // FIXED: Targeted emission instead of broadcast
-            io.to(memberSocketId).emit("groupMessageEdited", messageObj);
-            // console.log("   ✅ Emitted to member:", memberIdStr, "(online)");
-            onlineCount++;
-          } else {
-            // console.log("   ⚠️ Member offline:", memberIdStr);
-            offlineCount++;
-          }
+          emitToUser(memberId.toString(), "groupMessageEdited", messageObj);
         });
 
         // console.log(
@@ -1480,49 +1403,23 @@ export const deleteMessage = async (req, res) => {
         // console.log("   └─ receiverId:", receiverIdStr);
         // console.log("\n📤 [SOCKET] Emitting messageDeleted to BOTH users");
 
-        const receiverSocketId = getReceiverSocketId(receiverIdStr);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("messageDeleted", {
-            messageId: messageIdStr,
-            senderId: userId.toString(),
-            receiverId: receiverIdStr,
-            deleteType: "forEveryone",
-            newLastMessage: newLastMessage, // Send new last message if exists
-            conversationDeleted: !newLastMessage, // Flag if conversation is now empty
-          });
-          // console.log("   ✅ Emitted to RECEIVER:", receiverIdStr); // [DEBUG - Removed for production]
-          // console.log("      └─ socketId:", receiverSocketId); // [DEBUG - Removed for production]
-        } else {
-          // console.log( // [DEBUG - Removed for production]
-          // "⚠️ [SOCKET] Receiver not connected (offline):",
-          // receiverIdStr
-          // );
-        }
+        // ✅ BUG FIX: Use emitToUser for multi-device support
+        const deletePayload = {
+          messageId: messageIdStr,
+          senderId: userId.toString(),
+          receiverId: receiverIdStr,
+          deleteType: "forEveryone",
+          newLastMessage: newLastMessage,
+          conversationDeleted: !newLastMessage,
+        };
+        emitToUser(receiverIdStr, "messageDeleted", deletePayload);
 
         // Also notify sender
         const senderIdStr = userId.toString();
-        const senderSocketId = getReceiverSocketId(senderIdStr);
-        if (senderSocketId) {
-          io.to(senderSocketId).emit("messageDeleted", {
-            messageId: messageIdStr,
-            senderId: senderIdStr,
-            receiverId: receiverIdStr,
-            deleteType: "forEveryone",
-            newLastMessage: newLastMessage, // Send new last message if exists
-            conversationDeleted: !newLastMessage, // Flag if conversation is now empty
-          });
-          // console.log("   ✅ Emitted to SENDER (owner):", senderIdStr);
-          // console.log("      └─ socketId:", senderSocketId);
-          // console.log(
-          //   "\n✅ [DELETE] Message deleted for BOTH users in real-time"
-          // );
-          // console.log("   ├─ Receiver sees deletion: YES ✅");
-          // console.log("   ├─ Sender sees deletion: YES ✅");
-          // console.log("   └─ No refresh needed: 0ms latency ⚡");
-          // console.log("════════════════════════════════════════\n");
-        } else {
-          // console.log("⚠️ [SOCKET] Sender not connected:", senderIdStr); // [DEBUG - Removed for production]
-        }
+        emitToUser(senderIdStr, "messageDeleted", {
+          ...deletePayload,
+          senderId: senderIdStr,
+        });
       } else if (message.groupId) {
         // Group message - notify all group members
         const messageIdStr = messageId.toString();
@@ -1555,24 +1452,19 @@ export const deleteMessage = async (req, res) => {
           let onlineCount = 0;
           let offlineCount = 0;
 
+          // ✅ BUG FIX: Use emitToUser for multi-device support
+          const deleteGroupPayload = {
+            messageId: messageIdStr,
+            senderId: senderIdStr,
+            groupId: groupIdStr,
+            deleteType: "forEveryone",
+          };
           allMembers.forEach((memberId) => {
-            const memberIdStr = memberId.toString();
-            const memberSocketId = getReceiverSocketId(memberIdStr);
-
-            if (memberSocketId) {
-              // Targeted emission to specific member
-              io.to(memberSocketId).emit("groupMessageDeleted", {
-                messageId: messageIdStr,
-                senderId: senderIdStr,
-                groupId: groupIdStr,
-                deleteType: "forEveryone",
-              });
-              // console.log("   ✅ Emitted to member:", memberIdStr, "(online)"); // [DEBUG - Removed for production]
-              onlineCount++;
-            } else {
-              // console.log("   ⚠️ Member offline:", memberIdStr);
-              offlineCount++;
-            }
+            emitToUser(
+              memberId.toString(),
+              "groupMessageDeleted",
+              deleteGroupPayload,
+            );
           });
 
           // console.log(
@@ -1596,21 +1488,19 @@ export const deleteMessage = async (req, res) => {
     } else {
       // Delete for me - just notify the user's client
       const messageIdStr = messageId.toString();
-      const userSocketId = getReceiverSocketId(userId);
-      if (userSocketId) {
-        if (message.receiverId) {
-          io.to(userSocketId).emit("messageDeleted", {
-            messageId: messageIdStr,
-            deleteType: "forMe",
-          });
-        } else if (message.groupId) {
-          io.to(userSocketId).emit("groupMessageDeleted", {
-            messageId: messageIdStr,
-            groupId: message.groupId,
-            memberId: userId.toString(),
-            deleteType: "forMe",
-          });
-        }
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      if (message.receiverId) {
+        emitToUser(userId, "messageDeleted", {
+          messageId: messageIdStr,
+          deleteType: "forMe",
+        });
+      } else if (message.groupId) {
+        emitToUser(userId, "groupMessageDeleted", {
+          messageId: messageIdStr,
+          groupId: message.groupId,
+          memberId: userId.toString(),
+          deleteType: "forMe",
+        });
       }
     }
 
@@ -1692,17 +1582,11 @@ export const updateMessageImage = async (req, res) => {
           ? message.receiverId._id.toString()
           : message.receiverId.toString();
 
-      const receiverSocketId = getReceiverSocketId(receiverIdStr);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("messageEdited", messageObj);
-      }
-
-      // Also notify sender
       const senderIdStr = userId.toString();
-      const senderSocketId = getReceiverSocketId(senderIdStr);
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messageEdited", messageObj);
-      }
+
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      emitToUser(receiverIdStr, "messageEdited", messageObj);
+      emitToUser(senderIdStr, "messageEdited", messageObj);
     }
     // Note: Group message edit handled above with comprehensive logging
 
@@ -1741,31 +1625,22 @@ export const deleteConversation = async (req, res) => {
       });
 
       // Emit socket event to notify both users with normalized IDs
-      const otherUserSocketId = getReceiverSocketId(otherUserIdStr);
-      if (otherUserSocketId) {
-        io.to(otherUserSocketId).emit("conversationDeleted", {
-          userId: myIdStr,
-          deleteType: "forEveryone",
-        });
-      }
-
-      const mySocketId = getReceiverSocketId(myIdStr);
-      if (mySocketId) {
-        io.to(mySocketId).emit("conversationDeleted", {
-          userId: otherUserIdStr,
-          deleteType: "forEveryone",
-        });
-      }
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      emitToUser(otherUserIdStr, "conversationDeleted", {
+        userId: myIdStr,
+        deleteType: "forEveryone",
+      });
+      emitToUser(myIdStr, "conversationDeleted", {
+        userId: otherUserIdStr,
+        deleteType: "forEveryone",
+      });
     } else {
       // Delete for me - just notify the user's client (no database changes)
-      // The frontend will handle filtering this conversation from the user's view
-      const mySocketId = getReceiverSocketId(myIdStr);
-      if (mySocketId) {
-        io.to(mySocketId).emit("conversationDeleted", {
-          userId: otherUserIdStr,
-          deleteType: "forMe",
-        });
-      }
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      emitToUser(myIdStr, "conversationDeleted", {
+        userId: otherUserIdStr,
+        deleteType: "forMe",
+      });
 
       result.deletedCount = 0; // No messages deleted from database
     }
@@ -1944,38 +1819,28 @@ export const pinMessage = async (req, res) => {
         // console.log("\n════════════════════════════════════════"); // [DEBUG - Removed for production]
         // console.log("📌 [PIN] Group message pinned"); // [DEBUG - Removed for production]
         // console.log("════════════════════════════════════════"); // [DEBUG - Removed for production]
-        let notifiedCount = 0;
+        // ✅ BUG FIX: Use emitToUser for multi-device support
+        const pinPayload = {
+          message: message.toObject(),
+          groupId: message.groupId,
+        };
+        const pinMsgPayload = pinStatusMessage.toObject();
         allMembers.forEach((memberId) => {
-          const memberSocketId = getReceiverSocketId(memberId.toString());
-          if (memberSocketId) {
-            io.to(memberSocketId).emit("messagePinned", {
-              message: message.toObject(),
-              groupId: message.groupId,
-              memberId: memberId.toString(),
-            });
-            io.to(memberSocketId).emit(
-              "newMessage",
-              pinStatusMessage.toObject(),
-            );
-            notifiedCount++;
-          }
+          const mId = memberId.toString();
+          emitToUser(mId, "messagePinned", { ...pinPayload, memberId: mId });
+          emitToUser(mId, "newMessage", pinMsgPayload);
         });
         // console.log("✅ Notified", notifiedCount, "members ⚡"); // [DEBUG - Removed for production]
         // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
-      const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString(),
-      );
-      const senderSocketId = getReceiverSocketId(message.senderId.toString());
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("messagePinned", message.toObject());
-        io.to(receiverSocketId).emit("newMessage", pinStatusMessage.toObject());
-      }
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messagePinned", message.toObject());
-        io.to(senderSocketId).emit("newMessage", pinStatusMessage.toObject());
-      }
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      const msgObj = message.toObject();
+      const pinMsgObj = pinStatusMessage.toObject();
+      emitToUser(message.receiverId.toString(), "messagePinned", msgObj);
+      emitToUser(message.receiverId.toString(), "newMessage", pinMsgObj);
+      emitToUser(message.senderId.toString(), "messagePinned", msgObj);
+      emitToUser(message.senderId.toString(), "newMessage", pinMsgObj);
     }
 
     res.status(200).json(message);
@@ -2059,17 +1924,9 @@ export const unpinMessage = async (req, res) => {
         // console.log("   └─ groupId:", message.groupId.toString()); // [DEBUG - Removed for production]
         // console.log("\n📤 [SOCKET] Emitting to members"); // [DEBUG - Removed for production]
 
-        let onlineCount = 0;
-        let offlineCount = 0;
-
+        // ✅ BUG FIX: Use emitToUser for multi-device support
         allMembers.forEach((memberId) => {
-          const memberSocketId = getReceiverSocketId(memberId.toString());
-          if (memberSocketId) {
-            io.to(memberSocketId).emit("messageUnpinned", messageObj);
-            onlineCount++;
-          } else {
-            offlineCount++;
-          }
+          emitToUser(memberId.toString(), "messageUnpinned", messageObj);
         });
 
         // console.log("✅ Notified", onlineCount, "online members ⚡"); // [DEBUG - Removed for production]
@@ -2077,16 +1934,10 @@ export const unpinMessage = async (req, res) => {
         // console.log("══════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
-      const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString(),
-      );
-      const senderSocketId = getReceiverSocketId(message.senderId.toString());
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("messageUnpinned", message.toObject());
-      }
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messageUnpinned", message.toObject());
-      }
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      const msgObj = message.toObject();
+      emitToUser(message.receiverId.toString(), "messageUnpinned", msgObj);
+      emitToUser(message.senderId.toString(), "messageUnpinned", msgObj);
     }
 
     res.status(200).json(message);
@@ -2282,13 +2133,13 @@ export const addReaction = async (req, res) => {
         // console.log("   ├─ emoji:", emoji);
         // console.log("   └─ groupId:", message.groupId.toString());
 
-        let onlineCount = 0;
+        // ✅ BUG FIX: Use emitToUser for multi-device support + correct group event name
         allMembers.forEach((memberId) => {
-          const memberSocketId = getReceiverSocketId(memberId.toString());
-          if (memberSocketId) {
-            io.to(memberSocketId).emit("messageReactionAdded", messageObj);
-            onlineCount++;
-          }
+          emitToUser(
+            memberId.toString(),
+            "groupMessageReactionAdded",
+            messageObj,
+          );
         });
 
         // console.log( // [DEBUG - Removed for production]
@@ -2327,26 +2178,11 @@ export const addReaction = async (req, res) => {
       // console.log("   ├─ senderIdStr:", senderIdStr);
       // console.log("   └─ receiverIdStr:", receiverIdStr);
 
-      const receiverSocketId = getReceiverSocketId(receiverIdStr);
-      const senderSocketId = getReceiverSocketId(senderIdStr);
+      // ✅ BUG FIX: Use emitToUser to send to ALL devices (multi-device support)
+      emitToUser(receiverIdStr, "messageReactionAdded", messageObj);
+      emitToUser(senderIdStr, "messageReactionAdded", messageObj);
 
-      // console.log("🔍 Socket IDs:");
-      // console.log("   ├─ receiverSocketId:", receiverSocketId || "❌ OFFLINE");
-      // console.log("   └─ senderSocketId:", senderSocketId || "❌ OFFLINE");
-
-      let emitCount = 0;
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("messageReactionAdded", messageObj);
-        // console.log("   ├─ ✅ Emitted to receiver");
-        emitCount++;
-      }
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messageReactionAdded", messageObj);
-        // console.log("   ├─ ✅ Emitted to sender");
-        emitCount++;
-      }
-
-      // console.log("✅ [REACTION] Emitted to", emitCount, "online users ⚡");
+      // console.log("✅ [REACTION] Emitted to online users ⚡");
       // console.log("════════════════════════════════════════\n");
     }
 
@@ -2407,21 +2243,14 @@ export const removeReaction = async (req, res) => {
         // console.log("   ├─ userId:", userId.toString());
         // console.log("   └─ groupId:", message.groupId.toString());
 
-        let onlineCount = 0;
+        // ✅ BUG FIX: Use emitToUser for multi-device support + correct group event name
         allMembers.forEach((memberId) => {
-          const memberSocketId = getReceiverSocketId(memberId.toString());
-          if (memberSocketId) {
-            io.to(memberSocketId).emit("messageReactionRemoved", messageObj);
-            onlineCount++;
-          }
+          emitToUser(
+            memberId.toString(),
+            "groupMessageReactionRemoved",
+            messageObj,
+          );
         });
-
-        // console.log( // [DEBUG - Removed for production]
-        // "✅ [REACTION] Emitted to",
-        // onlineCount,
-        // "online members ⚡"
-        // );
-        // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
       }
     } else {
       // Personal message - emit to sender and receiver
@@ -2440,27 +2269,9 @@ export const removeReaction = async (req, res) => {
         ? message.receiverId._id.toString()
         : message.receiverId.toString();
 
-      const receiverSocketId = getReceiverSocketId(receiverIdStr);
-      const senderSocketId = getReceiverSocketId(senderIdStr);
-
-      // console.log("🔍 Socket IDs:"); // [DEBUG - Removed for production]
-      // console.log("   ├─ receiverSocketId:", receiverSocketId || "❌ OFFLINE"); // [DEBUG - Removed for production]
-      // console.log("   └─ senderSocketId:", senderSocketId || "❌ OFFLINE"); // [DEBUG - Removed for production]
-
-      let emitCount = 0;
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("messageReactionRemoved", messageObj);
-        // console.log("   ├─ ✅ Emitted to receiver"); // [DEBUG - Removed for production]
-        emitCount++;
-      }
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messageReactionRemoved", messageObj);
-        // console.log("   ├─ ✅ Emitted to sender"); // [DEBUG - Removed for production]
-        emitCount++;
-      }
-
-      // console.log("✅ [REACTION] Emitted to", emitCount, "online users ⚡"); // [DEBUG - Removed for production]
-      // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      emitToUser(receiverIdStr, "messageReactionRemoved", messageObj);
+      emitToUser(senderIdStr, "messageReactionRemoved", messageObj);
     }
 
     res.status(200).json(message);
@@ -2561,34 +2372,18 @@ export const deleteMessageMedia = async (req, res) => {
         // console.log("   └─ groupId:", message.groupId.toString());
         // console.log("\n📤 [SOCKET] Emitting to members");
 
-        let onlineCount = 0;
-        let offlineCount = 0;
-
+        // ✅ BUG FIX: Use emitToUser for multi-device support
         allMembers.forEach((memberId) => {
-          const memberSocketId = getReceiverSocketId(memberId.toString());
-          if (memberSocketId) {
-            io.to(memberSocketId).emit("groupMessageEdited", messageObj);
-            onlineCount++;
-          } else {
-            offlineCount++;
-          }
+          emitToUser(memberId.toString(), "groupMessageEdited", messageObj);
         });
 
-        // console.log("✅ Notified", onlineCount, "online members ⚡");
-        // console.log("⚫ Skipped", offlineCount, "offline members");
+        // console.log("✅ Notified online members ⚡");
         // console.log("══════════════════════════════════════\n");
       }
     } else {
-      const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString(),
-      );
-      const senderSocketId = getReceiverSocketId(message.senderId.toString());
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("messageEdited", messageObj);
-      }
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messageEdited", messageObj);
-      }
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      emitToUser(message.receiverId.toString(), "messageEdited", messageObj);
+      emitToUser(message.senderId.toString(), "messageEdited", messageObj);
     }
 
     res
@@ -2836,41 +2631,15 @@ export const deleteIndividualMediaItem = async (req, res) => {
           ...(group.admins || []),
           ...group.members,
         ];
-        let onlineCount = 0;
-        let offlineCount = 0;
-
+        // ✅ BUG FIX: Use emitToUser for multi-device support
         allMembers.forEach((memberId) => {
-          const memberSocketId = getReceiverSocketId(memberId.toString());
-          if (memberSocketId) {
-            io.to(memberSocketId).emit("groupMessageEdited", messageObj);
-            onlineCount++;
-          } else {
-            offlineCount++;
-          }
+          emitToUser(memberId.toString(), "groupMessageEdited", messageObj);
         });
-
-        // console.log("   ├─ Online members notified:", onlineCount);
-        // console.log("   └─ Offline members:", offlineCount);
       }
     } else {
-      const receiverSocketId = getReceiverSocketId(
-        message.receiverId.toString(),
-      );
-      const senderSocketId = getReceiverSocketId(message.senderId.toString());
-
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("messageEdited", messageObj);
-        // console.log("   ├─ Receiver notified ✅"); // [DEBUG - Removed for production]
-      } else {
-        // console.log("   ├─ Receiver offline"); // [DEBUG - Removed for production]
-      }
-
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messageEdited", messageObj);
-        // console.log("   └─ Sender notified ✅"); // [DEBUG - Removed for production]
-      } else {
-        // console.log("   └─ Sender offline"); // [DEBUG - Removed for production]
-      }
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      emitToUser(message.receiverId.toString(), "messageEdited", messageObj);
+      emitToUser(message.senderId.toString(), "messageEdited", messageObj);
     }
 
     // console.log("✅ Individual media item deleted successfully");
@@ -2971,34 +2740,23 @@ export const markVoiceAsListened = async (req, res) => {
         // console.log("   └─ groupId:", message.groupId.toString());
         // console.log("\n📤 [SOCKET] Emitting to members");
 
-        let onlineCount = 0;
-        let offlineCount = 0;
-
+        // ✅ BUG FIX: Use emitToUser for multi-device support
         allMembers.forEach((memberId) => {
-          const memberSocketId = getReceiverSocketId(memberId.toString());
-          if (memberSocketId) {
-            io.to(memberSocketId).emit("voiceMessageListened", messageObj);
-            onlineCount++;
-          } else {
-            offlineCount++;
-          }
+          emitToUser(memberId.toString(), "voiceMessageListened", messageObj);
         });
-
-        // console.log("✅ Notified", onlineCount, "online members ⚡");
-        // console.log("⚫ Skipped", offlineCount, "offline members");
-        // console.log("══════════════════════════════════════\n");
       }
     } else {
-      const receiverSocketId = getReceiverSocketId(
+      // ✅ BUG FIX: Use emitToUser for multi-device support
+      emitToUser(
         message.receiverId.toString(),
+        "voiceMessageListened",
+        messageObj,
       );
-      const senderSocketId = getReceiverSocketId(message.senderId.toString());
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("voiceMessageListened", messageObj);
-      }
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("voiceMessageListened", messageObj);
-      }
+      emitToUser(
+        message.senderId.toString(),
+        "voiceMessageListened",
+        messageObj,
+      );
     }
 
     res

@@ -474,14 +474,6 @@ io.on("connection", (socket) => {
         return;
       }
 
-      // ✅ PRODUCTION: Idempotent operation - skip if already seen
-      if (message.seen) {
-        logger.debug("[SOCKET] messageSeen - Already marked as seen", {
-          messageId,
-        });
-        return;
-      }
-
       // ✅ BEST PRACTICE: Authorization check - only receiver can mark as seen
       const receiverIdStr = message.receiverId?.toString();
       if (!receiverIdStr || userId.toString() !== receiverIdStr) {
@@ -493,48 +485,39 @@ io.on("connection", (socket) => {
         return;
       }
 
+      const senderIdStr = message.senderId?.toString();
+      const updatePayload = {
+        messageId,
+        senderId: senderIdStr,
+        receiverId: receiverIdStr,
+      };
+
+      // ✅ IDEMPOTENT: If already seen, still emit to sender (they may have missed it)
+      // but skip the DB update. This handles the race condition where the sender
+      // receives "messageSeenUpdate" before "newMessage" and the update is lost.
+      if (message.seen) {
+        updatePayload.seenAt = message.seenAt;
+        // Still emit to sender so their UI updates (defense against race conditions)
+        emitToUser(senderIdStr, "messageSeenUpdate", updatePayload);
+        return;
+      }
+
       // ✅ PRODUCTION: Atomic update with timestamp
       message.seen = true;
       message.seenAt = new Date();
       await message.save();
 
-      // console.log("✅ [SOCKET] Message marked as seen:", messageId);
+      updatePayload.seenAt = message.seenAt;
 
-      const updatePayload = {
-        messageId,
-        seenAt: message.seenAt,
-        senderId: message.senderId?.toString(),
-        receiverId: message.receiverId?.toString(),
-      };
-
-      // ✅ CRITICAL FIX: Emit to BOTH sender and receiver for real-time sync
+      // ✅ CRITICAL FIX: Use emitToUser for multi-device support
+      // Previously used getReceiverSocketId which only returns the FIRST socket,
+      // missing other devices/tabs. emitToUser sends to ALL connected sockets.
       // Sender (original message author) needs to see ✓✓ checkmarks
-      const senderSocketId = getReceiverSocketId(senderId);
-      if (senderSocketId) {
-        io.to(senderSocketId).emit("messageSeenUpdate", updatePayload);
-        // console.log("📤 [SOCKET] Emitted messageSeenUpdate to sender:", {
-        //   senderId,
-        //   socketId: senderSocketId,
-        //   messageId,
-        // });
-      } else {
-        // console.log("⚠️ [SOCKET] Sender socket not found:", senderId); // [DEBUG - Removed for production]
-      }
+      emitToUser(senderIdStr, "messageSeenUpdate", updatePayload);
 
-      // ✅ CRITICAL FIX: Also emit to receiver (person who marked as seen)
+      // Also emit to receiver (person who marked as seen)
       // This ensures their chat list updates immediately after marking as seen
-      // receiverIdStr already declared above, reuse it
-      if (receiverIdStr) {
-        const receiverSocketId = getReceiverSocketId(receiverIdStr);
-        if (receiverSocketId && receiverSocketId !== senderSocketId) {
-          io.to(receiverSocketId).emit("messageSeenUpdate", updatePayload);
-          // console.log("📤 [SOCKET] Emitted messageSeenUpdate to receiver:", {
-          //   receiverId: receiverIdStr,
-          //   socketId: receiverSocketId,
-          //   messageId,
-          // });
-        }
-      }
+      emitToUser(receiverIdStr, "messageSeenUpdate", updatePayload);
     } catch (error) {
       console.error("❌ [SOCKET] Error updating message seen status:", error);
     }
