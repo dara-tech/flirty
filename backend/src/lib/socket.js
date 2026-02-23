@@ -939,7 +939,179 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Group message seen status
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Group message batch seen status (performance-optimized)
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Handles marking multiple group messages as seen in a single operation.
+  // Used when a user opens a group chat with many unread messages.
+  //
+  // Flow:
+  //   1. Client emits { messageIds: string[], groupId: string }
+  //   2. Server validates membership, filters sender's own messages
+  //   3. Batch-updates all messages in a single MongoDB bulkWrite
+  //   4. Broadcasts groupMessageSeenUpdate for EACH updated message
+  //      (so sender's UI updates per-message with correct seenBy)
+  //
+  // Benefits over per-message groupMessageSeen:
+  //   - Single round-trip instead of N
+  //   - Single DB bulk operation instead of N findById + save
+  //   - Prevents socket emission debouncing issues on client
+  socket.on("groupBatchMessagesSeen", async ({ messageIds, groupId }) => {
+    try {
+      // ✅ Input validation
+      if (
+        !messageIds ||
+        !Array.isArray(messageIds) ||
+        messageIds.length === 0 ||
+        !groupId ||
+        !userId
+      ) {
+        logger.warn("[SOCKET] groupBatchMessagesSeen - Invalid parameters", {
+          messageIdsCount: messageIds?.length,
+          groupId,
+          userId,
+        });
+        return;
+      }
+
+      // ✅ Validate ObjectId format for groupId
+      if (!mongoose.Types.ObjectId.isValid(groupId)) {
+        logger.warn(
+          "[SOCKET] groupBatchMessagesSeen - Invalid groupId format",
+          { groupId },
+        );
+        return;
+      }
+
+      // ✅ Validate all messageIds
+      const validMessageIds = messageIds.filter((id) =>
+        mongoose.Types.ObjectId.isValid(id),
+      );
+      if (validMessageIds.length === 0) {
+        logger.warn("[SOCKET] groupBatchMessagesSeen - No valid messageIds");
+        return;
+      }
+
+      // ✅ Verify group exists and user is a member
+      const group = await Group.findById(groupId);
+      if (!group) return;
+
+      const userIdStr = userId.toString();
+      const isMember =
+        group.admin.toString() === userIdStr ||
+        (group.admins &&
+          group.admins.some((a) => a.toString() === userIdStr)) ||
+        group.members.some((m) => m.toString() === userIdStr);
+      if (!isMember) return;
+
+      // ✅ Fetch all target messages in a single query
+      const messages = await Message.find({
+        _id: { $in: validMessageIds },
+        groupId: groupId,
+      }).populate("senderId", "fullname");
+
+      if (messages.length === 0) return;
+
+      // ✅ Build bulk update operations (skip sender's own messages & already-seen)
+      const bulkOps = [];
+      const messagesToBroadcast = [];
+
+      for (const message of messages) {
+        const messageSenderId = message.senderId._id
+          ? message.senderId._id.toString()
+          : message.senderId.toString();
+
+        // Skip if user is the sender
+        if (messageSenderId === userIdStr) continue;
+
+        // Check if already seen by this user
+        const alreadySeen = message.seenBy.some((s) => {
+          if (!s || !s.userId) return false;
+          const seenUserId = s.userId._id
+            ? s.userId._id.toString()
+            : s.userId.toString();
+          return seenUserId === userIdStr;
+        });
+
+        if (!alreadySeen) {
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: message._id },
+              update: {
+                $push: {
+                  seenBy: { userId: userId, seenAt: new Date() },
+                },
+              },
+            },
+          });
+        }
+
+        // Always broadcast (even if already seen) to sync state
+        messagesToBroadcast.push(message._id);
+      }
+
+      // ✅ Execute batch DB update in one operation
+      if (bulkOps.length > 0) {
+        await Message.bulkWrite(bulkOps);
+      }
+
+      // ✅ Re-fetch updated messages with populated fields for broadcast
+      const updatedMessages = await Message.find({
+        _id: { $in: messagesToBroadcast },
+      })
+        .populate("senderId", "fullname profilePic")
+        .populate("seenBy.userId", "fullname profilePic")
+        .populate("reactions.userId", "fullname profilePic")
+        .populate("listenedBy.userId", "fullname profilePic")
+        .populate({
+          path: "replyTo",
+          select:
+            "text image audio video file sticker senderId receiverId createdAt",
+          populate: { path: "senderId", select: "fullname profilePic" },
+        });
+
+      // ✅ Broadcast groupMessageSeenUpdate per message to all group members
+      const allMembers = [
+        group.admin,
+        ...(group.admins || []),
+        ...group.members,
+      ];
+
+      for (const updatedMsg of updatedMessages) {
+        // Deduplicate seenBy
+        const seenByMap = new Map();
+        updatedMsg.seenBy.forEach((seen) => {
+          const seenUserId =
+            seen.userId?._id?.toString() || seen.userId?.toString();
+          if (seenUserId && !seenByMap.has(seenUserId)) {
+            seenByMap.set(seenUserId, seen);
+          }
+        });
+        const deduplicatedSeenBy = Array.from(seenByMap.values());
+
+        const messageObj = updatedMsg.toObject
+          ? updatedMsg.toObject()
+          : updatedMsg;
+        messageObj.seenBy = deduplicatedSeenBy;
+
+        allMembers.forEach((memberId) => {
+          const memberIdStr = memberId.toString();
+          emitToUser(memberIdStr, "groupMessageSeenUpdate", {
+            messageId: updatedMsg._id.toString(),
+            groupId,
+            seenBy: deduplicatedSeenBy,
+            userId: userId,
+            message: messageObj,
+          });
+        });
+      }
+    } catch (error) {
+      console.error("❌ [GROUP_BATCH_SEEN] Error:", error);
+    }
+  });
+
+  // Group message seen status (single message)
   socket.on("groupMessageSeen", async ({ messageId, groupId }) => {
     try {
       // ✅ BEST PRACTICE: Input validation

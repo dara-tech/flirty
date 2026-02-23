@@ -2375,7 +2375,52 @@ export const deleteMessageMedia = async (req, res) => {
       message.file ||
       message.link;
     if (!hasContent) {
+      // ✅ CRITICAL FIX: Save message info BEFORE deletion for socket emission
+      const deletedSenderId = message.senderId?._id || message.senderId;
+      const deletedReceiverId = message.receiverId?._id || message.receiverId;
+      const deletedGroupId = message.groupId;
+
       await Message.findByIdAndDelete(messageId);
+
+      // ✅ CRITICAL FIX: Emit socket events so other users see the deletion in real-time
+      if (deletedGroupId) {
+        const Group = (await import("../model/group.model.js")).default;
+        const group = await Group.findById(deletedGroupId);
+        if (group) {
+          const allMembers = [
+            group.admin,
+            ...(group.admins || []),
+            ...group.members,
+          ];
+          const deletePayload = {
+            messageId: messageId.toString(),
+            senderId: deletedSenderId.toString(),
+            groupId: deletedGroupId.toString(),
+            deleteType: "forEveryone",
+          };
+          allMembers.forEach((memberId) => {
+            emitToUser(
+              memberId.toString(),
+              "groupMessageDeleted",
+              deletePayload,
+            );
+          });
+        }
+      } else if (deletedReceiverId) {
+        const deletePayload = {
+          messageId: messageId.toString(),
+          senderId: deletedSenderId.toString(),
+          receiverId: deletedReceiverId.toString(),
+          deleteType: "forEveryone",
+        };
+        emitToUser(
+          deletedReceiverId.toString(),
+          "messageDeleted",
+          deletePayload,
+        );
+        emitToUser(deletedSenderId.toString(), "messageDeleted", deletePayload);
+      }
+
       return res.status(200).json({
         message: "Message deleted (no content remaining)",
         deleted: true,
@@ -2385,6 +2430,16 @@ export const deleteMessageMedia = async (req, res) => {
     message.edited = true;
     message.editedAt = new Date();
     await message.save();
+
+    // ✅ CRITICAL FIX: Save raw IDs BEFORE populate
+    // After populate, senderId/receiverId become full document objects
+    // and .toString() returns the full object representation instead of hex ID,
+    // causing emitToUser to fail silently (socket lookup miss).
+    const rawSenderId = (message.senderId._id || message.senderId).toString();
+    const rawReceiverId = message.receiverId
+      ? (message.receiverId._id || message.receiverId).toString()
+      : null;
+
     await message.populate("senderId", "fullname profilePic");
     await message.populate("receiverId", "fullname profilePic");
     if (message.groupId) {
@@ -2398,34 +2453,18 @@ export const deleteMessageMedia = async (req, res) => {
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
-        // 🔥 FIX: Include co-admins (admins array)
         const allMembers = [
           group.admin,
           ...(group.admins || []),
           ...group.members,
         ];
-
-        // console.log("\n══════════════════════════════════════");
-        // console.log("✏️ [EDIT] Group message edit (media deleted)");
-        // console.log("══════════════════════════════════════");
-        // console.log("📝 Message details:");
-        // console.log("   ├─ messageId:", message._id.toString());
-        // console.log("   ├─ senderId:", message.senderId.toString());
-        // console.log("   └─ groupId:", message.groupId.toString());
-        // console.log("\n📤 [SOCKET] Emitting to members");
-
-        // ✅ BUG FIX: Use emitToUser for multi-device support
         allMembers.forEach((memberId) => {
           emitToUser(memberId.toString(), "groupMessageEdited", messageObj);
         });
-
-        // console.log("✅ Notified online members ⚡");
-        // console.log("══════════════════════════════════════\n");
       }
-    } else {
-      // ✅ BUG FIX: Use emitToUser for multi-device support
-      emitToUser(message.receiverId.toString(), "messageEdited", messageObj);
-      emitToUser(message.senderId.toString(), "messageEdited", messageObj);
+    } else if (rawReceiverId) {
+      emitToUser(rawReceiverId, "messageEdited", messageObj);
+      emitToUser(rawSenderId, "messageEdited", messageObj);
     }
 
     res
@@ -2623,7 +2662,53 @@ export const deleteIndividualMediaItem = async (req, res) => {
 
     if (!hasContent) {
       // console.log("🗑️ No content remaining, deleting entire message");
+
+      // ✅ CRITICAL FIX: Save message info BEFORE deletion for socket emission
+      const deletedSenderId = message.senderId?._id || message.senderId;
+      const deletedReceiverId = message.receiverId?._id || message.receiverId;
+      const deletedGroupId = message.groupId;
+
       await Message.findByIdAndDelete(messageId);
+
+      // ✅ CRITICAL FIX: Emit socket events so other users see the deletion in real-time
+      // Without this, the receiver's UI never updates until they leave and re-enter the chat
+      if (deletedGroupId) {
+        const Group = (await import("../model/group.model.js")).default;
+        const group = await Group.findById(deletedGroupId);
+        if (group) {
+          const allMembers = [
+            group.admin,
+            ...(group.admins || []),
+            ...group.members,
+          ];
+          const deletePayload = {
+            messageId: messageId.toString(),
+            senderId: deletedSenderId.toString(),
+            groupId: deletedGroupId.toString(),
+            deleteType: "forEveryone",
+          };
+          allMembers.forEach((memberId) => {
+            emitToUser(
+              memberId.toString(),
+              "groupMessageDeleted",
+              deletePayload,
+            );
+          });
+        }
+      } else if (deletedReceiverId) {
+        const deletePayload = {
+          messageId: messageId.toString(),
+          senderId: deletedSenderId.toString(),
+          receiverId: deletedReceiverId.toString(),
+          deleteType: "forEveryone",
+        };
+        emitToUser(
+          deletedReceiverId.toString(),
+          "messageDeleted",
+          deletePayload,
+        );
+        emitToUser(deletedSenderId.toString(), "messageDeleted", deletePayload);
+      }
 
       // console.log("✅ Message deleted successfully");
       // console.log("🗑️ ========================================\n");
@@ -2640,7 +2725,14 @@ export const deleteIndividualMediaItem = async (req, res) => {
     message.editedAt = new Date();
     await message.save();
 
-    // console.log("💾 Message saved with changes");
+    // ✅ CRITICAL FIX: Save raw IDs BEFORE populate
+    // After populate, senderId/receiverId become full document objects
+    // and .toString() returns the full object representation instead of hex ID,
+    // causing emitToUser to fail silently (socket lookup miss).
+    const rawSenderId = (message.senderId._id || message.senderId).toString();
+    const rawReceiverId = message.receiverId
+      ? (message.receiverId._id || message.receiverId).toString()
+      : null;
 
     await message.populate("senderId", "fullname profilePic");
     await message.populate("receiverId", "fullname profilePic");
@@ -2650,38 +2742,23 @@ export const deleteIndividualMediaItem = async (req, res) => {
 
     const messageObj = message.toObject ? message.toObject() : message;
 
-    // console.log("📤 Emitting socket events...");
-    // console.log("   ├─ Sender ID:", message.senderId._id || message.senderId);
-    // console.log(
-    //   "   ├─ Receiver ID:",
-    //   message.receiverId ? message.receiverId._id || message.receiverId : "N/A"
-    // );
-    // console.log("   ├─ Group ID:", message.groupId || "N/A");
-    // console.log(
-    //   "   └─ Updated image array length:",
-    //   Array.isArray(messageObj.image) ? messageObj.image.length : "N/A"
-    // );
-
     // Emit socket event for real-time updates
     if (message.groupId) {
       const Group = (await import("../model/group.model.js")).default;
       const group = await Group.findById(message.groupId);
       if (group) {
-        // 🔥 FIX: Include co-admins (admins array)
         const allMembers = [
           group.admin,
           ...(group.admins || []),
           ...group.members,
         ];
-        // ✅ BUG FIX: Use emitToUser for multi-device support
         allMembers.forEach((memberId) => {
           emitToUser(memberId.toString(), "groupMessageEdited", messageObj);
         });
       }
-    } else {
-      // ✅ BUG FIX: Use emitToUser for multi-device support
-      emitToUser(message.receiverId.toString(), "messageEdited", messageObj);
-      emitToUser(message.senderId.toString(), "messageEdited", messageObj);
+    } else if (rawReceiverId) {
+      emitToUser(rawReceiverId, "messageEdited", messageObj);
+      emitToUser(rawSenderId, "messageEdited", messageObj);
     }
 
     // console.log("✅ Individual media item deleted successfully");
