@@ -147,18 +147,13 @@ export const createGroup = async (req, res) => {
     await newGroup.populate("admins", "fullname profilePic");
     await newGroup.populate("members", "fullname profilePic");
 
-    // Notify all participants via socket (targeted)
+    // Notify all participants via socket (multi-device)
     const allParticipants = [...coAdmins, ...members];
-    let notifiedCount = 0;
     allParticipants.forEach((participantId) => {
-      const participantSocketId = getReceiverSocketId(participantId.toString());
-      if (participantSocketId) {
-        io.to(participantSocketId).emit("groupCreated", {
-          group: newGroup,
-          participantId,
-        });
-        notifiedCount++;
-      }
+      emitToUser(participantId.toString(), "groupCreated", {
+        group: newGroup,
+        groupId: newGroup._id.toString(),
+      });
     });
 
     res.status(201).json(newGroup);
@@ -269,14 +264,30 @@ export const addMembersToGroup = async (req, res) => {
     await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify new members via socket (targeted)
-    let notifiedCount = 0;
+    // ✅ FIX: Notify NEW members they were added (multi-device)
     newMemberIds.forEach((memberId) => {
-      const memberSocketId = getReceiverSocketId(memberId.toString());
-      if (memberSocketId) {
-        io.to(memberSocketId).emit("addedToGroup", { group, memberId });
-        notifiedCount++;
-      }
+      emitToUser(memberId.toString(), "addedToGroup", { group, memberId });
+    });
+
+    // ✅ FIX: Notify ALL existing participants (admin + co-admins + old members)
+    // so their cached member list refreshes in real-time
+    const allParticipants = [
+      group.admin,
+      ...(group.admins || []),
+      ...group.members,
+    ];
+    const newMemberIdStrings = new Set(newMemberIds.map((id) => id.toString()));
+
+    allParticipants.forEach((participant) => {
+      const participantId = participant._id
+        ? participant._id.toString()
+        : participant.toString();
+      // Skip new members (they already got "addedToGroup")
+      if (newMemberIdStrings.has(participantId)) return;
+      emitToUser(participantId, "groupMembersUpdated", {
+        groupId: id,
+        addedMemberIds: newMemberIds.map((m) => m.toString()),
+      });
     });
 
     res.status(200).json({
@@ -340,11 +351,33 @@ export const removeMemberFromGroup = async (req, res) => {
     await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify removed member via socket (targeted)
-    const memberSocketId = getReceiverSocketId(memberId);
-    if (memberSocketId) {
-      io.to(memberSocketId).emit("removedFromGroup", { group, memberId });
-    }
+    // ✅ FIX: Use emitToUser for multi-device support
+    const groupObj = group.toObject ? group.toObject() : group;
+
+    // Notify the removed member
+    emitToUser(memberId, "removedFromGroup", {
+      group: groupObj,
+      groupId: id,
+      memberId,
+    });
+
+    // ✅ FIX: Also notify remaining members so they see the updated member list
+    const remainingParticipants = [
+      group.admin,
+      ...(group.admins || []),
+      ...group.members,
+    ];
+    const removePayload = {
+      group: groupObj,
+      groupId: id,
+      removedMemberId: memberId,
+    };
+    remainingParticipants.forEach((participantId) => {
+      const participantIdStr = participantId._id
+        ? participantId._id.toString()
+        : participantId.toString();
+      emitToUser(participantIdStr, "memberRemovedFromGroup", removePayload);
+    });
 
     res.status(200).json(group);
   } catch (error) {
@@ -820,30 +853,6 @@ export const sendGroupMessage = async (req, res) => {
             messageObj,
             group,
           );
-
-          // if (pushResult.success) {
-          //   logger.info("✅ [Push] Web group notification sent", {
-          //     requestId: req.requestId,
-          //     memberId: memberIdStr,
-          //     groupId: groupId,
-          //     messageId: messageObj._id,
-          //     sent: pushResult.sent,
-          //     failed: pushResult.failed,
-          //     total: pushResult.total,
-          //     userOnline: !!memberSocketId,
-          //   });
-          // } else {
-          //   // logger.debug(
-          //   //   `⚠️ [Push] No group notifications sent: ${pushResult.error}`,
-          //   //   {
-          //   //     requestId: req.requestId,
-          //   //     memberId: memberIdStr,
-          //   //     groupId: groupId,
-          //   //     messageId: messageObj._id,
-          //   //     userOnline: !!memberSocketId,
-          //   //   }
-          //   // );
-          // }
         }
       } catch (pushError) {
         logger.error("❌ [Push] Failed to send group push notification:", {
@@ -987,16 +996,15 @@ export const deleteGroup = async (req, res) => {
     // Delete the group
     await Group.findByIdAndDelete(groupId);
 
-    // Notify all participants via socket that group was deleted
+    // ✅ FIX: Use emitToUser for multi-device support
+    // Notify all participants (except the deleter) that group was deleted
     allParticipants.forEach((participantId) => {
       const participantIdStr = participantId.toString();
-      const participantSocketId = getReceiverSocketId(participantIdStr);
-      if (participantSocketId) {
-        io.to(participantSocketId).emit("groupDeleted", {
-          groupId: groupIdStr,
-          participantId: participantIdStr,
-        });
-      }
+      // Skip the owner — they already handled removal locally
+      if (participantIdStr === userId.toString()) return;
+      emitToUser(participantIdStr, "groupDeleted", {
+        groupId: groupIdStr,
+      });
     });
 
     res.status(200).json({
@@ -1050,28 +1058,19 @@ export const updateGroupInfo = async (req, res) => {
     await group.populate("admins", "fullname profilePic"); // Include co-admins
     await group.populate("members", "fullname profilePic");
 
-    // Notify all members via socket (targeted)
-    // console.log("\n════════════════════════════════════════");
-    // console.log("ℹ️ [GROUP] Group info updated:", group.name);
-    // console.log("════════════════════════════════════════");
-    // 🔥 FIX: Include co-admins (admins array)
+    // ✅ FIX: Use emitToUser for multi-device support
+    // Notify all participants that group info was updated (name, photo, etc.)
     const allMembers = [group.admin, ...(group.admins || []), ...group.members];
-    let notifiedCount = 0;
     allMembers.forEach((memberId) => {
       const memberIdStr = memberId._id
         ? memberId._id.toString()
         : memberId.toString();
-      const memberSocketId = getReceiverSocketId(memberIdStr);
-      if (memberSocketId) {
-        io.to(memberSocketId).emit("groupInfoUpdated", {
-          group,
-          memberId: memberIdStr,
-        });
-        notifiedCount++;
-      }
+      emitToUser(memberIdStr, "groupInfoUpdated", {
+        groupId: id,
+        name: group.name,
+        groupPic: group.groupPic,
+      });
     });
-    // console.log("✅ Notified", notifiedCount, "members ⚡"); // [DEBUG - Removed for production]
-    // console.log("════════════════════════════════════════\n"); // [DEBUG - Removed for production]
 
     res.status(200).json(group);
   } catch (error) {
@@ -1131,35 +1130,28 @@ export const leaveGroup = async (req, res) => {
     await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify all remaining participants via socket (targeted)
+    // ✅ FIX: Use emitToUser for multi-device support
+    // Notify all remaining participants that a member left
+    const groupObj = group.toObject ? group.toObject() : group;
     const allParticipants = [
       group.admin,
       ...(group.admins || []),
       ...group.members,
     ];
-    let notifiedCount = 0;
+    const leavePayload = {
+      group: groupObj,
+      groupId: id,
+      leftMemberId: userId.toString(),
+    };
     allParticipants.forEach((participantId) => {
       const participantIdStr = participantId._id
         ? participantId._id.toString()
         : participantId.toString();
-      const participantSocketId = getReceiverSocketId(participantIdStr);
-      if (participantSocketId) {
-        io.to(participantSocketId).emit("memberLeftGroup", {
-          group,
-          participantId: participantIdStr,
-          leftMemberId: userId.toString(),
-        });
-        notifiedCount++;
-      }
+      emitToUser(participantIdStr, "memberLeftGroup", leavePayload);
     });
 
     // Notify the user who left
-    const userSocketId = getReceiverSocketId(userId.toString());
-    if (userSocketId) {
-      io.to(userSocketId).emit("leftGroup", {
-        groupId: id,
-      });
-    }
+    emitToUser(userId.toString(), "leftGroup", { groupId: id });
 
     res.status(200).json({ message: "Left group successfully" });
   } catch (error) {
@@ -1237,7 +1229,7 @@ export const transferAdmin = async (req, res) => {
     await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify all participants via socket
+    // Notify all participants via socket (multi-device)
     const allParticipants = [
       group.admin,
       ...(group.admins || []),
@@ -1247,14 +1239,11 @@ export const transferAdmin = async (req, res) => {
       const participantIdStr = participant._id
         ? participant._id.toString()
         : participant.toString();
-      const participantSocketId = getReceiverSocketId(participantIdStr);
-      if (participantSocketId) {
-        io.to(participantSocketId).emit("groupAdminChanged", {
-          group,
-          oldAdminId: oldAdminId.toString(),
-          newAdminId: newAdminId.toString(),
-        });
-      }
+      emitToUser(participantIdStr, "groupAdminChanged", {
+        groupId: id,
+        oldAdminId: oldAdminId.toString(),
+        newAdminId: newAdminId.toString(),
+      });
     });
 
     res.status(200).json({
@@ -1391,7 +1380,7 @@ export const promoteToAdmin = async (req, res) => {
     await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify all participants via socket
+    // Notify all participants via socket (multi-device)
     const allParticipants = [
       group.admin,
       ...(group.admins || []),
@@ -1401,13 +1390,10 @@ export const promoteToAdmin = async (req, res) => {
       const participantIdStr = participant._id
         ? participant._id.toString()
         : participant.toString();
-      const participantSocketId = getReceiverSocketId(participantIdStr);
-      if (participantSocketId) {
-        io.to(participantSocketId).emit("memberPromotedToAdmin", {
-          group,
-          promotedMemberId: memberId.toString(),
-        });
-      }
+      emitToUser(participantIdStr, "memberPromotedToAdmin", {
+        groupId: id,
+        promotedMemberId: memberId.toString(),
+      });
     });
 
     res.status(200).json({
@@ -1469,7 +1455,7 @@ export const demoteFromAdmin = async (req, res) => {
     await group.populate("admins", "fullname profilePic");
     await group.populate("members", "fullname profilePic");
 
-    // Notify all participants via socket
+    // Notify all participants via socket (multi-device)
     const allParticipants = [
       group.admin,
       ...(group.admins || []),
@@ -1479,13 +1465,10 @@ export const demoteFromAdmin = async (req, res) => {
       const participantIdStr = participant._id
         ? participant._id.toString()
         : participant.toString();
-      const participantSocketId = getReceiverSocketId(participantIdStr);
-      if (participantSocketId) {
-        io.to(participantSocketId).emit("adminDemoted", {
-          group,
-          demotedAdminId: adminId.toString(),
-        });
-      }
+      emitToUser(participantIdStr, "adminDemoted", {
+        groupId: id,
+        demotedAdminId: adminId.toString(),
+      });
     });
 
     res.status(200).json({
@@ -1724,28 +1707,31 @@ export const batchUpdateMembers = async (req, res) => {
       ...group.members,
     ];
 
+    // ✅ FIX: Use emitToUser for multi-device support
+    // Notify all current participants about member changes
+    const addedSet = new Set(changes.added);
     allParticipants.forEach((participant) => {
       const participantIdStr = participant._id
         ? participant._id.toString()
         : participant.toString();
-      const participantSocketId = getReceiverSocketId(participantIdStr);
-      if (participantSocketId) {
-        io.to(participantSocketId).emit("groupMembersUpdated", {
-          group,
-          changes,
-        });
-      }
+      emitToUser(participantIdStr, "groupMembersUpdated", {
+        groupId: id,
+        changes,
+      });
     });
 
-    // Also notify removed members
+    // Notify newly added members with addedToGroup so the group appears
+    // in their groups list immediately (consistent with addMembersToGroup)
+    changes.added.forEach((addedId) => {
+      emitToUser(addedId, "addedToGroup", { group, memberId: addedId });
+    });
+
+    // Also notify removed members (they're no longer in allParticipants)
     changes.removed.forEach((removedId) => {
-      const removedSocketId = getReceiverSocketId(removedId);
-      if (removedSocketId) {
-        io.to(removedSocketId).emit("removedFromGroup", {
-          groupId: id,
-          memberId: removedId,
-        });
-      }
+      emitToUser(removedId, "removedFromGroup", {
+        groupId: id,
+        memberId: removedId,
+      });
     });
 
     res.status(200).json({
