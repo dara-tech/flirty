@@ -901,14 +901,14 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
 
     const duration = Date.now() - startTime;
 
-    logger.info(`📊 [Mobile Call] Notification results (${duration}ms):`, {
-      receiverId,
-      callId: callData.callId,
-      sent,
-      failed,
-      total: validTokens.length,
-      duration,
-    });
+    // logger.info(`📊 [Mobile Call] Notification results (${duration}ms):`, {
+    //   receiverId,
+    //   callId: callData.callId,
+    //   sent,
+    //   failed,
+    //   total: validTokens.length,
+    //   duration,
+    // });
 
     return {
       success: sent > 0,
@@ -1400,9 +1400,9 @@ export const sendMobileCallCancelNotification = async (
   const startTime = Date.now();
 
   try {
-    logger.info(
-      `📞 [Mobile Call Cancel] Sending cancel notification to user ${receiverId}`,
-    );
+    // logger.info(
+    //   `📞 [Mobile Call Cancel] Sending cancel notification to user ${receiverId}`,
+    // );
 
     if (!firebaseInitialized) {
       logger.warn("⚠️ [Mobile Call Cancel] Firebase not initialized");
@@ -1437,9 +1437,9 @@ export const sendMobileCallCancelNotification = async (
       return { success: false, error: "No valid push tokens" };
     }
 
-    logger.info(
-      `📞 [Mobile Call Cancel] Sending to ${validTokens.length} devices`,
-    );
+    // logger.info(
+    //   `📞 [Mobile Call Cancel] Sending to ${validTokens.length} devices`,
+    // );
 
     const results = [];
     let sent = 0;
@@ -1451,7 +1451,7 @@ export const sendMobileCallCancelNotification = async (
 
         // 🔥 iOS with VoIP token: Use APNs VoIP push to cancel CallKit
         if (isIOS && tokenData.voipToken && apnsVoipPush.isAvailable()) {
-          logger.info(`📞 [Mobile Call Cancel] Using APNs VoIP for iOS`);
+          // logger.info(`📞 [Mobile Call Cancel] Using APNs VoIP for iOS`);
 
           const voipResult = await apnsVoipPush.sendVoipPush(
             tokenData.voipToken,
@@ -1511,7 +1511,7 @@ export const sendMobileCallCancelNotification = async (
         }
 
         const response = await admin.messaging().send(message);
-        logger.debug(`✅ [Mobile Call Cancel] Sent to ${tokenData.platform}`);
+        // logger.debug(`✅ [Mobile Call Cancel] Sent to ${tokenData.platform}`);
         sent++;
         results.push({
           success: true,

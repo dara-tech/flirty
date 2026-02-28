@@ -1625,12 +1625,10 @@ io.on("connection", (socket) => {
     try {
       // 🔥 Check both activeCalls AND pendingCalls (same as call:answer)
       let callInfo = activeCalls.get(callId);
-      let wasInPendingCalls = false;
 
       if (!callInfo) {
         // Check pendingCalls (user was offline, received push notification)
         callInfo = pendingCalls.get(callId);
-        wasInPendingCalls = true;
 
         if (callInfo) {
           // Clear the timeout since call is being rejected
@@ -1643,6 +1641,14 @@ io.on("connection", (socket) => {
       if (!callInfo) {
         return;
       }
+
+      // ✅ RACE CONDITION FIX: Remove from maps SYNCHRONOUSLY before the first
+      // `await` so any concurrent call:reject / call:cancel / call:end handler
+      // that starts in the same JS event-loop tick will find nothing and exit.
+      // Without this, two handlers could both read callInfo, both await
+      // createCallRecord, and both write duplicate MongoDB documents.
+      activeCalls.delete(callId);
+      pendingCalls.delete(callId);
 
       // Determine status based on reason
       const status = reason === "busy" ? "busy" : "rejected";
@@ -1694,6 +1700,19 @@ io.on("connection", (socket) => {
         },
       );
 
+      // SELF-ACK: Notify the rejecting device that the call record has been
+      // saved so its conversation screen can refresh the call-history timeline
+      // and the chat-list last-message preview immediately (instant UX, same
+      // as the caller side).  This event is emitted only to socket.id — the
+      // exact socket that sent call:reject — so no other device is affected.
+      socket.emit("call:rejected-self", {
+        callId,
+        callerId: callInfo.callerId,
+        receiverId: callInfo.receiverId,
+        callType: callInfo.callType,
+        status,
+      });
+
       // 🔥 CRITICAL: Send push notification to CALLER to dismiss their call UI
       // This handles the case when caller's app is terminated/background
       try {
@@ -1711,11 +1730,12 @@ io.on("connection", (socket) => {
         );
       }
 
-      // Remove call from both maps (whichever it was in)
-      activeCalls.delete(callId);
-      pendingCalls.delete(callId);
+      // Maps already cleared above (before first await — race-condition fix).
     } catch (error) {
       console.error("Error in call:reject:", error);
+      // Ensure clean-up even on unexpected errors
+      activeCalls.delete(callId);
+      pendingCalls.delete(callId);
     }
   });
 
@@ -1724,14 +1744,12 @@ io.on("connection", (socket) => {
     try {
       // Check active calls first
       let callInfo = activeCalls.get(callId);
-      let isPending = false;
 
       // If not in active, check pending calls
       if (!callInfo) {
         const pendingCall = pendingCalls.get(callId);
         if (pendingCall) {
           callInfo = pendingCall;
-          isPending = true;
           // Clear the pending call timeout
           if (pendingCall.timeoutId) {
             clearTimeout(pendingCall.timeoutId);
@@ -1747,6 +1765,11 @@ io.on("connection", (socket) => {
       if (callInfo.callerId.toString() !== userId.toString()) {
         return;
       }
+
+      // ✅ RACE CONDITION FIX: Remove from maps SYNCHRONOUSLY before first await
+      // (mirrors the same fix in call:reject — see comment there for details).
+      activeCalls.delete(callId);
+      pendingCalls.delete(callId);
 
       // Save cancelled call to database
       try {
@@ -1792,14 +1815,12 @@ io.on("connection", (socket) => {
         );
       }
 
-      // Clean up
-      if (isPending) {
-        pendingCalls.delete(callId);
-      } else {
-        activeCalls.delete(callId);
-      }
+      // Maps already cleared above (before first await — race-condition fix).
     } catch (error) {
       console.error("Error in call:cancel:", error);
+      // Ensure clean-up even on unexpected errors
+      activeCalls.delete(callId);
+      pendingCalls.delete(callId);
     }
   });
 
@@ -1808,6 +1829,9 @@ io.on("connection", (socket) => {
     try {
       const callInfo = activeCalls.get(callId);
       if (!callInfo) return;
+
+      // ✅ RACE CONDITION FIX: Claim the call synchronously before first await.
+      activeCalls.delete(callId);
 
       // Determine call status based on reason
       let callStatus = "cancelled";
@@ -1888,10 +1912,11 @@ io.on("connection", (socket) => {
         console.error("Failed to send call end push notification:", pushError);
       }
 
-      // Remove call from active calls
-      activeCalls.delete(callId);
+      // activeCalls already cleared above (race-condition fix).
     } catch (error) {
       console.error("Error in call:end:", error);
+      // Ensure clean-up even on unexpected errors
+      activeCalls.delete(callId);
     }
   });
 

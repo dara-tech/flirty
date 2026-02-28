@@ -76,10 +76,11 @@ export const getCallHistory = async (req, res) => {
                 profilePic: otherUser.profilePic || null,
               },
               type: isCaller ? "outgoing" : "incoming",
+              callType: call.callType || "voice", // "voice" | "video"
               status: call.status || "missed",
               duration: call.duration || 0,
               timestamp: call.createdAt || call.startedAt || new Date(),
-              count: 1, // TODO: Group consecutive calls with same contact
+              count: 1,
             };
           } catch (err) {
             logger.error("Error transforming call", {
