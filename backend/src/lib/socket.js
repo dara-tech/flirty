@@ -1448,11 +1448,11 @@ io.on("connection", (socket) => {
           callType,
         });
 
-        logger.info("📞 [Call] Sent call:incoming to all receiver devices", {
-          callId,
-          receiverId,
-          deviceCount,
-        });
+        // logger.info("📞 [Call] Sent call:incoming to all receiver devices", {
+        //   callId,
+        //   receiverId,
+        //   deviceCount,
+        // });
 
         // Also send mobile push notification (for background/locked screen CallKit)
         try {
@@ -1544,9 +1544,9 @@ io.on("connection", (socket) => {
           // Move from pendingCalls to activeCalls
           pendingCalls.delete(callId);
           activeCalls.set(callId, callInfo);
-          console.log(
-            `📞 [Call] Moved call ${callId} from pendingCalls to activeCalls`,
-          );
+          // console.log(
+          //   `📞 [Call] Moved call ${callId} from pendingCalls to activeCalls`,
+          // );
         }
       }
 

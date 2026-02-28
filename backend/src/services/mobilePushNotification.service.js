@@ -590,9 +590,9 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
   const startTime = Date.now();
 
   try {
-    logger.info(
-      `📞 [Mobile Call] Sending call notification to user ${receiverId}`,
-    );
+    // logger.info(
+    //   `📞 [Mobile Call] Sending call notification to user ${receiverId}`,
+    // );
 
     if (!firebaseInitialized) {
       logger.warn("⚠️ [Mobile Call] Firebase not initialized");
@@ -646,12 +646,12 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
       return { success: false, error: "No valid push tokens" };
     }
 
-    logger.info(`📞 [Mobile Call] Sending to ${validTokens.length} devices`, {
-      callId: callData.callId,
-      callerId: callData.callerId,
-      callerName,
-      callType,
-    });
+    // logger.info(`📞 [Mobile Call] Sending to ${validTokens.length} devices`, {
+    //   callId: callData.callId,
+    //   callerId: callData.callerId,
+    //   callerName,
+    //   callType,
+    // });
 
     const results = [];
     let sent = 0;
@@ -665,7 +665,7 @@ export const sendMobileCallNotification = async (receiverId, callData) => {
         // 🔥 iOS with VoIP token: Use APNs VoIP push for 100% reliable CallKit
         // This works even when app is terminated, device locked, or in DND mode
         if (isIOS && tokenData.voipToken && apnsVoipPush.isAvailable()) {
-          logger.info(`📞 [Mobile Call] Using APNs VoIP push for iOS device`);
+          // logger.info(`📞 [Mobile Call] Using APNs VoIP push for iOS device`);
 
           const voipResult = await apnsVoipPush.sendVoipPush(
             tokenData.voipToken,
@@ -1559,9 +1559,9 @@ export const sendMobileCallEndNotification = async (targetUserId, callData) => {
 
   try {
     const reason = callData?.reason || "ended";
-    logger.info(
-      `📞 [Mobile Call End] Sending end notification to user ${targetUserId} (reason: ${reason})`,
-    );
+    // logger.info(
+    //   `📞 [Mobile Call End] Sending end notification to user ${targetUserId} (reason: ${reason})`,
+    // );
 
     if (!firebaseInitialized) {
       logger.warn("⚠️ [Mobile Call End] Firebase not initialized");
@@ -1596,9 +1596,9 @@ export const sendMobileCallEndNotification = async (targetUserId, callData) => {
       return { success: false, error: "No valid push tokens" };
     }
 
-    logger.info(
-      `📞 [Mobile Call End] Sending to ${validTokens.length} devices`,
-    );
+    // logger.info(
+    //   `📞 [Mobile Call End] Sending to ${validTokens.length} devices`,
+    // );
 
     const results = [];
     let sent = 0;
@@ -1610,7 +1610,7 @@ export const sendMobileCallEndNotification = async (targetUserId, callData) => {
 
         // 🔥 iOS with VoIP token: Use APNs VoIP push to end CallKit
         if (isIOS && tokenData.voipToken && apnsVoipPush.isAvailable()) {
-          logger.info(`📞 [Mobile Call End] Using APNs VoIP for iOS`);
+          // logger.info(`📞 [Mobile Call End] Using APNs VoIP for iOS`);
 
           const voipResult = await apnsVoipPush.sendVoipPush(
             tokenData.voipToken,
@@ -1671,7 +1671,7 @@ export const sendMobileCallEndNotification = async (targetUserId, callData) => {
         }
 
         const response = await admin.messaging().send(message);
-        logger.debug(`✅ [Mobile Call End] Sent to ${tokenData.platform}`);
+        // logger.debug(`✅ [Mobile Call End] Sent to ${tokenData.platform}`);
         sent++;
         results.push({
           success: true,
@@ -1686,9 +1686,9 @@ export const sendMobileCallEndNotification = async (targetUserId, callData) => {
     }
 
     const duration = Date.now() - startTime;
-    logger.info(
-      `📊 [Mobile Call End] Results (${duration}ms): sent=${sent}, failed=${failed}`,
-    );
+    // logger.info(
+    //   `📊 [Mobile Call End] Results (${duration}ms): sent=${sent}, failed=${failed}`,
+    // );
 
     return { success: sent > 0, sent, failed, results };
   } catch (error) {
