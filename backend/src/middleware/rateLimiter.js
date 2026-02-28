@@ -1,590 +1,675 @@
-import rateLimit from "express-rate-limit";
+/**
+ * rateLimiter.js
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Centralised rate-limiting middleware for Express HTTP routes and Socket.IO.
+ *
+ * Compatible with: express-rate-limit v8 (async Store interface)
+ *
+ * Key design decisions:
+ *  - MemoryStore implements the v8 async increment/decrement/resetKey/resetAll
+ *    interface (the old v6 callback-based incr is never called by v8).
+ *  - StoreRegistry tracks every store so ALL are destroyed on shutdown.
+ *  - setInterval.unref() — cleanup timers never prevent process exit.
+ *  - process.once guards — no duplicate SIGTERM/SIGINT listeners on re-import.
+ *  - Fail-open policy — rate-limiter errors never block real requests.
+ *  - Private class fields (#) — metrics state fully encapsulated.
+ */
+
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import logger from "../lib/logger.js";
 
-// ============================================================================
-// CONFIGURATION CONSTANTS
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// ENVIRONMENT
+// ─────────────────────────────────────────────────────────────────────────────
+
+const IS_DEV = process.env.NODE_ENV === "development";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIGURATION  (all times in milliseconds)
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Centralized rate limit configuration
- * All time values in milliseconds for consistency
+ * Centralised rate-limit windows and caps.
+ * Frozen so no code can accidentally mutate runtime config.
  */
-const RATE_LIMIT_CONFIG = {
-  auth: {
+const CONFIG = Object.freeze({
+  auth: Object.freeze({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    maxDev: 100, // Development: generous for testing
-    maxProd: 10, // Production: strict for security
-  },
-  message: {
+    maxDev: 100, // generous for local testing
+    maxProd: 10, // strict brute-force protection
+  }),
+  message: Object.freeze({
     windowMs: 1 * 60 * 1000, // 1 minute
-    max: 30, // Prevent message spam
-  },
-  realtime: {
+    max: 30, // prevent chat spam
+  }),
+  realtime: Object.freeze({
     windowMs: 1 * 60 * 1000, // 1 minute
-    max: 100, // High limit for WebSocket events
-  },
-  api: {
+    max: 100, // high cap for Socket.IO-adjacent HTTP calls
+  }),
+  api: Object.freeze({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // General API calls
-  },
-  strict: {
+    max: 100, // general API default
+  }),
+  strict: Object.freeze({
     windowMs: 60 * 60 * 1000, // 1 hour
-    max: 10, // Sensitive operations
-  },
-  connection: {
+    max: 10, // sensitive ops (password reset, etc.)
+  }),
+  connection: Object.freeze({
     windowMs: 5 * 60 * 1000, // 5 minutes
-    maxDev: 50, // Development: frequent reconnects
-    maxProd: 20, // Production: prevent abuse
-  },
-  // 🔍 SEARCH: Dedicated rate limit for search operations
-  // Prevents server overload when 100+ users search simultaneously
-  search: {
-    windowMs: 1 * 60 * 1000, // 1 minute window
-    maxDev: 60, // Development: 60 searches/minute per user
-    maxProd: 30, // Production: 30 searches/minute per user (stricter)
-  },
-};
+    maxDev: 50, // dev: frequent reconnects expected
+    maxProd: 20, // prod: prevent socket flood
+  }),
+  search: Object.freeze({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    maxDev: 60,
+    maxProd: 30, // per-user search cap
+  }),
+});
 
 /**
- * Memory store configuration
- * Auto-cleanup prevents memory leaks in long-running processes
+ * In-process store tuning.
  */
-const MEMORY_STORE_CONFIG = {
-  checkPeriod: 60 * 1000, // Check every 60 seconds
-  maxKeys: 10000, // Maximum entries before forced cleanup
-  cleanupThreshold: 0.8, // Cleanup when 80% full
-};
+const STORE_CONFIG = Object.freeze({
+  cleanupIntervalMs: 60 * 1000, // expired-key sweep every 60 s
+  maxKeys: 10_000, // hard cap on tracked keys
+  capacityThreshold: 0.8, // warn + evict at 80 % capacity
+  evictionRatio: 0.2, // remove 20 % of keys when evicting
+});
 
-// ============================================================================
-// PERFORMANCE METRICS
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// METRICS
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Track rate limit metrics for monitoring and optimization
- * Use this data to adjust limits based on real usage patterns
+ * Lightweight counters for monitoring and alerting.
+ * Private fields (#) prevent external mutation.
  */
 class RateLimitMetrics {
-  constructor() {
-    this.metrics = {
-      totalRequests: 0,
-      blockedRequests: 0,
-      bypassedRequests: 0,
-      activeConnections: new Set(),
-      errorCount: 0,
-    };
-  }
+  #totalRequests = 0;
+  #blockedRequests = 0;
+  #bypassedRequests = 0;
+  #errorCount = 0;
+  #activeConnections = new Set();
 
   recordRequest() {
-    this.metrics.totalRequests++;
+    this.#totalRequests++;
+  }
+  recordBypass() {
+    this.#bypassedRequests++;
+  }
+  recordError() {
+    this.#errorCount++;
+  }
+  recordConnection(id) {
+    this.#activeConnections.add(id);
+  }
+  recordDisconnection(id) {
+    this.#activeConnections.delete(id);
   }
 
   recordBlock(identifier) {
-    this.metrics.blockedRequests++;
+    this.#blockedRequests++;
+    const total = this.#totalRequests;
     logger.warn("Rate limit block recorded", {
       identifier,
-      totalBlocked: this.metrics.blockedRequests,
+      totalBlocked: this.#blockedRequests,
       blockRate:
-        (
-          (this.metrics.blockedRequests / this.metrics.totalRequests) *
-          100
-        ).toFixed(2) + "%",
+        total > 0
+          ? `${((this.#blockedRequests / total) * 100).toFixed(2)}%`
+          : "N/A",
     });
   }
 
-  recordBypass() {
-    this.metrics.bypassedRequests++;
-  }
-
-  recordConnection(identifier) {
-    this.metrics.activeConnections.add(identifier);
-  }
-
-  recordDisconnection(identifier) {
-    this.metrics.activeConnections.delete(identifier);
-  }
-
-  recordError() {
-    this.metrics.errorCount++;
-  }
-
-  getMetrics() {
-    return {
-      ...this.metrics,
-      activeConnections: this.metrics.activeConnections.size,
+  /**
+   * Returns a frozen snapshot — never exposes internal mutable state.
+   */
+  snapshot() {
+    const total = this.#totalRequests;
+    return Object.freeze({
+      totalRequests: total,
+      blockedRequests: this.#blockedRequests,
+      bypassedRequests: this.#bypassedRequests,
+      errorCount: this.#errorCount,
+      activeConnections: this.#activeConnections.size,
       blockRate:
-        this.metrics.totalRequests > 0
-          ? (
-              (this.metrics.blockedRequests / this.metrics.totalRequests) *
-              100
-            ).toFixed(2) + "%"
+        total > 0
+          ? `${((this.#blockedRequests / total) * 100).toFixed(2)}%`
           : "0%",
-    };
+    });
   }
 
-  // Reset metrics (useful for periodic monitoring)
+  /** Reset counters; active-connection set is intentionally preserved. */
   reset() {
-    this.metrics.totalRequests = 0;
-    this.metrics.blockedRequests = 0;
-    this.metrics.bypassedRequests = 0;
-    this.metrics.errorCount = 0;
-    // Keep activeConnections as they represent current state
+    this.#totalRequests = 0;
+    this.#blockedRequests = 0;
+    this.#bypassedRequests = 0;
+    this.#errorCount = 0;
   }
 }
 
 const metrics = new RateLimitMetrics();
 
-// ============================================================================
-// MEMORY MANAGEMENT
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// MEMORY STORE  (express-rate-limit v8 compatible)
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Enhanced memory store with automatic cleanup and TTL
- * Prevents memory leaks in production environments
+ * TTL-based in-memory store implementing the express-rate-limit v8 Store
+ * interface (async increment / decrement / resetKey / resetAll).
+ *
+ * Memory-safety guarantees:
+ *  - Periodic cleanup via setInterval(..).unref() — never blocks process exit.
+ *  - Capacity eviction removes oldest 20 % of keys near maxKeys.
+ *  - destroy() must be called on shutdown to clear timer + maps.
  */
-class MemoryStoreWithCleanup {
+class MemoryStore {
+  /** @type {Map<string, number>} key → hit count */
+  #hits = new Map();
+  /** @type {Map<string, number>} key → epoch ms of window reset */
+  #resets = new Map();
+  #windowMs;
+  #cleanupTimer;
+
   constructor(windowMs) {
-    this.hits = new Map();
-    this.windowMs = windowMs;
-    this.resetTime = new Map();
-
-    // Automatic cleanup every minute
-    this.cleanupInterval = setInterval(() => {
-      this.cleanup();
-    }, MEMORY_STORE_CONFIG.checkPeriod);
+    this.#windowMs = windowMs;
+    this.#cleanupTimer = setInterval(
+      () => this.#cleanup(),
+      STORE_CONFIG.cleanupIntervalMs,
+    );
+    this.#cleanupTimer.unref(); // never prevent process exit
   }
 
-  incr(key, callback) {
-    const now = Date.now();
-    const resetTime = this.resetTime.get(key);
+  // ── express-rate-limit v8 Store interface ───────────────────────────────
 
-    // Reset if window expired
-    if (!resetTime || now > resetTime) {
-      this.hits.set(key, 1);
-      const newResetTime = now + this.windowMs;
-      this.resetTime.set(key, newResetTime);
-      // Callback signature: (error, totalHits, resetTime as Date object)
-      return callback(null, 1, new Date(newResetTime));
+  /**
+   * Increment the hit count for `key`.  Resets window if expired.
+   * @returns {Promise<{totalHits: number, resetTime: Date}>}
+   */
+  async increment(key) {
+    const now = Date.now();
+    const existingReset = this.#resets.get(key);
+
+    if (existingReset === undefined || now >= existingReset) {
+      const resetTime = now + this.#windowMs;
+      this.#hits.set(key, 1);
+      this.#resets.set(key, resetTime);
+      this.#enforceCapacity();
+      return { totalHits: 1, resetTime: new Date(resetTime) };
     }
 
-    // Increment hit count
-    const hitCount = (this.hits.get(key) || 0) + 1;
-    this.hits.set(key, hitCount);
-    // Callback signature: (error, totalHits, resetTime as Date object)
-    return callback(null, hitCount, new Date(resetTime));
+    const totalHits = (this.#hits.get(key) ?? 0) + 1;
+    this.#hits.set(key, totalHits);
+    return { totalHits, resetTime: new Date(existingReset) };
   }
 
-  decrement(key) {
-    const hitCount = this.hits.get(key);
-    if (hitCount && hitCount > 0) {
-      this.hits.set(key, hitCount - 1);
+  /**
+   * Decrement the hit count for `key` (skipSuccessfulRequests support).
+   * Never goes below zero.
+   * @returns {Promise<void>}
+   */
+  async decrement(key) {
+    const hits = this.#hits.get(key);
+    if (hits !== undefined && hits > 0) {
+      this.#hits.set(key, hits - 1);
     }
   }
 
-  resetKey(key) {
-    this.hits.delete(key);
-    this.resetTime.delete(key);
+  /**
+   * Immediately reset the counter for `key`.
+   * @returns {Promise<void>}
+   */
+  async resetKey(key) {
+    this.#hits.delete(key);
+    this.#resets.delete(key);
   }
 
-  cleanup() {
-    const now = Date.now();
-    let cleanedCount = 0;
+  /**
+   * Reset ALL counters.
+   * @returns {Promise<void>}
+   */
+  async resetAll() {
+    this.#hits.clear();
+    this.#resets.clear();
+  }
 
-    // Remove expired entries
-    for (const [key, resetTime] of this.resetTime.entries()) {
-      if (now > resetTime) {
-        this.hits.delete(key);
-        this.resetTime.delete(key);
-        cleanedCount++;
+  /** Current number of tracked keys. */
+  get size() {
+    return this.#hits.size;
+  }
+
+  /**
+   * Release cleanup timer and clear all data.
+   * Must be called during graceful shutdown.
+   */
+  destroy() {
+    clearInterval(this.#cleanupTimer);
+    this.#hits.clear();
+    this.#resets.clear();
+  }
+
+  // ── Private internals ────────────────────────────────────────────────────
+
+  #cleanup() {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const [key, reset] of this.#resets) {
+      if (now >= reset) {
+        this.#hits.delete(key);
+        this.#resets.delete(key);
+        cleaned++;
       }
     }
 
-    // Force cleanup if approaching memory limit
     if (
-      this.hits.size >
-      MEMORY_STORE_CONFIG.maxKeys * MEMORY_STORE_CONFIG.cleanupThreshold
+      this.#hits.size >
+      STORE_CONFIG.maxKeys * STORE_CONFIG.capacityThreshold
     ) {
-      logger.warn("Rate limit store approaching capacity, forcing cleanup", {
-        currentSize: this.hits.size,
-        maxSize: MEMORY_STORE_CONFIG.maxKeys,
-        cleanedCount,
-      });
-
-      // Remove oldest 20% of entries
-      const entriesToRemove = Math.floor(this.hits.size * 0.2);
-      const keys = Array.from(this.hits.keys()).slice(0, entriesToRemove);
-      keys.forEach((key) => {
-        this.hits.delete(key);
-        this.resetTime.delete(key);
-      });
+      this.#evict();
     }
 
-    if (cleanedCount > 0) {
+    if (cleaned > 0) {
       logger.debug("Rate limit store cleanup completed", {
-        cleanedCount,
-        remainingEntries: this.hits.size,
+        cleaned,
+        remaining: this.#hits.size,
       });
     }
   }
 
-  // Graceful shutdown
-  destroy() {
-    clearInterval(this.cleanupInterval);
-    this.hits.clear();
-    this.resetTime.clear();
+  #evict() {
+    const toEvict = Math.floor(this.#hits.size * STORE_CONFIG.evictionRatio);
+    logger.warn(
+      "Rate limit store capacity threshold reached, evicting entries",
+      {
+        currentSize: this.#hits.size,
+        maxKeys: STORE_CONFIG.maxKeys,
+        evicting: toEvict,
+      },
+    );
+    let count = 0;
+    for (const key of this.#hits.keys()) {
+      if (count++ >= toEvict) break;
+      this.#hits.delete(key);
+      this.#resets.delete(key);
+    }
+  }
+
+  #enforceCapacity() {
+    if (this.#hits.size > STORE_CONFIG.maxKeys) this.#evict();
   }
 }
 
-// ============================================================================
-// KEY GENERATION
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// STORE REGISTRY
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Generate consistent rate limit key from request
- * Priority: User ID (authenticated) > IP address > Forwarded IP
+ * Every MemoryStore created here is registered so cleanupRateLimiter()
+ * destroys ALL stores on shutdown — not just the socket store.
+ * @type {Set<MemoryStore>}
  */
-const generateRateLimitKey = (req) => {
-  // Prefer user ID if authenticated (prevents IP rotation bypass)
-  if (req.user && req.user._id) {
-    return `user:${req.user._id}`;
-  }
+const storeRegistry = new Set();
 
-  // Fallback to IP-based identification
+/** Create a MemoryStore and register it. */
+const createStore = (windowMs) => {
+  const store = new MemoryStore(windowMs);
+  storeRegistry.add(store);
+  return store;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KEY GENERATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve a stable rate-limit key for an HTTP request.
+ *
+ * Priority:
+ *   1. Authenticated user ID — prevents IP-rotation bypass
+ *   2. First IP in X-Forwarded-For (trimmed) — sanitised proxy header
+ *   3. req.socket.remoteAddress  (req.connection deprecated in Node 18+)
+ *   4. Literal "unknown"
+ *
+ * @param {import("express").Request} req
+ * @returns {string}
+ */
+const resolveIdentifier = (req) => {
+  if (req.user?._id) return `user:${req.user._id}`;
+
+  const forwarded = req.headers["x-forwarded-for"];
   const ip =
-    req.ip ||
-    req.headers["x-forwarded-for"] ||
-    req.connection.remoteAddress ||
+    ipKeyGenerator(req) ||
+    (forwarded ? forwarded.split(",")[0].trim() : null) ||
+    req.socket?.remoteAddress ||
     "unknown";
+
   return `ip:${ip}`;
 };
 
-// ============================================================================
-// ERROR HANDLING
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// BYPASS LOGIC
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Enhanced rate limit handler with user-friendly responses
- * Includes retry timing and actionable error messages
+ * Skip rate limiting when the development bypass header is present.
+ * Header  : X-Skip-Rate-Limit: true
+ * Security: only honoured when NODE_ENV === "development"
+ *
+ * @param {import("express").Request} req
+ * @returns {boolean}
  */
-const handleRateLimitExceeded = (req, res, options) => {
-  const identifier = generateRateLimitKey(req);
-  const retryAfterSeconds = Math.ceil(options.windowMs / 1000);
+const shouldSkip = (req) => {
+  if (IS_DEV && req.headers["x-skip-rate-limit"] === "true") {
+    metrics.recordBypass();
+    logger.debug("Rate limit bypassed (dev)", { path: req.path, ip: req.ip });
+    return true;
+  }
+  return false;
+};
 
-  // Record metrics
+// ─────────────────────────────────────────────────────────────────────────────
+// RATE-LIMIT EXCEEDED HANDLER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Called by express-rate-limit v8 when a client exceeds its limit.
+ *
+ * v8 signature: (req, res, next, options)
+ *   _next    — Express next function (unused; included for correct arity)
+ *   options  — the limiter's resolved options object
+ *
+ * @param {import("express").Request}      req
+ * @param {import("express").Response}     res
+ * @param {import("express").NextFunction} _next
+ * @param {object}                         options
+ */
+const onLimitReached = (req, res, _next, options) => {
+  const identifier = resolveIdentifier(req);
+  const windowMs = options?.windowMs ?? CONFIG.api.windowMs;
+  const retryAfterSec = Math.ceil(windowMs / 1000);
+
   metrics.recordRequest();
   metrics.recordBlock(identifier);
 
-  // Structured logging for monitoring
   logger.warn("Rate limit exceeded", {
     identifier,
     path: req.path,
     method: req.method,
     userAgent: req.headers["user-agent"],
-    remaining: 0,
-    limit: options.max,
-    retryAfter: retryAfterSeconds,
+    limit: options?.max ?? null,
+    retryAfterSec,
   });
 
-  // User-friendly response with retry information
   res.status(429).json({
     success: false,
-    message: options.message,
+    message: options?.message ?? "Too many requests, please try again later",
     error: "RATE_LIMIT_EXCEEDED",
-    retryAfter: retryAfterSeconds,
-    retryAt: new Date(Date.now() + options.windowMs).toISOString(),
-    limit: options.max,
-    windowMs: options.windowMs,
+    retryAfter: retryAfterSec,
+    retryAt: new Date(Date.now() + windowMs).toISOString(),
+    limit: options?.max ?? null,
+    windowMs,
   });
 };
 
-/**
- * Error handler for rate limiter initialization
- */
-const handleRateLimitError = (error, req, res) => {
-  metrics.recordError();
-
-  logger.error("Rate limiter error", {
-    error: error.message,
-    stack: error.stack,
-    path: req.path,
-  });
-
-  // Don't block requests on rate limiter errors
-  // Fail open to maintain availability
-  logger.warn(
-    "Rate limiter failed, allowing request through (fail-open policy)",
-  );
-};
-
-// ============================================================================
-// BYPASS LOGIC
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// LIMITER FACTORY
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Skip rate limiting for development with bypass header
- * Security: Only works when NODE_ENV is explicitly 'development'
+ * Create a configured express-rate-limit middleware with a dedicated
+ * MemoryStore instance.
+ *
+ * @param {object}   config
+ * @param {number}   config.windowMs
+ * @param {number}   config.max
+ * @param {string}   config.message
+ * @param {Function} [config.skip]
+ * @param {Function} [config.keyGenerator]
+ * @returns {import("express").RequestHandler}
  */
-const skipRateLimitCheck = (req) => {
-  const isDevelopment = process.env.NODE_ENV === "development";
-  const hasBypassHeader = req.headers["x-skip-rate-limit"] === "true";
-
-  if (isDevelopment && hasBypassHeader) {
-    metrics.recordBypass();
-    logger.debug("Rate limit bypassed for development", {
-      path: req.path,
-      ip: req.ip,
-    });
-    return true;
-  }
-
-  return false;
-};
-
-// ============================================================================
-// MIDDLEWARE FACTORY
-// ============================================================================
-
-/**
- * Create rate limiter with custom configuration
- * Reusable factory function for consistent behavior
- */
-const createRateLimiter = (config) => {
-  return rateLimit({
+const createLimiter = (config) =>
+  rateLimit({
     windowMs: config.windowMs,
     max: config.max,
     message: config.message,
-    standardHeaders: "draft-7",
-    legacyHeaders: false,
-    skip: config.skip || skipRateLimitCheck,
-    handler: handleRateLimitExceeded,
+    standardHeaders: "draft-7", // Retry-After + RateLimit-* headers
+    legacyHeaders: false, // suppress X-RateLimit-* v6 headers
+    skip: config.skip ?? shouldSkip,
+    handler: onLimitReached,
+    keyGenerator: config.keyGenerator ?? resolveIdentifier,
     skipFailedRequests: false,
     skipSuccessfulRequests: false,
-    // Note: Removed custom keyGenerator to avoid IPv6 issues
-    // Rate limiter will use default IP-based tracking
-    store: new MemoryStoreWithCleanup(config.windowMs),
+    store: createStore(config.windowMs),
   });
-};
 
-// ============================================================================
-// RATE LIMITERS
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPORTED HTTP LIMITERS
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Authentication rate limiter
- * Protects login/signup endpoints from brute force attacks
+ * Brute-force protection for login / signup endpoints.
+ * 10 req / 15 min (prod) | 100 req / 15 min (dev)
  */
-export const authLimiter = createRateLimiter({
-  windowMs: RATE_LIMIT_CONFIG.auth.windowMs,
-  max:
-    process.env.NODE_ENV === "development"
-      ? RATE_LIMIT_CONFIG.auth.maxDev
-      : RATE_LIMIT_CONFIG.auth.maxProd,
+export const authLimiter = createLimiter({
+  windowMs: CONFIG.auth.windowMs,
+  max: IS_DEV ? CONFIG.auth.maxDev : CONFIG.auth.maxProd,
   message: "Too many authentication attempts, please try again later",
 });
 
 /**
- * Message rate limiter
- * Prevents spam in real-time chat
+ * Prevent message spam in chat REST endpoints.
+ * 30 messages / minute per identifier.
  */
-export const messageLimiter = createRateLimiter({
-  windowMs: RATE_LIMIT_CONFIG.message.windowMs,
-  max: RATE_LIMIT_CONFIG.message.max,
+export const messageLimiter = createLimiter({
+  windowMs: CONFIG.message.windowMs,
+  max: CONFIG.message.max,
   message: "Too many messages sent, please slow down",
 });
 
 /**
- * Real-time event rate limiter
- * High limit for Socket.IO events (typing, read receipts, etc.)
+ * High-throughput limit for Socket.IO-adjacent HTTP events.
+ * 100 req / minute.
  */
-export const realtimeLimiter = createRateLimiter({
-  windowMs: RATE_LIMIT_CONFIG.realtime.windowMs,
-  max: RATE_LIMIT_CONFIG.realtime.max,
+export const realtimeLimiter = createLimiter({
+  windowMs: CONFIG.realtime.windowMs,
+  max: CONFIG.realtime.max,
   message: "Too many real-time events, please slow down",
 });
 
 /**
- * General API rate limiter
- * Applied to all API endpoints by default
+ * Default limiter applied to all general API endpoints.
+ * 100 req / 15 min.
  */
-export const apiLimiter = createRateLimiter({
-  windowMs: RATE_LIMIT_CONFIG.api.windowMs,
-  max: RATE_LIMIT_CONFIG.api.max,
+export const apiLimiter = createLimiter({
+  windowMs: CONFIG.api.windowMs,
+  max: CONFIG.api.max,
   message: "Too many requests, please try again later",
 });
 
 /**
- * Strict rate limiter for sensitive operations
- * Password changes, email updates, account deletion, etc.
+ * Strict limiter for sensitive operations
+ * (password changes, email updates, account deletion).
+ * 10 req / hour.
  */
-export const strictLimiter = createRateLimiter({
-  windowMs: RATE_LIMIT_CONFIG.strict.windowMs,
-  max: RATE_LIMIT_CONFIG.strict.max,
+export const strictLimiter = createLimiter({
+  windowMs: CONFIG.strict.windowMs,
+  max: CONFIG.strict.max,
   message: "Too many sensitive operations, please try again later",
 });
 
 /**
- * WebSocket connection rate limiter
- * Prevents connection spam and reconnection attacks
+ * WebSocket connection spam protection (HTTP upgrade path).
  */
-export const connectionLimiter = createRateLimiter({
-  windowMs: RATE_LIMIT_CONFIG.connection.windowMs,
-  max:
-    process.env.NODE_ENV === "development"
-      ? RATE_LIMIT_CONFIG.connection.maxDev
-      : RATE_LIMIT_CONFIG.connection.maxProd,
+export const connectionLimiter = createLimiter({
+  windowMs: CONFIG.connection.windowMs,
+  max: IS_DEV ? CONFIG.connection.maxDev : CONFIG.connection.maxProd,
   message: "Too many connection attempts, please wait before reconnecting",
 });
 
 /**
- * 🔍 Search rate limiter
+ * Per-user search limiter — keyed by user ID so shared office/campus IPs
+ * are not penalised collectively.
+ * 30 req / min (prod) | 60 req / min (dev)
  *
- * **Purpose:** Prevent server overload when 100+ users search simultaneously
- *
- * **Protection layers:**
- * 1. Rate limit per user (30 req/min in production)
- * 2. Works with frontend debouncing (400ms)
- * 3. Combined with MongoDB query limits
- *
- * **Usage:**
- * - Search messages: GET /api/messages/search/:conversationId
- * - Get messages around: GET /api/messages/around/:conversationId/:messageId
+ * Applied to:
+ *   GET /api/messages/search/:conversationId
+ *   GET /api/messages/around/:conversationId/:messageId
  */
-export const searchLimiter = createRateLimiter({
-  windowMs: RATE_LIMIT_CONFIG.search.windowMs,
-  max:
-    process.env.NODE_ENV === "development"
-      ? RATE_LIMIT_CONFIG.search.maxDev
-      : RATE_LIMIT_CONFIG.search.maxProd,
+export const searchLimiter = createLimiter({
+  windowMs: CONFIG.search.windowMs,
+  max: IS_DEV ? CONFIG.search.maxDev : CONFIG.search.maxProd,
   message: "Too many search requests, please slow down",
-  // Custom key generator: rate limit per user, not per IP
-  // This is fairer for shared networks (offices, schools)
-  keyGenerator: (req) => {
-    return req.user?._id?.toString() || req.ip;
-  },
+  keyGenerator: (req) =>
+    req.user?._id?.toString() ?? ipKeyGenerator(req) ?? "unknown",
 });
 
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 // SOCKET.IO RATE LIMITING
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Rate limiter for Socket.IO connections
- * Track connection attempts per IP/user to prevent abuse
+ * Dedicated store for Socket.IO connection tracking.
+ * Isolated from HTTP stores — connection abuse cannot exhaust HTTP budgets.
  */
-const socketConnectionStore = new MemoryStoreWithCleanup(
-  RATE_LIMIT_CONFIG.connection.windowMs,
-);
+const socketStore = createStore(CONFIG.connection.windowMs);
+
+const SOCKET_MAX = IS_DEV
+  ? CONFIG.connection.maxDev
+  : CONFIG.connection.maxProd;
 
 /**
- * Check if Socket.IO connection should be rate limited
- * Returns { allowed: boolean, reason?: string }
+ * Resolve a stable identifier from a Socket.IO handshake.
+ * @param {import("socket.io").Socket} socket
+ * @returns {string}
  */
-export const checkSocketRateLimit = (socket, callback) => {
-  const identifier = socket.handshake.auth?.userId
+const resolveSocketIdentifier = (socket) =>
+  socket.handshake.auth?.userId
     ? `user:${socket.handshake.auth.userId}`
-    : `ip:${socket.handshake.address}`;
+    : `ip:${socket.handshake.address ?? "unknown"}`;
 
-  const maxConnections =
-    process.env.NODE_ENV === "development"
-      ? RATE_LIMIT_CONFIG.connection.maxDev
-      : RATE_LIMIT_CONFIG.connection.maxProd;
+/**
+ * Async Socket.IO connection rate-limit check.
+ *
+ * Usage in socket.js:
+ *   const result = await checkSocketRateLimit(socket);
+ *   if (!result.allowed) {
+ *     socket.emit("error", { message: result.reason, retryAfter: result.retryAfter, code: "RATE_LIMIT_EXCEEDED" });
+ *     socket.disconnect(true);
+ *     return;
+ *   }
+ *
+ * @param {import("socket.io").Socket} socket
+ * @returns {Promise<{allowed: boolean, reason?: string, retryAfter?: number}>}
+ */
+export const checkSocketRateLimit = async (socket) => {
+  const identifier = resolveSocketIdentifier(socket);
 
-  socketConnectionStore.incr(identifier, (err, hitCount, resetTime) => {
-    if (err) {
-      logger.error("Socket rate limit check error", { error: err });
-      // Fail open - allow connection on error
-      return callback({ allowed: true });
-    }
+  try {
+    const { totalHits, resetTime } = await socketStore.increment(identifier);
 
-    if (hitCount > maxConnections) {
-      const retryAfterSeconds = Math.ceil((resetTime - Date.now()) / 1000);
+    if (totalHits > SOCKET_MAX) {
+      const retryAfter = Math.max(
+        0,
+        Math.ceil((resetTime.getTime() - Date.now()) / 1000),
+      );
 
       logger.warn("Socket connection rate limit exceeded", {
         identifier,
-        hitCount,
-        maxConnections,
-        retryAfter: retryAfterSeconds,
+        totalHits,
+        maxConnections: SOCKET_MAX,
+        retryAfter,
       });
 
       metrics.recordBlock(identifier);
-
-      return callback({
+      return {
         allowed: false,
         reason: "Too many connection attempts",
-        retryAfter: retryAfterSeconds,
-      });
+        retryAfter,
+      };
     }
 
     metrics.recordConnection(identifier);
-    callback({ allowed: true });
-  });
+    return { allowed: true };
+  } catch (err) {
+    // Fail-open: internal errors must never block legitimate users
+    metrics.recordError();
+    logger.error("Socket rate limit check failed — allowing (fail-open)", {
+      error: err.message,
+    });
+    return { allowed: true };
+  }
 };
 
 /**
- * Track Socket.IO disconnections for metrics
+ * Record a Socket.IO disconnection in the active-connections metric.
+ * @param {import("socket.io").Socket} socket
  */
 export const trackSocketDisconnection = (socket) => {
-  const identifier = socket.handshake.auth?.userId
-    ? `user:${socket.handshake.auth.userId}`
-    : `ip:${socket.handshake.address}`;
-
-  metrics.recordDisconnection(identifier);
+  metrics.recordDisconnection(resolveSocketIdentifier(socket));
 };
 
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 // METRICS & MONITORING
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Get current rate limit metrics
- * Useful for monitoring dashboards and alerting
+ * Return a frozen snapshot of current rate-limit metrics.
+ * Safe to expose on monitoring / admin endpoints.
+ * @returns {Readonly<object>}
  */
-export const getRateLimitMetrics = () => {
-  return metrics.getMetrics();
-};
+export const getRateLimitMetrics = () => metrics.snapshot();
 
 /**
- * Reset metrics (call this periodically or via admin endpoint)
+ * Reset counters (active-connections set is preserved).
+ * Useful for periodic metric windows or admin resets.
  */
 export const resetRateLimitMetrics = () => {
   metrics.reset();
-  logger.info("Rate limit metrics reset");
+  // logger.info("Rate limit metrics reset");
 };
 
-// ============================================================================
-// GRACEFUL SHUTDOWN
-// ============================================================================
-
-/**
- * Cleanup resources on server shutdown
- */
-export const cleanupRateLimiter = () => {
-  logger.info("Cleaning up rate limiter resources");
-  socketConnectionStore.destroy();
-};
-
-// Auto-cleanup on process termination
-process.on("SIGTERM", cleanupRateLimiter);
-process.on("SIGINT", cleanupRateLimiter);
-
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 // HEALTH CHECK
-// ============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Health check for rate limiter
- * Returns status and current metrics
+ * Health check payload for monitoring dashboards.
+ * Status is "degraded" when the error count exceeds the threshold (100).
+ * @returns {Readonly<object>}
  */
 export const rateLimiterHealthCheck = () => {
-  const currentMetrics = metrics.getMetrics();
-  const isHealthy = currentMetrics.errorCount < 100; // Threshold
+  const snap = metrics.snapshot();
+  const isHealthy = snap.errorCount < 100;
 
-  return {
+  return Object.freeze({
     status: isHealthy ? "healthy" : "degraded",
-    metrics: currentMetrics,
-    config: {
+    metrics: snap,
+    config: Object.freeze({
       environment: process.env.NODE_ENV,
-      memoryStoreMaxKeys: MEMORY_STORE_CONFIG.maxKeys,
-      cleanupPeriod: MEMORY_STORE_CONFIG.checkPeriod,
-    },
-  };
+      maxKeys: STORE_CONFIG.maxKeys,
+      cleanupInterval: STORE_CONFIG.cleanupIntervalMs,
+      activeStores: storeRegistry.size,
+    }),
+  });
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRACEFUL SHUTDOWN
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Destroy ALL registered MemoryStore instances (timers + maps).
+ * Called automatically on SIGTERM / SIGINT.
+ * Can also be called explicitly during test teardown.
+ */
+export const cleanupRateLimiter = () => {
+  // logger.info(`Cleaning up ${storeRegistry.size} rate-limit store(s)`);
+  for (const store of storeRegistry) store.destroy();
+  storeRegistry.clear();
+};
+
+// Guard against duplicate listeners on module re-evaluation (Jest / HMR)
+if (process.listenerCount("SIGTERM") === 0)
+  process.once("SIGTERM", cleanupRateLimiter);
+if (process.listenerCount("SIGINT") === 0)
+  process.once("SIGINT", cleanupRateLimiter);

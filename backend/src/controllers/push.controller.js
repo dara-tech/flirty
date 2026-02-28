@@ -114,8 +114,8 @@ export const unregisterPushToken = async (req, res) => {
 
       await user.save();
 
-      console.log("✅ [Push] Token unregistered");
-      console.log("   └─ Removed:", beforeCount - afterCount);
+      // console.log("✅ [Push] Token unregistered");
+      // console.log("   └─ Removed:", beforeCount - afterCount);
 
       res.status(200).json({
         success: true,

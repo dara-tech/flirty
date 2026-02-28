@@ -180,143 +180,142 @@ export function getReceiverSocketIds(userId) {
   return getAllUserSocketIds(userId);
 }
 
-io.on("connection", (socket) => {
+io.on("connection", async (socket) => {
   const userId = socket.handshake.query.userId;
 
   // Rate limit check for Socket.IO connections
-  checkSocketRateLimit(socket, (result) => {
-    if (!result.allowed) {
-      logger.warn("Socket connection rejected due to rate limit", {
-        userId,
-        socketId: socket.id,
-        reason: result.reason,
-        retryAfter: result.retryAfter,
-      });
+  const rateLimitResult = await checkSocketRateLimit(socket);
+  if (!rateLimitResult.allowed) {
+    logger.warn("Socket connection rejected due to rate limit", {
+      userId,
+      socketId: socket.id,
+      reason: rateLimitResult.reason,
+      retryAfter: rateLimitResult.retryAfter,
+    });
 
-      // Emit error to client before disconnecting
-      socket.emit("error", {
-        message: result.reason,
-        retryAfter: result.retryAfter,
-        code: "RATE_LIMIT_EXCEEDED",
-      });
+    // Emit error to client before disconnecting
+    socket.emit("error", {
+      message: rateLimitResult.reason,
+      retryAfter: rateLimitResult.retryAfter,
+      code: "RATE_LIMIT_EXCEEDED",
+    });
 
-      // Disconnect the socket
-      socket.disconnect(true);
-      return;
-    }
+    // Disconnect the socket
+    socket.disconnect(true);
+    return;
+  }
 
-    // Connection allowed, proceed with normal flow
-    if (userId) {
-      // Ensure userId is stored as string for consistent lookup
-      const userIdStr = typeof userId === "string" ? userId : userId.toString();
+  // Connection allowed, proceed with normal flow
+  if (userId) {
+    // Ensure userId is stored as string for consistent lookup
+    const userIdStr = typeof userId === "string" ? userId : userId.toString();
 
-      // MULTI-DEVICE: Count existing sockets before adding new one
-      const existingSocketCount = getAllUserSocketIds(userIdStr).length;
+    // MULTI-DEVICE: Count existing sockets before adding new one
+    const existingSocketCount = getAllUserSocketIds(userIdStr).length;
 
-      logger.debug("Socket user connected", {
-        userId: userIdStr,
-        socketId: socket.id,
-        existingDevices: existingSocketCount,
-        isNewDevice: existingSocketCount > 0,
-      });
+    logger.debug("Socket user connected", {
+      userId: userIdStr,
+      socketId: socket.id,
+      existingDevices: existingSocketCount,
+      isNewDevice: existingSocketCount > 0,
+    });
 
-      // MULTI-DEVICE: Add this socket to user's set of sockets
-      // (No longer replaces - allows multiple devices)
-      addUserSocket(userIdStr, socket.id);
+    // MULTI-DEVICE: Add this socket to user's set of sockets
+    // (No longer replaces - allows multiple devices)
+    addUserSocket(userIdStr, socket.id);
 
-      logger.info("Multi-device socket added", {
-        userId: userIdStr,
-        socketId: socket.id,
-        totalDevices: getAllUserSocketIds(userIdStr).length,
-      });
+    logger.info("Multi-device socket added", {
+      userId: userIdStr,
+      socketId: socket.id,
+      totalDevices: getAllUserSocketIds(userIdStr).length,
+    });
 
-      // Check for pending calls when user comes online
-      // Deliver any pending calls that were waiting for this user
-      for (const [callId, pendingCall] of pendingCalls.entries()) {
-        if (pendingCall.receiverId.toString() === userIdStr) {
-          // Clear the timeout since user is now online
-          clearTimeout(pendingCall.timeoutId);
+    // Check for pending calls when user comes online
+    // Deliver any pending calls that were waiting for this user
+    for (const [callId, pendingCall] of pendingCalls.entries()) {
+      if (pendingCall.receiverId.toString() === userIdStr) {
+        // Clear the timeout since user is now online
+        clearTimeout(pendingCall.timeoutId);
 
-          // Move from pending to active
-          activeCalls.set(callId, {
-            callerId: pendingCall.callerId,
-            receiverId: pendingCall.receiverId,
-            callType: pendingCall.callType,
-            status: "ringing",
-            createdAt: pendingCall.createdAt,
-          });
+        // Move from pending to active
+        activeCalls.set(callId, {
+          callerId: pendingCall.callerId,
+          receiverId: pendingCall.receiverId,
+          callType: pendingCall.callType,
+          status: "ringing",
+          createdAt: pendingCall.createdAt,
+        });
 
-          // MULTI-DEVICE: Send call invitation to ALL receiver's devices
-          emitToUser(userIdStr, "call:incoming", {
+        // MULTI-DEVICE: Send call invitation to ALL receiver's devices
+        emitToUser(userIdStr, "call:incoming", {
+          callId,
+          callerId: pendingCall.callerId,
+          callerInfo: pendingCall.callerInfo,
+          callType: pendingCall.callType,
+        });
+
+        // Notify caller that receiver is now online and call is ringing
+        const callerSocketId = getReceiverSocketId(pendingCall.callerId);
+        if (callerSocketId) {
+          io.to(callerSocketId).emit("call:ringing", {
             callId,
-            callerId: pendingCall.callerId,
-            callerInfo: pendingCall.callerInfo,
-            callType: pendingCall.callType,
+            receiverId: userIdStr,
           });
-
-          // Notify caller that receiver is now online and call is ringing
-          const callerSocketId = getReceiverSocketId(pendingCall.callerId);
-          if (callerSocketId) {
-            io.to(callerSocketId).emit("call:ringing", {
-              callId,
-              receiverId: userIdStr,
-            });
-          }
-
-          // Remove from pending
-          pendingCalls.delete(callId);
-
-          // Set timeout for this call (60 seconds from now)
-          setTimeout(async () => {
-            const callInfo = activeCalls.get(callId);
-            if (callInfo && callInfo.status === "ringing") {
-              // Call not answered after 60 seconds
-              // Save missed call to database
-              try {
-                const savedCall = await createCallRecord({
-                  callerId: callInfo.callerId,
-                  receiverId: callInfo.receiverId,
-                  groupId: null,
-                  callType: callInfo.callType,
-                  status: "missed",
-                  duration: 0,
-                  startedAt: callInfo.startedAt || callInfo.createdAt,
-                  endedAt: new Date(),
-                });
-                // console.log("✅ Missed call record saved to database:", { // [DEBUG - Removed for production]
-                // callId: savedCall._id,
-                // callerId: callInfo.callerId,
-                // receiverId: callInfo.receiverId,
-                // });
-              } catch (saveError) {
-                console.error("❌ Error saving missed call record:", saveError);
-              }
-
-              activeCalls.delete(callId);
-
-              // Notify caller
-              const callerSocketId = getReceiverSocketId(callInfo.callerId);
-              if (callerSocketId) {
-                io.to(callerSocketId).emit("call:failed", {
-                  callId,
-                  reason: "No answer",
-                });
-              }
-
-              // Notify receiver
-              const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
-              if (receiverSocketId) {
-                io.to(receiverSocketId).emit("call:missed", {
-                  callId,
-                  callerId: callInfo.callerId,
-                });
-              }
-            }
-          }, 60000); // 60 seconds timeout
         }
+
+        // Remove from pending
+        pendingCalls.delete(callId);
+
+        // Set timeout for this call (60 seconds from now)
+        setTimeout(async () => {
+          const callInfo = activeCalls.get(callId);
+          if (callInfo && callInfo.status === "ringing") {
+            // Call not answered after 60 seconds
+            // Save missed call to database
+            try {
+              const savedCall = await createCallRecord({
+                callerId: callInfo.callerId,
+                receiverId: callInfo.receiverId,
+                groupId: null,
+                callType: callInfo.callType,
+                status: "missed",
+                duration: 0,
+                startedAt: callInfo.startedAt || callInfo.createdAt,
+                endedAt: new Date(),
+              });
+              // console.log("✅ Missed call record saved to database:", { // [DEBUG - Removed for production]
+              // callId: savedCall._id,
+              // callerId: callInfo.callerId,
+              // receiverId: callInfo.receiverId,
+              // });
+            } catch (saveError) {
+              console.error("❌ Error saving missed call record:", saveError);
+            }
+
+            activeCalls.delete(callId);
+
+            // Notify caller
+            const callerSocketId = getReceiverSocketId(callInfo.callerId);
+            if (callerSocketId) {
+              io.to(callerSocketId).emit("call:failed", {
+                callId,
+                reason: "No answer",
+              });
+            }
+
+            // Notify receiver
+            const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
+            if (receiverSocketId) {
+              io.to(receiverSocketId).emit("call:missed", {
+                callId,
+                callerId: callInfo.callerId,
+              });
+            }
+          }
+        }, 60000); // 60 seconds timeout
       }
     }
-  }); // Close checkSocketRateLimit callback
+  }
 
   io.emit("getOnlineUsers", Array.from(userSockets.keys()));
 

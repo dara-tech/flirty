@@ -980,14 +980,14 @@ export const sendMessage = async (req, res) => {
           );
 
           if (mobilePushResult.success) {
-            logger.info("✅ [Push] Mobile notification sent", {
-              requestId: req.requestId,
-              receiverId,
-              messageId: newMessage._id,
-              sent: mobilePushResult.sent,
-              failed: mobilePushResult.failed,
-              total: mobilePushResult.total,
-            });
+            // logger.info("✅ [Push] Mobile notification sent", {
+            //   requestId: req.requestId,
+            //   receiverId,
+            //   messageId: newMessage._id,
+            //   sent: mobilePushResult.sent,
+            //   failed: mobilePushResult.failed,
+            //   total: mobilePushResult.total,
+            // });
           } else {
             logger.debug(
               `⚠️ [Push] Mobile push failed: ${mobilePushResult.error}, trying web push`,
@@ -1003,14 +1003,14 @@ export const sendMessage = async (req, res) => {
             );
 
             if (pushResult.success) {
-              logger.info("✅ [Push] Web notification sent", {
-                requestId: req.requestId,
-                receiverId,
-                messageId: newMessage._id,
-                sent: pushResult.sent,
-                failed: pushResult.failed,
-                total: pushResult.total,
-              });
+              // logger.info("✅ [Push] Web notification sent", {
+              //   requestId: req.requestId,
+              //   receiverId,
+              //   messageId: newMessage._id,
+              //   sent: pushResult.sent,
+              //   failed: pushResult.failed,
+              //   total: pushResult.total,
+              // });
             }
           }
         } catch (pushError) {
