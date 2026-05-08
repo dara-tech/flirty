@@ -1,15 +1,11 @@
 import { Server } from "socket.io";
 import http from "http";
 import express from "express";
-import mongoose from "mongoose";
 import Message from "../model/message.model.js";
 import Group from "../model/group.model.js";
 import User from "../model/user.model.js";
 import { createCallRecord } from "../controllers/call.controller.js";
-import {
-  checkSocketRateLimit,
-  trackSocketDisconnection,
-} from "../middleware/rateLimiter.js";
+import UserLiveLocation from "../model/userLiveLocation.model.js";
 import logger from "./logger.js";
 
 const app = express();
@@ -77,68 +73,8 @@ const io = new Server(server, {
   },
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MULTI-DEVICE SUPPORT
-// ═══════════════════════════════════════════════════════════════════════════
-// userSockets now stores Set<socketId> per user to support multiple devices
-// This enables Telegram/WhatsApp-like experience where all devices ring
-// and when call is answered on one device, others are notified
-// ═══════════════════════════════════════════════════════════════════════════
-const userSockets = new Map(); // { userId: Set<socketId> }
-
-// Helper: Add a socket for a user
-function addUserSocket(userId, socketId) {
-  const userIdStr = typeof userId === "string" ? userId : userId.toString();
-  if (!userSockets.has(userIdStr)) {
-    userSockets.set(userIdStr, new Set());
-  }
-  userSockets.get(userIdStr).add(socketId);
-}
-
-// Helper: Remove a socket for a user
-function removeUserSocket(userId, socketId) {
-  const userIdStr = typeof userId === "string" ? userId : userId.toString();
-  const sockets = userSockets.get(userIdStr);
-  if (sockets) {
-    sockets.delete(socketId);
-    if (sockets.size === 0) {
-      userSockets.delete(userIdStr);
-    }
-  }
-}
-
-// Helper: Get all socket IDs for a user (returns array)
-function getAllUserSocketIds(userId) {
-  const userIdStr = typeof userId === "string" ? userId : userId.toString();
-  const sockets = userSockets.get(userIdStr);
-  return sockets ? Array.from(sockets) : [];
-}
-
-// Helper: Emit to all of a user's devices
-function emitToUser(userId, event, data) {
-  const socketIds = getAllUserSocketIds(userId);
-  socketIds.forEach((socketId) => {
-    io.to(socketId).emit(event, data);
-  });
-  return socketIds.length;
-}
-
-// Helper: Emit to all of a user's devices EXCEPT one (for "answered elsewhere")
-function emitToUserExcept(userId, exceptSocketId, event, data) {
-  const socketIds = getAllUserSocketIds(userId);
-  socketIds.forEach((socketId) => {
-    if (socketId !== exceptSocketId) {
-      io.to(socketId).emit(event, data);
-    }
-  });
-}
-
-// Helper: Check if user has any connected sockets
-function isUserOnline(userId) {
-  const userIdStr = typeof userId === "string" ? userId : userId.toString();
-  const sockets = userSockets.get(userIdStr);
-  return sockets && sockets.size > 0;
-}
+// ⚠️ Renamed userSocketMap to userSockets to avoid conflict
+const userSockets = new Map(); // { userId: socketId }
 
 // Store active calls (temporary, in-memory)
 // In production, consider using Redis or database
@@ -152,83 +88,56 @@ const pendingCalls = new Map();
 // { roomId: { groupId, participants: [{ userId, socketId, tracks: { audio, video } }], callType } }
 const groupCallRooms = new Map();
 
-// Store user locations for real-time map
-// { userId: { lat, lng, speed, heading, accuracy, timestamp, socketId } }
-const userLocations = new Map();
+// ── Live Location Sharing ────────────────────────────────────────────────────
+// Single lobby room — all users who emitted location:join are members.
+const LOCATION_ROOM = "location:lobby";
 
-// Location sharing rooms (for nearby users)
-const locationRooms = new Map(); // { roomId: Set<userId> }
+// In-memory snapshot for O(1) reads and full-init broadcasts.
+// { userId → { userId, name, profilePic, lat, lng, socketId, updatedAt } }
+const liveLocations = new Map();
 
 export function getReceiverSocketId(userId) {
   if (!userId) return null;
   // Convert to string to ensure consistent lookup
   const userIdStr = typeof userId === "string" ? userId : userId.toString();
+  const socketId = userSockets.get(userIdStr);
 
-  // MULTI-DEVICE: Return first socket ID (for backward compatibility)
-  // For new code, use getAllUserSocketIds() or emitToUser() instead
-  const sockets = userSockets.get(userIdStr);
-  if (!sockets || sockets.size === 0) {
-    return null;
-  }
+  // Only log when user not found for debugging (commented to reduce spam)
+  // if (!socketId) {
+  //   console.log("⚠️ [SOCKET] getReceiverSocketId - User not found:", {
+  //     requestedUserId: userIdStr,
+  //     allConnectedUsers: Array.from(userSockets.keys()),
+  //     totalConnections: userSockets.size,
+  //   });
+  // }
 
-  // Return first socket (arbitrary but consistent)
-  return Array.from(sockets)[0];
+  return socketId;
 }
 
-// MULTI-DEVICE: Get all socket IDs for a user (exported for use in other modules)
-export function getReceiverSocketIds(userId) {
-  return getAllUserSocketIds(userId);
-}
-
-io.on("connection", async (socket) => {
+io.on("connection", (socket) => {
   const userId = socket.handshake.query.userId;
 
-  // Rate limit check for Socket.IO connections
-  const rateLimitResult = await checkSocketRateLimit(socket);
-  if (!rateLimitResult.allowed) {
-    logger.warn("Socket connection rejected due to rate limit", {
-      userId,
-      socketId: socket.id,
-      reason: rateLimitResult.reason,
-      retryAfter: rateLimitResult.retryAfter,
-    });
-
-    // Emit error to client before disconnecting
-    socket.emit("error", {
-      message: rateLimitResult.reason,
-      retryAfter: rateLimitResult.retryAfter,
-      code: "RATE_LIMIT_EXCEEDED",
-    });
-
-    // Disconnect the socket
-    socket.disconnect(true);
-    return;
-  }
-
-  // Connection allowed, proceed with normal flow
   if (userId) {
     // Ensure userId is stored as string for consistent lookup
     const userIdStr = typeof userId === "string" ? userId : userId.toString();
+    // console.log("✅ [SOCKET] User connected:", {
+    //   userId: userIdStr,
+    //   socketId: socket.id,
+    //   previousSocketId: userSockets.get(userIdStr),
+    //   wasAlreadyConnected: userSockets.has(userIdStr),
+    // });
 
-    // MULTI-DEVICE: Count existing sockets before adding new one
-    const existingSocketCount = getAllUserSocketIds(userIdStr).length;
-
-    logger.debug("Socket user connected", {
-      userId: userIdStr,
-      socketId: socket.id,
-      existingDevices: existingSocketCount,
-      isNewDevice: existingSocketCount > 0,
-    });
-
-    // MULTI-DEVICE: Add this socket to user's set of sockets
-    // (No longer replaces - allows multiple devices)
-    addUserSocket(userIdStr, socket.id);
-
-    logger.info("Multi-device socket added", {
-      userId: userIdStr,
-      socketId: socket.id,
-      totalDevices: getAllUserSocketIds(userIdStr).length,
-    });
+    if (userSockets.has(userIdStr)) {
+      // console.log(
+      //   "⚠️ [SOCKET] User already had a socket, replacing old connection"
+      // );
+    }
+    userSockets.set(userIdStr, socket.id);
+    // console.log("📝 [SOCKET] Stored mapping:", {
+    //   userId: userIdStr,
+    //   socketId: socket.id,
+    //   totalConnections: userSockets.size,
+    // });
 
     // Check for pending calls when user comes online
     // Deliver any pending calls that were waiting for this user
@@ -246,8 +155,8 @@ io.on("connection", async (socket) => {
           createdAt: pendingCall.createdAt,
         });
 
-        // MULTI-DEVICE: Send call invitation to ALL receiver's devices
-        emitToUser(userIdStr, "call:incoming", {
+        // Send call invitation to receiver (now online)
+        io.to(socket.id).emit("call:incoming", {
           callId,
           callerId: pendingCall.callerId,
           callerInfo: pendingCall.callerInfo,
@@ -283,11 +192,11 @@ io.on("connection", async (socket) => {
                 startedAt: callInfo.startedAt || callInfo.createdAt,
                 endedAt: new Date(),
               });
-              // console.log("✅ Missed call record saved to database:", { // [DEBUG - Removed for production]
-              // callId: savedCall._id,
-              // callerId: callInfo.callerId,
-              // receiverId: callInfo.receiverId,
-              // });
+              console.log("✅ Missed call record saved to database:", {
+                callId: savedCall._id,
+                callerId: callInfo.callerId,
+                receiverId: callInfo.receiverId,
+              });
             } catch (saveError) {
               console.error("❌ Error saving missed call record:", saveError);
             }
@@ -320,224 +229,152 @@ io.on("connection", async (socket) => {
   io.emit("getOnlineUsers", Array.from(userSockets.keys()));
 
   socket.on("typing", ({ receiverId }) => {
-    try {
-      if (receiverId && userId) {
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("typing", { senderId: userId });
-        }
+    if (receiverId && userId) {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("typing", { senderId: userId });
       }
-    } catch (error) {
-      logger.error("[SOCKET] Error in typing handler", {
-        error: error.message,
-      });
     }
   });
 
   socket.on("stopTyping", ({ receiverId }) => {
-    try {
-      if (receiverId && userId) {
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("stopTyping", { senderId: userId });
-        }
+    if (receiverId && userId) {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("stopTyping", { senderId: userId });
       }
-    } catch (error) {
-      logger.error("[SOCKET] Error in stopTyping handler", {
-        error: error.message,
-      });
     }
   });
 
   // Editing indicator
   socket.on("editing", ({ receiverId }) => {
-    try {
-      if (receiverId && userId) {
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("editing", { senderId: userId });
-        }
+    if (receiverId && userId) {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("editing", { senderId: userId });
       }
-    } catch (error) {
-      logger.error("[SOCKET] Error in editing handler", {
-        error: error.message,
-      });
     }
   });
 
   socket.on("stopEditing", ({ receiverId }) => {
-    try {
-      if (receiverId && userId) {
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("stopEditing", { senderId: userId });
-        }
+    if (receiverId && userId) {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("stopEditing", { senderId: userId });
       }
-    } catch (error) {
-      logger.error("[SOCKET] Error in stopEditing handler", {
-        error: error.message,
-      });
     }
   });
 
   // Deleting indicator
   socket.on("deleting", ({ receiverId }) => {
-    try {
-      if (receiverId && userId) {
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("deleting", { senderId: userId });
-        }
+    if (receiverId && userId) {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("deleting", { senderId: userId });
       }
-    } catch (error) {
-      logger.error("[SOCKET] Error in deleting handler", {
-        error: error.message,
-      });
     }
   });
 
   socket.on("stopDeleting", ({ receiverId }) => {
-    try {
-      if (receiverId && userId) {
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("stopDeleting", { senderId: userId });
-        }
+    if (receiverId && userId) {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("stopDeleting", { senderId: userId });
       }
-    } catch (error) {
-      logger.error("[SOCKET] Error in stopDeleting handler", {
-        error: error.message,
-      });
     }
   });
 
   // Uploading photo indicator
   socket.on("uploadingPhoto", ({ receiverId }) => {
-    try {
-      if (receiverId && userId) {
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("uploadingPhoto", { senderId: userId });
-        }
+    if (receiverId && userId) {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("uploadingPhoto", { senderId: userId });
       }
-    } catch (error) {
-      logger.error("[SOCKET] Error in uploadingPhoto handler", {
-        error: error.message,
-      });
     }
   });
 
   socket.on("stopUploadingPhoto", ({ receiverId }) => {
-    try {
-      if (receiverId && userId) {
-        const receiverSocketId = getReceiverSocketId(receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("stopUploadingPhoto", {
-            senderId: userId,
-          });
-        }
+    if (receiverId && userId) {
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("stopUploadingPhoto", {
+          senderId: userId,
+        });
       }
-    } catch (error) {
-      logger.error("[SOCKET] Error in stopUploadingPhoto handler", {
-        error: error.message,
-      });
     }
   });
 
   socket.on("messageSeen", async ({ messageId, senderId }) => {
     try {
-      // ✅ BEST PRACTICE: Input validation (Telegram-style safety)
-      if (!messageId || !senderId || !userId) {
-        logger.warn("[SOCKET] messageSeen - Invalid parameters", {
-          messageId,
-          senderId,
-          userId,
-          socketId: socket.id,
-        });
-        return;
-      }
-
-      // ✅ BEST PRACTICE: Validate ObjectId format before query
-      if (!mongoose.Types.ObjectId.isValid(messageId)) {
-        logger.warn("[SOCKET] messageSeen - Invalid messageId format", {
-          messageId,
-        });
-        return;
-      }
+      // console.log("👁️ [SOCKET] messageSeen received:", { messageId, senderId });
 
       const message = await Message.findById(messageId);
       if (!message) {
-        logger.warn("[SOCKET] messageSeen - Message not found", {
-          messageId,
-        });
+        console.log("❌ [SOCKET] Message not found:", messageId);
         return;
       }
 
-      // ✅ BEST PRACTICE: Authorization check - only receiver can mark as seen
-      const receiverIdStr = message.receiverId?.toString();
-      if (!receiverIdStr || userId.toString() !== receiverIdStr) {
-        logger.warn("[SOCKET] messageSeen - Unauthorized attempt", {
-          messageId,
-          userId,
-          receiverId: receiverIdStr,
-        });
-        return;
-      }
-
-      const senderIdStr = message.senderId?.toString();
-      const updatePayload = {
-        messageId,
-        senderId: senderIdStr,
-        receiverId: receiverIdStr,
-      };
-
-      // ✅ IDEMPOTENT: If already seen, still emit to sender (they may have missed it)
-      // but skip the DB update. This handles the race condition where the sender
-      // receives "messageSeenUpdate" before "newMessage" and the update is lost.
       if (message.seen) {
-        updatePayload.seenAt = message.seenAt;
-        // Still emit to sender so their UI updates (defense against race conditions)
-        emitToUser(senderIdStr, "messageSeenUpdate", updatePayload);
+        console.log("⏭️ [SOCKET] Message already seen:", messageId);
         return;
       }
 
-      // ✅ PRODUCTION: Atomic update with timestamp
       message.seen = true;
       message.seenAt = new Date();
       await message.save();
 
-      updatePayload.seenAt = message.seenAt;
+      // console.log("✅ [SOCKET] Message marked as seen:", messageId);
 
-      // ✅ CRITICAL FIX: Use emitToUser for multi-device support
-      // Previously used getReceiverSocketId which only returns the FIRST socket,
-      // missing other devices/tabs. emitToUser sends to ALL connected sockets.
+      const updatePayload = {
+        messageId,
+        seenAt: message.seenAt,
+        senderId: message.senderId?.toString(),
+        receiverId: message.receiverId?.toString(),
+      };
+
+      // ✅ CRITICAL FIX: Emit to BOTH sender and receiver for real-time sync
       // Sender (original message author) needs to see ✓✓ checkmarks
-      emitToUser(senderIdStr, "messageSeenUpdate", updatePayload);
+      const senderSocketId = getReceiverSocketId(senderId);
+      if (senderSocketId) {
+        io.to(senderSocketId).emit("messageSeenUpdate", updatePayload);
+        // console.log("📤 [SOCKET] Emitted messageSeenUpdate to sender:", {
+        //   senderId,
+        //   socketId: senderSocketId,
+        //   messageId,
+        // });
+      } else {
+        console.log("⚠️ [SOCKET] Sender socket not found:", senderId);
+      }
 
-      // Also emit to receiver (person who marked as seen)
+      // ✅ CRITICAL FIX: Also emit to receiver (person who marked as seen)
       // This ensures their chat list updates immediately after marking as seen
-      emitToUser(receiverIdStr, "messageSeenUpdate", updatePayload);
+      const receiverIdStr = message.receiverId?.toString();
+      if (receiverIdStr) {
+        const receiverSocketId = getReceiverSocketId(receiverIdStr);
+        if (receiverSocketId && receiverSocketId !== senderSocketId) {
+          io.to(receiverSocketId).emit("messageSeenUpdate", updatePayload);
+          // console.log("📤 [SOCKET] Emitted messageSeenUpdate to receiver:", {
+          //   receiverId: receiverIdStr,
+          //   socketId: receiverSocketId,
+          //   messageId,
+          // });
+        }
+      }
     } catch (error) {
       console.error("❌ [SOCKET] Error updating message seen status:", error);
     }
   });
 
   // Helper function to emit to all group members except sender
-  // 🔥 FIX: Include co-admins (admins array) in group event emissions
   const emitToGroupMembers = async (groupId, senderId, event, data) => {
     try {
       const group = await Group.findById(groupId)
         .populate("admin", "fullname profilePic")
-        .populate("admins", "fullname profilePic") // Include co-admins
         .populate("members", "fullname profilePic");
       if (!group) return;
 
-      // Include admin, co-admins (admins), and members
-      const allMembers = [
-        group.admin,
-        ...(group.admins || []),
-        ...group.members,
-      ];
+      const allMembers = [group.admin, ...group.members];
       allMembers.forEach((member) => {
         const memberIdStr = member._id
           ? member._id.toString()
@@ -571,105 +408,67 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("groupStopTyping", async ({ groupId }) => {
-    try {
-      if (groupId && userId) {
-        await emitToGroupMembers(groupId, userId, "groupStopTyping", {
-          groupId,
-          senderId: userId,
-        });
-      }
-    } catch (error) {
-      logger.error("[SOCKET] Error in groupStopTyping", {
-        error: error.message,
+    if (groupId && userId) {
+      await emitToGroupMembers(groupId, userId, "groupStopTyping", {
+        groupId,
+        senderId: userId,
       });
     }
   });
 
   // Group editing indicator
   socket.on("groupEditing", async ({ groupId }) => {
-    try {
-      if (groupId && userId) {
-        await emitToGroupMembers(groupId, userId, "groupEditing", {
-          groupId,
-          senderId: userId,
-        });
-      }
-    } catch (error) {
-      logger.error("[SOCKET] Error in groupEditing", { error: error.message });
+    if (groupId && userId) {
+      await emitToGroupMembers(groupId, userId, "groupEditing", {
+        groupId,
+        senderId: userId,
+      });
     }
   });
 
   socket.on("groupStopEditing", async ({ groupId }) => {
-    try {
-      if (groupId && userId) {
-        await emitToGroupMembers(groupId, userId, "groupStopEditing", {
-          groupId,
-          senderId: userId,
-        });
-      }
-    } catch (error) {
-      logger.error("[SOCKET] Error in groupStopEditing", {
-        error: error.message,
+    if (groupId && userId) {
+      await emitToGroupMembers(groupId, userId, "groupStopEditing", {
+        groupId,
+        senderId: userId,
       });
     }
   });
 
   // Group deleting indicator
   socket.on("groupDeleting", async ({ groupId }) => {
-    try {
-      if (groupId && userId) {
-        await emitToGroupMembers(groupId, userId, "groupDeleting", {
-          groupId,
-          senderId: userId,
-        });
-      }
-    } catch (error) {
-      logger.error("[SOCKET] Error in groupDeleting", { error: error.message });
+    if (groupId && userId) {
+      await emitToGroupMembers(groupId, userId, "groupDeleting", {
+        groupId,
+        senderId: userId,
+      });
     }
   });
 
   socket.on("groupStopDeleting", async ({ groupId }) => {
-    try {
-      if (groupId && userId) {
-        await emitToGroupMembers(groupId, userId, "groupStopDeleting", {
-          groupId,
-          senderId: userId,
-        });
-      }
-    } catch (error) {
-      logger.error("[SOCKET] Error in groupStopDeleting", {
-        error: error.message,
+    if (groupId && userId) {
+      await emitToGroupMembers(groupId, userId, "groupStopDeleting", {
+        groupId,
+        senderId: userId,
       });
     }
   });
 
   // Group uploading photo indicator
   socket.on("groupUploadingPhoto", async ({ groupId }) => {
-    try {
-      if (groupId && userId) {
-        await emitToGroupMembers(groupId, userId, "groupUploadingPhoto", {
-          groupId,
-          senderId: userId,
-        });
-      }
-    } catch (error) {
-      logger.error("[SOCKET] Error in groupUploadingPhoto", {
-        error: error.message,
+    if (groupId && userId) {
+      await emitToGroupMembers(groupId, userId, "groupUploadingPhoto", {
+        groupId,
+        senderId: userId,
       });
     }
   });
 
   socket.on("groupStopUploadingPhoto", async ({ groupId }) => {
-    try {
-      if (groupId && userId) {
-        await emitToGroupMembers(groupId, userId, "groupStopUploadingPhoto", {
-          groupId,
-          senderId: userId,
-        });
-      }
-    } catch (error) {
-      logger.error("[SOCKET] Error in groupStopUploadingPhoto", {
-        error: error.message,
+    if (groupId && userId) {
+      await emitToGroupMembers(groupId, userId, "groupStopUploadingPhoto", {
+        groupId,
+        senderId: userId,
       });
     }
   });
@@ -677,38 +476,14 @@ io.on("connection", async (socket) => {
   // Reaction handlers - WebSocket-based real-time reactions
   socket.on("reaction", async ({ messageId, emoji }) => {
     try {
-      // ✅ BEST PRACTICE: Input validation
       if (!messageId || !emoji || !userId) {
-        logger.warn("[SOCKET] reaction - Invalid parameters", {
-          messageId,
-          emoji,
-          userId,
-          socketId: socket.id,
-        });
-        return;
-      }
-
-      // ✅ BEST PRACTICE: Validate ObjectId format
-      if (!mongoose.Types.ObjectId.isValid(messageId)) {
-        logger.warn("[SOCKET] reaction - Invalid messageId format", {
-          messageId,
-        });
-        return;
-      }
-
-      // ✅ PRODUCTION: Emoji validation (prevent XSS/injection)
-      const emojiRegex = /^[\p{Emoji}\p{Emoji_Component}]+$/u;
-      if (!emojiRegex.test(emoji) || emoji.length > 10) {
-        logger.warn("[SOCKET] reaction - Invalid emoji format", {
-          emoji,
-          userId,
-        });
+        console.error("Invalid reaction data:", { messageId, emoji, userId });
         return;
       }
 
       const message = await Message.findById(messageId);
       if (!message) {
-        logger.warn("[SOCKET] reaction - Message not found", { messageId });
+        console.error("Message not found for reaction:", messageId);
         return;
       }
 
@@ -719,11 +494,8 @@ io.on("connection", async (socket) => {
         const group = await Group.findById(message.groupId);
         if (group) {
           const userIdStr = userId.toString();
-          // 🔥 FIX: Include co-admins (admins array) in participant check
           isParticipant =
             group.admin.toString() === userIdStr ||
-            (group.admins &&
-              group.admins.some((a) => a.toString() === userIdStr)) ||
             group.members.some((m) => m.toString() === userIdStr);
         }
       } else {
@@ -735,54 +507,20 @@ io.on("connection", async (socket) => {
       }
 
       if (!isParticipant) {
-        logger.warn("[SOCKET] reaction - User not a participant", {
-          messageId,
-          userId,
-          groupId: message.groupId?.toString(),
-        });
+        console.error("User is not a participant in this conversation");
         return;
       }
 
-      // ✅ FIX: If user reacts, they must have seen the message - add to seenBy if not already
-      // Skip if user is the sender (sender doesn't "see" their own message)
-      const messageSenderId = message.senderId._id
-        ? message.senderId._id.toString()
-        : message.senderId.toString();
-      const userIdStr = userId.toString();
-
-      if (messageSenderId !== userIdStr && message.groupId) {
-        const alreadySeen = message.seenBy.some((s) => {
-          if (!s || !s.userId) return false;
-          const seenUserId = s.userId._id
-            ? s.userId._id.toString()
-            : s.userId.toString();
-          return seenUserId === userIdStr;
-        });
-
-        if (!alreadySeen) {
-          message.seenBy.push({
-            userId: userId,
-            seenAt: new Date(),
-          });
-        }
-      }
-
-      // ✅ PRODUCTION: Find existing reaction from this user
+      // Remove existing reaction from this user if exists (toggle behavior)
       const existingReactionIndex = message.reactions.findIndex(
         (r) => r.userId.toString() === userId.toString() && r.emoji === emoji,
       );
 
       const wasRemoved = existingReactionIndex !== -1;
-      const actionType = wasRemoved ? "removed" : "added";
 
       if (existingReactionIndex !== -1) {
         // Remove reaction (toggle off)
         message.reactions.splice(existingReactionIndex, 1);
-        logger.debug("[SOCKET] Reaction removed", {
-          messageId,
-          userId,
-          emoji,
-        });
       } else {
         // Remove any other reaction from this user for this message (one reaction per user per message)
         message.reactions = message.reactions.filter(
@@ -794,84 +532,29 @@ io.on("connection", async (socket) => {
           emoji: emoji,
           createdAt: new Date(),
         });
-        logger.debug("[SOCKET] Reaction added", {
-          messageId,
-          userId,
-          emoji,
-        });
       }
 
-      // ✅ PRODUCTION: Save with error handling
-      try {
-        await message.save();
-      } catch (saveError) {
-        logger.error("[SOCKET] Failed to save reaction", {
-          error: saveError.message,
-          messageId,
-          userId,
-        });
-        return;
-      }
-      // ✅ PRODUCTION: Populate with error handling
-      try {
-        await message.populate("reactions.userId", "fullname profilePic");
-        await message.populate("senderId", "fullname profilePic");
-        await message.populate("receiverId", "fullname profilePic");
-        // ✅ FIX: Also populate seenBy since we may have added user to it
-        if (message.groupId) {
-          await message.populate("seenBy.userId", "fullname profilePic");
-        }
-      } catch (populateError) {
-        logger.error("[SOCKET] Failed to populate reaction message", {
-          error: populateError.message,
-          messageId,
-        });
-      }
+      await message.save();
+      await message.populate("reactions.userId", "fullname profilePic");
+      await message.populate("senderId", "fullname profilePic");
+      await message.populate("receiverId", "fullname profilePic");
 
       const messageObj = message.toObject ? message.toObject() : message;
-      const reactionPayload = {
-        messageId: messageId.toString(),
-        reactions: messageObj.reactions || [],
-        message: messageObj,
-        actionType: actionType, // ✅ Tell client if added or removed
-        userId: userId.toString(),
-      };
 
-      // ✅ PRODUCTION: Broadcast with logging
+      // Broadcast reaction update to all participants
       if (message.groupId) {
         const group = await Group.findById(message.groupId);
         if (group) {
-          // 🔥 FIX: Include co-admins (admins array)
-          const allMembers = [
-            group.admin,
-            ...(group.admins || []),
-            ...group.members,
-          ];
-          let broadcastCount = 0;
-
-          // Determine legacy event name based on action type
-          const legacyGroupEvent =
-            actionType === "removed"
-              ? "groupMessageReactionRemoved"
-              : "groupMessageReactionAdded";
-
+          const allMembers = [group.admin, ...group.members];
           allMembers.forEach((memberId) => {
             const memberSocketId = getReceiverSocketId(memberId.toString());
             if (memberSocketId) {
-              // Emit new unified event
-              io.to(memberSocketId).emit("reaction-update", reactionPayload);
-              // ✅ BACKWARD COMPAT: Also emit legacy event for Flutter app
-              io.to(memberSocketId).emit(legacyGroupEvent, messageObj);
-              broadcastCount++;
+              io.to(memberSocketId).emit("reaction-update", {
+                messageId: messageId.toString(),
+                reactions: messageObj.reactions || [],
+                message: messageObj,
+              });
             }
-          });
-
-          logger.debug("[SOCKET] Reaction broadcast to group", {
-            messageId,
-            groupId: message.groupId.toString(),
-            membersNotified: broadcastCount,
-            totalMembers: allMembers.length,
-            actionType,
           });
         }
       } else {
@@ -898,293 +581,67 @@ io.on("connection", async (socket) => {
           ? getReceiverSocketId(senderIdStr)
           : null;
 
-        let broadcastCount = 0;
-        const notifiedSockets = new Set();
-
-        // Determine legacy event name based on action type
-        const legacyEvent =
-          actionType === "removed"
-            ? "messageReactionRemoved"
-            : "messageReactionAdded";
-
-        // Emit to receiver if online and not already notified
-        if (receiverSocketId && !notifiedSockets.has(receiverSocketId)) {
-          io.to(receiverSocketId).emit("reaction-update", reactionPayload);
-          // ✅ BACKWARD COMPAT: Also emit legacy event for Flutter app
-          io.to(receiverSocketId).emit(legacyEvent, messageObj);
-          notifiedSockets.add(receiverSocketId);
-          broadcastCount++;
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit("reaction-update", {
+            messageId: messageId.toString(),
+            reactions: messageObj.reactions || [],
+            message: messageObj,
+          });
         }
 
-        // Emit to sender if online and not already notified
-        if (senderSocketId && !notifiedSockets.has(senderSocketId)) {
-          io.to(senderSocketId).emit("reaction-update", reactionPayload);
-          // ✅ BACKWARD COMPAT: Also emit legacy event for Flutter app
-          io.to(senderSocketId).emit(legacyEvent, messageObj);
-          notifiedSockets.add(senderSocketId);
-          broadcastCount++;
+        if (senderSocketId) {
+          io.to(senderSocketId).emit("reaction-update", {
+            messageId: messageId.toString(),
+            reactions: messageObj.reactions || [],
+            message: messageObj,
+          });
         }
 
-        logger.debug("[SOCKET] Reaction broadcast to direct message", {
-          messageId,
-          receiverId: receiverIdStr,
-          senderId: senderIdStr,
-          usersNotified: broadcastCount,
-          actionType,
-        });
+        // Always notify the current socket (user who added the reaction) to ensure they see the update
+        if (socket && socket.id) {
+          io.to(socket.id).emit("reaction-update", {
+            messageId: messageId.toString(),
+            reactions: messageObj.reactions || [],
+            message: messageObj,
+          });
+        }
       }
     } catch (error) {
       console.error("Error handling reaction:", error);
     }
   });
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Group message batch seen status (performance-optimized)
-  // ═══════════════════════════════════════════════════════════════════════════
-  //
-  // Handles marking multiple group messages as seen in a single operation.
-  // Used when a user opens a group chat with many unread messages.
-  //
-  // Flow:
-  //   1. Client emits { messageIds: string[], groupId: string }
-  //   2. Server validates membership, filters sender's own messages
-  //   3. Batch-updates all messages in a single MongoDB bulkWrite
-  //   4. Broadcasts groupMessageSeenUpdate for EACH updated message
-  //      (so sender's UI updates per-message with correct seenBy)
-  //
-  // Benefits over per-message groupMessageSeen:
-  //   - Single round-trip instead of N
-  //   - Single DB bulk operation instead of N findById + save
-  //   - Prevents socket emission debouncing issues on client
-  socket.on("groupBatchMessagesSeen", async ({ messageIds, groupId }) => {
-    try {
-      // ✅ Input validation
-      if (
-        !messageIds ||
-        !Array.isArray(messageIds) ||
-        messageIds.length === 0 ||
-        !groupId ||
-        !userId
-      ) {
-        logger.warn("[SOCKET] groupBatchMessagesSeen - Invalid parameters", {
-          messageIdsCount: messageIds?.length,
-          groupId,
-          userId,
-        });
-        return;
-      }
-
-      // ✅ Validate ObjectId format for groupId
-      if (!mongoose.Types.ObjectId.isValid(groupId)) {
-        logger.warn(
-          "[SOCKET] groupBatchMessagesSeen - Invalid groupId format",
-          { groupId },
-        );
-        return;
-      }
-
-      // ✅ Validate all messageIds
-      const validMessageIds = messageIds.filter((id) =>
-        mongoose.Types.ObjectId.isValid(id),
-      );
-      if (validMessageIds.length === 0) {
-        logger.warn("[SOCKET] groupBatchMessagesSeen - No valid messageIds");
-        return;
-      }
-
-      // ✅ Verify group exists and user is a member
-      const group = await Group.findById(groupId);
-      if (!group) return;
-
-      const userIdStr = userId.toString();
-      const isMember =
-        group.admin.toString() === userIdStr ||
-        (group.admins &&
-          group.admins.some((a) => a.toString() === userIdStr)) ||
-        group.members.some((m) => m.toString() === userIdStr);
-      if (!isMember) return;
-
-      // ✅ Fetch all target messages in a single query
-      const messages = await Message.find({
-        _id: { $in: validMessageIds },
-        groupId: groupId,
-      }).populate("senderId", "fullname");
-
-      if (messages.length === 0) return;
-
-      // ✅ Build bulk update operations (skip sender's own messages & already-seen)
-      const bulkOps = [];
-      const messagesToBroadcast = [];
-
-      for (const message of messages) {
-        const messageSenderId = message.senderId._id
-          ? message.senderId._id.toString()
-          : message.senderId.toString();
-
-        // Skip if user is the sender
-        if (messageSenderId === userIdStr) continue;
-
-        // Check if already seen by this user
-        const alreadySeen = message.seenBy.some((s) => {
-          if (!s || !s.userId) return false;
-          const seenUserId = s.userId._id
-            ? s.userId._id.toString()
-            : s.userId.toString();
-          return seenUserId === userIdStr;
-        });
-
-        if (!alreadySeen) {
-          bulkOps.push({
-            updateOne: {
-              filter: { _id: message._id },
-              update: {
-                $push: {
-                  seenBy: { userId: userId, seenAt: new Date() },
-                },
-              },
-            },
-          });
-        }
-
-        // Always broadcast (even if already seen) to sync state
-        messagesToBroadcast.push(message._id);
-      }
-
-      // ✅ Execute batch DB update in one operation
-      if (bulkOps.length > 0) {
-        await Message.bulkWrite(bulkOps);
-      }
-
-      // ✅ Re-fetch updated messages with populated fields for broadcast
-      const updatedMessages = await Message.find({
-        _id: { $in: messagesToBroadcast },
-      })
-        .populate("senderId", "fullname profilePic")
-        .populate("seenBy.userId", "fullname profilePic")
-        .populate("reactions.userId", "fullname profilePic")
-        .populate("listenedBy.userId", "fullname profilePic")
-        .populate({
-          path: "replyTo",
-          select:
-            "text image audio video file sticker senderId receiverId createdAt",
-          populate: { path: "senderId", select: "fullname profilePic" },
-        });
-
-      // ✅ Broadcast groupMessageSeenUpdate per message to all group members
-      const allMembers = [
-        group.admin,
-        ...(group.admins || []),
-        ...group.members,
-      ];
-
-      for (const updatedMsg of updatedMessages) {
-        // Deduplicate seenBy
-        const seenByMap = new Map();
-        updatedMsg.seenBy.forEach((seen) => {
-          const seenUserId =
-            seen.userId?._id?.toString() || seen.userId?.toString();
-          if (seenUserId && !seenByMap.has(seenUserId)) {
-            seenByMap.set(seenUserId, seen);
-          }
-        });
-        const deduplicatedSeenBy = Array.from(seenByMap.values());
-
-        const messageObj = updatedMsg.toObject
-          ? updatedMsg.toObject()
-          : updatedMsg;
-        messageObj.seenBy = deduplicatedSeenBy;
-
-        allMembers.forEach((memberId) => {
-          const memberIdStr = memberId.toString();
-          emitToUser(memberIdStr, "groupMessageSeenUpdate", {
-            messageId: updatedMsg._id.toString(),
-            groupId,
-            seenBy: deduplicatedSeenBy,
-            userId: userId,
-            message: messageObj,
-          });
-        });
-      }
-    } catch (error) {
-      console.error("❌ [GROUP_BATCH_SEEN] Error:", error);
-    }
-  });
-
-  // Group message seen status (single message)
+  // Group message seen status
   socket.on("groupMessageSeen", async ({ messageId, groupId }) => {
     try {
-      // ✅ BEST PRACTICE: Input validation
-      if (!messageId || !groupId || !userId) {
-        logger.warn("[SOCKET] groupMessageSeen - Invalid parameters", {
-          messageId,
-          groupId,
-          userId,
-          socketId: socket.id,
-        });
-        return;
-      }
-
-      // ✅ BEST PRACTICE: Validate ObjectId formats
-      if (
-        !mongoose.Types.ObjectId.isValid(messageId) ||
-        !mongoose.Types.ObjectId.isValid(groupId)
-      ) {
-        logger.warn("[SOCKET] groupMessageSeen - Invalid ID format", {
-          messageId,
-          groupId,
-        });
-        return;
-      }
+      // console.log("📥 [GROUP_SEEN] Received event:", {
+      //   messageId,
+      //   groupId,
+      //   userId: userId.toString(),
+      // });
 
       const message = await Message.findById(messageId).populate(
         "senderId",
         "fullname",
       );
       if (!message || !message.groupId) {
-        logger.warn(
-          "[SOCKET] groupMessageSeen - Message not found or not a group message",
-          { messageId },
-        );
-        return;
-      }
-
-      // ✅ BEST PRACTICE: Verify groupId matches
-      if (message.groupId.toString() !== groupId.toString()) {
-        logger.warn("[SOCKET] groupMessageSeen - GroupId mismatch", {
-          messageGroupId: message.groupId.toString(),
-          requestedGroupId: groupId.toString(),
-        });
+        console.log("❌ [GROUP_SEEN] Message not found or not a group message");
         return;
       }
 
       const group = await Group.findById(groupId);
       if (!group) {
-        // console.log("❌ [GROUP_SEEN] Group not found"); // [DEBUG - Removed for production]
+        console.log("❌ [GROUP_SEEN] Group not found");
         return;
       }
 
       // Check if user is a member
       const userIdStr = userId.toString();
-      // 🔥 FIX: Include co-admins (admins array) in member check
       const isMember =
         group.admin.toString() === userIdStr ||
-        (group.admins &&
-          group.admins.some((a) => a.toString() === userIdStr)) ||
         group.members.some((m) => m.toString() === userIdStr);
       if (!isMember) {
-        // console.log("❌ [GROUP_SEEN] User not a member"); // [DEBUG - Removed for production]
-        return;
-      }
-
-      // ✅ FIX: Skip if user is the sender of the message
-      // Sender should not be added to seenBy - they sent it, they didn't "see" it
-      const messageSenderId = message.senderId._id
-        ? message.senderId._id.toString()
-        : message.senderId.toString();
-      if (messageSenderId === userIdStr) {
-        console.log(
-          "⏭️  [GROUP_SEEN] Skipping - user is the sender of this message",
-        );
+        console.log("❌ [GROUP_SEEN] User not a member");
         return;
       }
 
@@ -1212,10 +669,10 @@ io.on("connection", async (socket) => {
         });
         await message.save();
 
-        // console.log("✅ [GROUP_SEEN] Database updated:", { // [DEBUG - Removed for production]
-        // messageId,
-        // newSeenByCount: message.seenBy.length,
-        // });
+        console.log("✅ [GROUP_SEEN] Database updated:", {
+          messageId,
+          newSeenByCount: message.seenBy.length,
+        });
       } else {
         // console.log(
         //   "⏭️  [GROUP_SEEN] Already seen by user, but will send current seenBy status"
@@ -1224,20 +681,6 @@ io.on("connection", async (socket) => {
 
       // Populate seenBy for sending to clients (do this for both new and existing)
       await message.populate("seenBy.userId", "fullname profilePic");
-      // ✅ FIX: Also populate full message data (like reactions do)
-      // This ensures clients receive updated senderId.fullname and other fields
-      await message.populate("senderId", "fullname profilePic");
-      await message.populate("reactions.userId", "fullname profilePic");
-      await message.populate("listenedBy.userId", "fullname profilePic");
-      await message.populate({
-        path: "replyTo",
-        select:
-          "text image audio video file sticker senderId receiverId createdAt",
-        populate: {
-          path: "senderId",
-          select: "fullname profilePic",
-        },
-      });
 
       // Deduplicate seenBy before sending (in case of any duplicates from population)
       const seenByMap = new Map();
@@ -1250,28 +693,26 @@ io.on("connection", async (socket) => {
       });
       const deduplicatedSeenBy = Array.from(seenByMap.values());
 
-      // ✅ FIX: Convert to object and include full message data
-      const messageObj = message.toObject ? message.toObject() : message;
-      messageObj.seenBy = deduplicatedSeenBy; // Use deduplicated seenBy
+      // console.log("📤 [GROUP_SEEN] Broadcasting to group members:", {
+      //   memberCount: [group.admin, ...group.members].length,
+      //   seenByCount: deduplicatedSeenBy.length,
+      //   isNewSeen: !alreadySeen,
+      // });
 
       // Notify all group members about the seen update
       // Even if alreadySeen=true, other members need to know the current seenBy status
-      // ✅ FIX: Use emitToUser to notify ALL devices of each member (not just first socket)
-      // 🔥 FIX: Include co-admins (admins array)
-      const allMembers = [
-        group.admin,
-        ...(group.admins || []),
-        ...group.members,
-      ];
+      const allMembers = [group.admin, ...group.members];
       allMembers.forEach((memberId) => {
         const memberIdStr = memberId.toString();
-        emitToUser(memberIdStr, "groupMessageSeenUpdate", {
-          messageId,
-          groupId,
-          seenBy: deduplicatedSeenBy,
-          userId: userId,
-          message: messageObj, // ✅ FIX: Include full message for UI consistency
-        });
+        const memberSocketId = getReceiverSocketId(memberIdStr);
+        if (memberSocketId) {
+          io.to(memberSocketId).emit("groupMessageSeenUpdate", {
+            messageId,
+            groupId,
+            seenBy: deduplicatedSeenBy,
+            userId: userId,
+          });
+        }
       });
     } catch (error) {
       console.error(
@@ -1311,49 +752,14 @@ io.on("connection", async (socket) => {
                   startedAt: pendingCall.startedAt || pendingCall.createdAt,
                   endedAt: new Date(),
                 });
-                // console.log( // [DEBUG - Removed for production]
-                // "✅ Offline missed call record saved to database:",
-                // {
-                // callId: savedCall._id,
-                // callerId: pendingCall.callerId,
-                // receiverId: pendingCall.receiverId,
-                // }
-                // );
-
-                // Send push notification for missed call
-                try {
-                  const { sendMissedCallNotification } =
-                    await import("../services/pushNotification.service.js");
-                  await sendMissedCallNotification(pendingCall.receiverId, {
+                console.log(
+                  "✅ Offline missed call record saved to database:",
+                  {
                     callId: savedCall._id,
                     callerId: pendingCall.callerId,
-                    callType: pendingCall.callType,
-                  });
-                } catch (pushError) {
-                  console.error(
-                    "Failed to send missed call push notification:",
-                    pushError,
-                  );
-                }
-
-                // Send mobile push notification for missed call (Flutter)
-                try {
-                  const { sendMobileMissedCallNotification } =
-                    await import("../services/mobilePushNotification.service.js");
-                  await sendMobileMissedCallNotification(
-                    pendingCall.receiverId,
-                    {
-                      callId: savedCall._id,
-                      callerId: pendingCall.callerId,
-                      callType: pendingCall.callType,
-                    },
-                  );
-                } catch (pushError) {
-                  console.error(
-                    "Failed to send mobile missed call push notification:",
-                    pushError,
-                  );
-                }
+                    receiverId: pendingCall.receiverId,
+                  },
+                );
               } catch (saveError) {
                 console.error(
                   "❌ Error saving offline missed call record:",
@@ -1374,10 +780,8 @@ io.on("connection", async (socket) => {
             }
           }, 60000); // 60 seconds timeout
 
-          // MULTI-DEVICE: Track callerSocketId for routing WebRTC answer/ICE back
           pendingCalls.set(callId, {
             callerId: userId,
-            callerSocketId: socket.id, // Track which socket initiated the call
             receiverId: receiverId,
             callType,
             callerInfo,
@@ -1385,35 +789,6 @@ io.on("connection", async (socket) => {
             startedAt: new Date(), // When call was initiated
             timeoutId,
           });
-
-          // Send push notification for incoming call (receiver is offline)
-          try {
-            const { sendCallNotification } =
-              await import("../services/pushNotification.service.js");
-            await sendCallNotification(receiverId, {
-              callId,
-              callerId: userId,
-              callType,
-            });
-          } catch (pushError) {
-            console.error("Failed to send call push notification:", pushError);
-          }
-
-          // Send mobile push notification for incoming call (Flutter CallKit)
-          try {
-            const { sendMobileCallNotification } =
-              await import("../services/mobilePushNotification.service.js");
-            await sendMobileCallNotification(receiverId, {
-              callId,
-              callerId: userId,
-              callType,
-            });
-          } catch (pushError) {
-            console.error(
-              "Failed to send mobile call push notification:",
-              pushError,
-            );
-          }
 
           // Notify caller that call is ringing (even though user is offline)
           // This allows the UI to show "calling" state
@@ -1427,10 +802,8 @@ io.on("connection", async (socket) => {
 
         // Receiver is online - proceed with normal call flow
         // Store call info with timestamps
-        // MULTI-DEVICE: Track callerSocketId for routing WebRTC answer/ICE back
         activeCalls.set(callId, {
           callerId: userId,
-          callerSocketId: socket.id, // Track which socket initiated the call
           receiverId: receiverId,
           callType,
           status: "ringing",
@@ -1439,35 +812,13 @@ io.on("connection", async (socket) => {
           answeredAt: null, // When call was answered (if answered)
         });
 
-        // MULTI-DEVICE: Send call invitation to ALL receiver's devices via socket
-        const deviceCount = emitToUser(receiverId, "call:incoming", {
+        // Send call invitation to receiver
+        io.to(receiverSocketId).emit("call:incoming", {
           callId,
           callerId: userId,
           callerInfo,
           callType,
         });
-
-        // logger.info("📞 [Call] Sent call:incoming to all receiver devices", {
-        //   callId,
-        //   receiverId,
-        //   deviceCount,
-        // });
-
-        // Also send mobile push notification (for background/locked screen CallKit)
-        try {
-          const { sendMobileCallNotification } =
-            await import("../services/mobilePushNotification.service.js");
-          await sendMobileCallNotification(receiverId, {
-            callId,
-            callerId: userId,
-            callType,
-          });
-        } catch (pushError) {
-          console.error(
-            "Failed to send mobile call push notification:",
-            pushError,
-          );
-        }
 
         // Notify caller that call is ringing
         io.to(socket.id).emit("call:ringing", {
@@ -1498,17 +849,23 @@ io.on("connection", async (socket) => {
 
             activeCalls.delete(callId);
 
-            // MULTI-DEVICE: Notify all caller's devices
-            emitToUser(callInfo.callerId, "call:failed", {
-              callId,
-              reason: "No answer",
-            });
+            // Notify caller
+            const callerSocketId = getReceiverSocketId(callInfo.callerId);
+            if (callerSocketId) {
+              io.to(callerSocketId).emit("call:failed", {
+                callId,
+                reason: "No answer",
+              });
+            }
 
-            // MULTI-DEVICE: Notify all receiver's devices
-            emitToUser(callInfo.receiverId, "call:missed", {
-              callId,
-              callerId: callInfo.callerId,
-            });
+            // Notify receiver
+            const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
+            if (receiverSocketId) {
+              io.to(receiverSocketId).emit("call:missed", {
+                callId,
+                callerId: callInfo.callerId,
+              });
+            }
           }
         }, 60000); // 60 seconds timeout
       } catch (error) {
@@ -1522,35 +879,10 @@ io.on("connection", async (socket) => {
   );
 
   // Call Answer
-  socket.on("call:answer", async ({ callId, answer }) => {
+  socket.on("call:answer", ({ callId, answer }) => {
     try {
-      // 🔥 CRITICAL: Check both activeCalls AND pendingCalls
-      // When receiver was offline (push notification), call is in pendingCalls
-      // When receiver was online (socket), call is in activeCalls
-      let callInfo = activeCalls.get(callId);
-      let wasInPendingCalls = false;
-
+      const callInfo = activeCalls.get(callId);
       if (!callInfo) {
-        // Check pendingCalls (user was offline, received push notification)
-        callInfo = pendingCalls.get(callId);
-        wasInPendingCalls = true;
-
-        if (callInfo) {
-          // Clear the timeout since call is being answered
-          if (callInfo.timeoutId) {
-            clearTimeout(callInfo.timeoutId);
-          }
-          // Move from pendingCalls to activeCalls
-          pendingCalls.delete(callId);
-          activeCalls.set(callId, callInfo);
-          // console.log(
-          //   `📞 [Call] Moved call ${callId} from pendingCalls to activeCalls`,
-          // );
-        }
-      }
-
-      if (!callInfo) {
-        console.log(`❌ [Call] Call not found: ${callId}`);
         io.to(socket.id).emit("call:failed", {
           callId,
           reason: "Call not found",
@@ -1560,56 +892,26 @@ io.on("connection", async (socket) => {
 
       if (callInfo.receiverId.toString() !== userId.toString()) {
         // Only receiver can answer
-        console.log(
-          `⚠️ [Call] Wrong user trying to answer. Expected: ${callInfo.receiverId}, Got: ${userId}`,
-        );
-        return;
-      }
-
-      // 🔥 CRITICAL FIX: If call is already answered, skip processing
-      // This prevents multi-device race conditions where second socket overwrites
-      // the answeredBySocketId, causing WebRTC offers to go to wrong socket
-      if (callInfo.status === "answered" && callInfo.answeredBySocketId) {
-        // Notify this socket that call was answered elsewhere
-        io.to(socket.id).emit("call:answered-elsewhere", {
-          callId,
-          answeredByDeviceId: callInfo.answeredBySocketId,
-          message: "Call was already answered on another device",
-        });
         return;
       }
 
       // Update call status and track when call was answered
       callInfo.status = "answered";
       callInfo.answeredAt = new Date();
-      // MULTI-DEVICE: Track which socket answered the call
-      callInfo.answeredBySocketId = socket.id;
       activeCalls.set(callId, callInfo);
 
-      // ═══════════════════════════════════════════════════════════════════════
-      // MULTI-DEVICE: Notify receiver's OTHER devices that call was answered elsewhere
-      // This stops ringing on other devices (like Telegram/WhatsApp behavior)
-      // ═══════════════════════════════════════════════════════════════════════
-      emitToUserExcept(
-        callInfo.receiverId,
-        socket.id,
-        "call:answered-elsewhere",
-        {
+      // Notify caller that call was answered
+      const callerSocketId = getReceiverSocketId(callInfo.callerId);
+      if (callerSocketId) {
+        io.to(callerSocketId).emit("call:answered", {
           callId,
-          answeredByDeviceId: socket.id,
-          message: "Call was answered on another device",
-        },
-      );
-      // MULTI-DEVICE: Notify ALL caller's devices that call was answered
-      const callerDeviceCount = emitToUser(callInfo.callerId, "call:answered", {
-        callId,
-        receiverId: userId,
-      });
+          receiverId: userId,
+        });
+      }
 
-      // Forward WebRTC answer if provided (only to the specific caller socket that initiated)
-      // For now, send to all caller devices - the WebRTC logic will handle which one connects
+      // Forward WebRTC answer if provided
       if (answer) {
-        emitToUser(callInfo.callerId, "webrtc:answer", {
+        io.to(callerSocketId).emit("webrtc:answer", {
           callId,
           answer,
         });
@@ -1622,35 +924,8 @@ io.on("connection", async (socket) => {
   // Call Reject
   socket.on("call:reject", async ({ callId, reason }) => {
     try {
-      // 🔥 Check both activeCalls AND pendingCalls (same as call:answer)
-      let callInfo = activeCalls.get(callId);
-
-      if (!callInfo) {
-        // Check pendingCalls (user was offline, received push notification)
-        callInfo = pendingCalls.get(callId);
-
-        if (callInfo) {
-          // Clear the timeout since call is being rejected
-          if (callInfo.timeoutId) {
-            clearTimeout(callInfo.timeoutId);
-          }
-        }
-      }
-
-      if (!callInfo) {
-        return;
-      }
-
-      // ✅ RACE CONDITION FIX: Remove from maps SYNCHRONOUSLY before the first
-      // `await` so any concurrent call:reject / call:cancel / call:end handler
-      // that starts in the same JS event-loop tick will find nothing and exit.
-      // Without this, two handlers could both read callInfo, both await
-      // createCallRecord, and both write duplicate MongoDB documents.
-      activeCalls.delete(callId);
-      pendingCalls.delete(callId);
-
-      // Determine status based on reason
-      const status = reason === "busy" ? "busy" : "rejected";
+      const callInfo = activeCalls.get(callId);
+      if (!callInfo) return;
 
       // Save rejected call to database
       try {
@@ -1659,167 +934,34 @@ io.on("connection", async (socket) => {
           receiverId: callInfo.receiverId,
           groupId: null,
           callType: callInfo.callType,
-          status: status,
+          status: "rejected",
           duration: 0,
           startedAt: callInfo.startedAt || callInfo.createdAt,
           endedAt: new Date(),
         });
-        // console.log("✅ Rejected call record saved to database:", { // [DEBUG - Removed for production]
-        // callId: savedCall._id,
-        // callerId: callInfo.callerId,
-        // receiverId: callInfo.receiverId,
-        // });
+        console.log("✅ Rejected call record saved to database:", {
+          callId: savedCall._id,
+          callerId: callInfo.callerId,
+          receiverId: callInfo.receiverId,
+        });
       } catch (saveError) {
         console.error("❌ Error saving rejected call record:", saveError);
       }
 
-      // MULTI-DEVICE: Notify ALL caller's devices with appropriate event
-      if (reason === "busy") {
-        // User is already in another call
-        emitToUser(callInfo.callerId, "call:busy", {
-          callId,
-          receiverId: userId,
-        });
-      } else {
-        emitToUser(callInfo.callerId, "call:rejected", {
+      // Notify caller
+      const callerSocketId = getReceiverSocketId(callInfo.callerId);
+      if (callerSocketId) {
+        io.to(callerSocketId).emit("call:rejected", {
           callId,
           reason: reason || "Call rejected",
           receiverId: userId,
         });
       }
 
-      // MULTI-DEVICE: Notify all receiver's OTHER devices that call was rejected on this device
-      emitToUserExcept(
-        callInfo.receiverId,
-        socket.id,
-        "call:rejected-elsewhere",
-        {
-          callId,
-          rejectedByDeviceId: socket.id,
-        },
-      );
-
-      // SELF-ACK: Notify the rejecting device that the call record has been
-      // saved so its conversation screen can refresh the call-history timeline
-      // and the chat-list last-message preview immediately (instant UX, same
-      // as the caller side).  This event is emitted only to socket.id — the
-      // exact socket that sent call:reject — so no other device is affected.
-      socket.emit("call:rejected-self", {
-        callId,
-        callerId: callInfo.callerId,
-        receiverId: callInfo.receiverId,
-        callType: callInfo.callType,
-        status,
-      });
-
-      // 🔥 CRITICAL: Send push notification to CALLER to dismiss their call UI
-      // This handles the case when caller's app is terminated/background
-      try {
-        const { sendMobileCallEndNotification } =
-          await import("../services/mobilePushNotification.service.js");
-        await sendMobileCallEndNotification(callInfo.callerId, {
-          callId,
-          reason: reason === "busy" ? "busy" : "rejected",
-          endedBy: userId,
-        });
-      } catch (pushError) {
-        console.error(
-          "Failed to send call reject push notification:",
-          pushError,
-        );
-      }
-
-      // Maps already cleared above (before first await — race-condition fix).
+      // Remove call from active calls
+      activeCalls.delete(callId);
     } catch (error) {
       console.error("Error in call:reject:", error);
-      // Ensure clean-up even on unexpected errors
-      activeCalls.delete(callId);
-      pendingCalls.delete(callId);
-    }
-  });
-
-  // Call Cancel (caller cancels before receiver answers)
-  socket.on("call:cancel", async ({ callId }) => {
-    try {
-      // Check active calls first
-      let callInfo = activeCalls.get(callId);
-
-      // If not in active, check pending calls
-      if (!callInfo) {
-        const pendingCall = pendingCalls.get(callId);
-        if (pendingCall) {
-          callInfo = pendingCall;
-          // Clear the pending call timeout
-          if (pendingCall.timeoutId) {
-            clearTimeout(pendingCall.timeoutId);
-          }
-        }
-      }
-
-      if (!callInfo) {
-        return; // Call not found, nothing to cancel
-      }
-
-      // Only caller can cancel
-      if (callInfo.callerId.toString() !== userId.toString()) {
-        return;
-      }
-
-      // ✅ RACE CONDITION FIX: Remove from maps SYNCHRONOUSLY before first await
-      // (mirrors the same fix in call:reject — see comment there for details).
-      activeCalls.delete(callId);
-      pendingCalls.delete(callId);
-
-      // Save cancelled call to database
-      try {
-        await createCallRecord({
-          callerId: callInfo.callerId,
-          receiverId: callInfo.receiverId,
-          groupId: null,
-          callType: callInfo.callType,
-          status: "cancelled",
-          duration: 0,
-          startedAt: callInfo.startedAt || callInfo.createdAt,
-          endedAt: new Date(),
-        });
-      } catch (saveError) {
-        console.error("❌ Error saving cancelled call record:", saveError);
-      }
-
-      // MULTI-DEVICE: Notify ALL receiver's devices that call was cancelled
-      emitToUser(callInfo.receiverId, "call:cancelled", {
-        callId,
-        callerId: callInfo.callerId,
-      });
-
-      // MULTI-DEVICE: Also notify all caller's OTHER devices
-      emitToUserExcept(callInfo.callerId, socket.id, "call:cancelled", {
-        callId,
-        callerId: callInfo.callerId,
-      });
-
-      // 🔥 CRITICAL: Send push notification to dismiss CallKit on receiver's device
-      // This handles the case when receiver's app is terminated/background
-      try {
-        const { sendMobileCallCancelNotification } =
-          await import("../services/mobilePushNotification.service.js");
-        await sendMobileCallCancelNotification(callInfo.receiverId, {
-          callId,
-          callerId: callInfo.callerId,
-        });
-      } catch (pushError) {
-        console.error(
-          "Failed to send call cancel push notification:",
-          pushError,
-        );
-      }
-
-      // Maps already cleared above (before first await — race-condition fix).
-    } catch (error) {
-      console.error("Error in call:cancel:", error);
-      // Ensure clean-up even on unexpected errors
-      activeCalls.delete(callId);
-      pendingCalls.delete(callId);
     }
   });
 
@@ -1828,9 +970,6 @@ io.on("connection", async (socket) => {
     try {
       const callInfo = activeCalls.get(callId);
       if (!callInfo) return;
-
-      // ✅ RACE CONDITION FIX: Claim the call synchronously before first await.
-      activeCalls.delete(callId);
 
       // Determine call status based on reason
       let callStatus = "cancelled";
@@ -1867,112 +1006,69 @@ io.on("connection", async (socket) => {
           startedAt: callInfo.startedAt || callInfo.createdAt,
           endedAt: endedAt,
         });
-        // console.log("✅ Call record saved to database:", { // [DEBUG - Removed for production]
-        // callId: savedCall._id,
-        // status: callStatus,
-        // duration: callDuration,
-        // callerId: callInfo.callerId,
-        // receiverId: callInfo.receiverId,
-        // });
+        console.log("✅ Call record saved to database:", {
+          callId: savedCall._id,
+          status: callStatus,
+          duration: callDuration,
+          callerId: callInfo.callerId,
+          receiverId: callInfo.receiverId,
+        });
       } catch (saveError) {
         console.error("❌ Error saving call record:", saveError);
         // Don't block the call end process if save fails
       }
 
-      // MULTI-DEVICE: Notify ALL devices of BOTH parties (except the one that ended)
-      emitToUserExcept(callInfo.callerId, socket.id, "call:ended", {
-        callId,
-        reason: reason || "Call ended",
-      });
+      // Notify both parties
+      const callerSocketId = getReceiverSocketId(callInfo.callerId);
+      const receiverSocketId = getReceiverSocketId(callInfo.receiverId);
 
-      emitToUserExcept(callInfo.receiverId, socket.id, "call:ended", {
-        callId,
-        reason: reason || "Call ended",
-      });
-
-      // 🔥 CRITICAL: Send push notification to OTHER party to dismiss their call UI
-      // This handles the case when other party's app is terminated/background
-      try {
-        const { sendMobileCallEndNotification } =
-          await import("../services/mobilePushNotification.service.js");
-
-        // Determine who is the other party (not the one who ended the call)
-        const otherPartyId =
-          userId.toString() === callInfo.callerId.toString()
-            ? callInfo.receiverId
-            : callInfo.callerId;
-
-        await sendMobileCallEndNotification(otherPartyId, {
+      if (callerSocketId && callerSocketId !== socket.id) {
+        io.to(callerSocketId).emit("call:ended", {
           callId,
-          reason: reason || "ended",
-          endedBy: userId,
+          reason: reason || "Call ended",
         });
-      } catch (pushError) {
-        console.error("Failed to send call end push notification:", pushError);
       }
 
-      // activeCalls already cleared above (race-condition fix).
+      if (receiverSocketId && receiverSocketId !== socket.id) {
+        io.to(receiverSocketId).emit("call:ended", {
+          callId,
+          reason: reason || "Call ended",
+        });
+      }
+
+      // Remove call from active calls
+      activeCalls.delete(callId);
     } catch (error) {
       console.error("Error in call:end:", error);
-      // Ensure clean-up even on unexpected errors
-      activeCalls.delete(callId);
     }
   });
 
-  // WebRTC Offer - MULTI-DEVICE: Send to ALL receiver sockets (handles engine restart)
+  // WebRTC Offer
   socket.on("webrtc:offer", ({ callId, offer, receiverId }) => {
     try {
-      // 🔥 CRITICAL FIX: Send offer to ALL sockets for the receiver
-      // This handles the case where the receiver's Flutter engine restarts
-      // after accepting the call, creating a NEW socket connection.
-      // The old socket (answeredBySocketId) might be dead.
-      const allReceiverSockets = getReceiverSocketIds(receiverId);
-
-      if (allReceiverSockets && allReceiverSockets.length > 0) {
-        // Send to ALL sockets - one of them will have the WebRTC listeners
-        let sentCount = 0;
-        for (const socketId of allReceiverSockets) {
-          io.to(socketId).emit("webrtc:offer", {
-            callId,
-            offer,
-            callerId: userId,
-          });
-          sentCount++;
-        }
-        // Also log if the answeredBySocketId is still in the list
-        const callInfo = activeCalls.get(callId);
-        if (callInfo && callInfo.answeredBySocketId) {
-          const stillActive = allReceiverSockets.includes(
-            callInfo.answeredBySocketId,
-          );
-        }
-      } else {
-        console.log(`⚠️ [WebRTC] Receiver ${receiverId} not connected`);
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("webrtc:offer", {
+          callId,
+          offer,
+          callerId: userId,
+        });
       }
     } catch (error) {
       console.error("Error in webrtc:offer:", error);
     }
   });
 
-  // WebRTC Answer - MULTI-DEVICE: Send to ALL caller sockets
+  // WebRTC Answer
   socket.on("webrtc:answer", ({ callId, answer, callerId }) => {
     try {
-      // 🔥 CRITICAL FIX: Send answer to ALL sockets for the caller
-      // This handles the case where the caller might have multiple sockets
-      const allCallerSockets = getReceiverSocketIds(callerId);
-
-      if (allCallerSockets && allCallerSockets.length > 0) {
-        let sentCount = 0;
-        for (const socketId of allCallerSockets) {
-          io.to(socketId).emit("webrtc:answer", {
-            callId,
-            answer,
-            receiverId: userId,
-          });
-          sentCount++;
-        }
-      } else {
-        console.log(`⚠️ [WebRTC] Caller ${callerId} not connected`);
+      const callerSocketId = getReceiverSocketId(callerId);
+      if (callerSocketId) {
+        io.to(callerSocketId).emit("webrtc:answer", {
+          callId,
+          answer,
+          receiverId: userId,
+        });
       }
     } catch (error) {
       console.error("Error in webrtc:answer:", error);
@@ -1994,26 +1090,21 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // ICE Candidate Exchange - MULTI-DEVICE: Send to ALL target sockets
+  // ICE Candidate Exchange
   socket.on("webrtc:ice-candidate", ({ callId, candidate, receiverId }) => {
     try {
       if (!callId || !candidate || !receiverId) {
         return;
       }
 
-      // 🔥 CRITICAL FIX: Send ICE candidates to ALL sockets for the target
-      // ICE candidates are critical for connection establishment
-      const allTargetSockets = getReceiverSocketIds(receiverId);
-
-      if (allTargetSockets && allTargetSockets.length > 0) {
-        for (const socketId of allTargetSockets) {
-          io.to(socketId).emit("webrtc:ice-candidate", {
-            callId,
-            candidate,
-            senderId: userId,
-          });
-        }
-        // Don't log ICE candidates to reduce noise (there are many)
+      const receiverSocketId = getReceiverSocketId(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("webrtc:ice-candidate", {
+          callId,
+          candidate,
+          senderId: userId,
+        });
+      } else {
       }
     } catch (error) {
       console.error("Error in webrtc:ice-candidate:", error);
@@ -2040,11 +1131,8 @@ io.on("connection", async (socket) => {
         }
 
         const userIdStr = userId.toString();
-        // 🔥 FIX: Include co-admins (admins array) in member check
         const isMember =
           group.admin.toString() === userIdStr ||
-          (group.admins &&
-            group.admins.some((a) => a.toString() === userIdStr)) ||
           group.members.some((m) => m.toString() === userIdStr);
         if (!isMember) {
           io.to(socket.id).emit("groupcall:error", {
@@ -2067,21 +1155,12 @@ io.on("connection", async (socket) => {
           groupCallRooms.set(roomId, room);
 
           // If this is a new room, notify all group members about the group call
-          // 🔥 FIX: Include co-admins (admins array)
-          const allMembers = [
-            group.admin,
-            ...(group.admins || []),
-            ...group.members,
-          ];
-
-          // 🔥 Send push notifications AND socket events to all members
-          for (const memberId of allMembers) {
+          const allMembers = [group.admin, ...group.members];
+          allMembers.forEach((memberId) => {
             const memberIdStr = memberId.toString();
             // Don't notify the person who started the call
             if (memberIdStr !== userIdStr) {
               const memberSocketId = getReceiverSocketId(memberIdStr);
-
-              // Send socket event if online
               if (memberSocketId) {
                 io.to(memberSocketId).emit("groupcall:invitation", {
                   roomId,
@@ -2090,28 +1169,10 @@ io.on("connection", async (socket) => {
                   callerInfo: userInfo || {},
                   groupName: group.name || "Group",
                 });
-              }
-
-              // 🔥 ALWAYS send push notification for CallKit (even if online)
-              // This ensures CallKit UI shows up on iOS/Android
-              try {
-                const { sendMobileGroupCallNotification } =
-                  await import("../services/mobilePushNotification.service.js");
-                await sendMobileGroupCallNotification(memberIdStr, {
-                  roomId,
-                  groupId,
-                  groupName: group.name || "Group",
-                  callerId: userId,
-                  callType: room.callType,
-                });
-              } catch (pushError) {
-                console.error(
-                  `Failed to send group call push notification to ${memberIdStr}:`,
-                  pushError.message,
-                );
+              } else {
               }
             }
-          }
+          });
         }
 
         // Check if user already in room
@@ -2411,107 +1472,205 @@ io.on("connection", async (socket) => {
     },
   );
 
-  // Real-time location sharing handlers
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Live Location Sharing  (piggy-backs on this chat socket connection)
+  //
+  // Room  : LOCATION_ROOM ("location:lobby") — all actively sharing users.
+  // Store : liveLocations Map (in-memory, O(1)) + UserLiveLocation (MongoDB, TTL recovery).
+  //
+  // Client → Server:
+  //   location:join    { userId, name, profilePic, lat?, lng? }
+  //   location:update  { userId, lat, lng }
+  //   location:leave   { userId }
+  //
+  // Server → Client:
+  //   location:init        array<entry>  → joiner only (full snapshot)
+  //   location:userJoined  entry         → others in room
+  //   location:userUpdated entry         → whole room
+  //   location:userLeft    { userId }    → others in room
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Shared leave helper — safe to call from both the explicit leave handler
+   * and the disconnect handler.  Uses `io.to()` so it works even after the
+   * socket has already left all rooms on disconnect.
+   *
+   * @param {string} uid  The userId to remove.
+   */
+  const handleLocationLeave = (uid) => {
+    try {
+      if (!uid || !liveLocations.has(uid)) return;
+
+      liveLocations.delete(uid);
+      socket.leave(LOCATION_ROOM); // No-op after disconnect — harmless.
+
+      // Async DB delete — fire-and-forget (TTL is the safety net).
+      UserLiveLocation.deleteOne({ userId: uid }).catch((err) =>
+        logger.warn(
+          `[LiveLocation] DB delete failed for ${uid}: ${err.message}`,
+        ),
+      );
+
+      // Notify remaining room members.
+      // io.to() works even when the socket has disconnected.
+      io.to(LOCATION_ROOM).emit("location:userLeft", { userId: uid });
+    } catch (err) {
+      logger.error(
+        `[LiveLocation] handleLocationLeave error for ${uid}: ${err.message}`,
+      );
+    }
+  };
+
+  // ── location:join ──────────────────────────────────────────────────────────
   socket.on(
-    "location:update",
-    async ({ lat, lng, speed, heading, accuracy }) => {
-      if (!userId || !lat || !lng) return;
-
+    "location:join",
+    async ({ userId: joinUserId, name, profilePic, lat, lng }) => {
       try {
-        const userIdStr = userId.toString();
-        const locationData = {
-          lat: parseFloat(lat),
-          lng: parseFloat(lng),
-          speed: speed ? parseFloat(speed) : null,
-          heading: heading ? parseFloat(heading) : null,
-          accuracy: accuracy ? parseFloat(accuracy) : null,
-          timestamp: Date.now(),
+        const uid = (joinUserId ?? userId)?.toString();
+        if (!uid) return;
+
+        const hasPosition = lat != null && lng != null;
+        const parsedLat = hasPosition ? parseFloat(lat) : null;
+        const parsedLng = hasPosition ? parseFloat(lng) : null;
+
+        // Validate coordinates when provided.
+        if (
+          hasPosition &&
+          (isNaN(parsedLat) ||
+            isNaN(parsedLng) ||
+            parsedLat < -90 ||
+            parsedLat > 90 ||
+            parsedLng < -180 ||
+            parsedLng > 180)
+        ) {
+          return;
+        }
+
+        const now = Date.now();
+        const entry = {
+          userId: uid,
+          name: typeof name === "string" ? name.trim() : "",
+          profilePic: typeof profilePic === "string" ? profilePic : "",
+          lat: parsedLat,
+          lng: parsedLng,
           socketId: socket.id,
+          updatedAt: now,
         };
 
-        // Store user location
-        userLocations.set(userIdStr, locationData);
+        liveLocations.set(uid, entry);
+        socket.join(LOCATION_ROOM);
 
-        // Get user info for broadcasting
-        const user = await User.findById(userId).select("fullname profilePic");
-
-        // Broadcast to nearby users (friends/contacts)
-        // For now, broadcast to all online users (can be filtered by privacy settings)
-        const locationUpdate = {
-          userId: userIdStr,
-          ...locationData,
-          user: {
-            fullname: user?.fullname || "Unknown",
-            profilePic: user?.profilePic || null,
+        // Persist to MongoDB so the snapshot survives a server restart.
+        UserLiveLocation.findOneAndUpdate(
+          { userId: uid },
+          {
+            name: entry.name,
+            profilePic: entry.profilePic,
+            lat: entry.lat,
+            lng: entry.lng,
+            socketId: socket.id,
+            updatedAt: new Date(now),
           },
-        };
+          { upsert: true, new: true },
+        ).catch((err) =>
+          logger.warn(
+            `[LiveLocation] join DB upsert failed for ${uid}: ${err.message}`,
+          ),
+        );
 
-        // Emit to all connected sockets (they can filter by privacy on client side)
-        socket.broadcast.emit("location:peer", locationUpdate);
+        // Send the full current snapshot to the joining socket only.
+        // Strips socketId — internal server state, must not be sent to clients.
+        const snapshot = Array.from(liveLocations.values())
+          .filter((e) => e.lat != null && e.lng != null)
+          .map(({ socketId: _sid, ...pub }) => pub);
+        socket.emit("location:init", snapshot);
 
-        // Also emit to sender for confirmation
-        socket.emit("location:confirmed", locationUpdate);
-      } catch (error) {
-        console.error("Error handling location update:", error);
+        // Announce to everyone else in the room.
+        // Broadcast unconditionally — even when the joiner has no GPS yet —
+        // so peers can show their avatar immediately and handle the first
+        // location:userUpdated (which carries the real position) correctly.
+        // The client filters out position-less entries from the visible layer;
+        // the entry is promoted to a visible pin on the first position update.
+        // Strips socketId before broadcasting — clients have no business
+        // knowing the internal socket IDs of other users.
+        const { socketId: _sid, ...publicEntry } = entry;
+        socket.to(LOCATION_ROOM).emit("location:userJoined", publicEntry);
+      } catch (err) {
+        logger.error(`[LiveLocation] location:join error: ${err.message}`);
       }
     },
   );
 
-  socket.on("location:join", ({ roomId }) => {
-    if (!roomId) return;
-    socket.join(`location:${roomId}`);
-
-    if (!locationRooms.has(roomId)) {
-      locationRooms.set(roomId, new Set());
-    }
-    locationRooms.get(roomId).add(userId?.toString());
-  });
-
-  socket.on("location:leave", ({ roomId }) => {
-    if (!roomId) return;
-    socket.leave(`location:${roomId}`);
-
-    if (locationRooms.has(roomId)) {
-      locationRooms.get(roomId).delete(userId?.toString());
-      if (locationRooms.get(roomId).size === 0) {
-        locationRooms.delete(roomId);
-      }
-    }
-  });
-
-  socket.on("location:request", async ({ targetUserId }) => {
-    if (!userId || !targetUserId) return;
-
+  // ── location:update ────────────────────────────────────────────────────────
+  socket.on("location:update", async ({ userId: updateUserId, lat, lng }) => {
     try {
-      const targetLocation = userLocations.get(targetUserId.toString());
-      if (targetLocation) {
-        const user = await User.findById(targetUserId).select(
-          "fullname profilePic",
-        );
-        socket.emit("location:response", {
-          userId: targetUserId.toString(),
-          ...targetLocation,
-          user: {
-            fullname: user?.fullname || "Unknown",
-            profilePic: user?.profilePic || null,
-          },
-        });
+      const uid = (updateUserId ?? userId)?.toString();
+      if (!uid || lat == null || lng == null) return;
+
+      const existing = liveLocations.get(uid);
+      if (!existing) return; // Must join before updating.
+
+      const parsedLat = parseFloat(lat);
+      const parsedLng = parseFloat(lng);
+
+      if (
+        isNaN(parsedLat) ||
+        isNaN(parsedLng) ||
+        parsedLat < -90 ||
+        parsedLat > 90 ||
+        parsedLng < -180 ||
+        parsedLng > 180
+      ) {
+        return;
       }
-    } catch (error) {
-      console.error("Error handling location request:", error);
+
+      const now = Date.now();
+      const updated = {
+        ...existing,
+        lat: parsedLat,
+        lng: parsedLng,
+        updatedAt: now,
+      };
+
+      liveLocations.set(uid, updated);
+
+      // Async DB update — fire-and-forget.
+      UserLiveLocation.updateOne(
+        { userId: uid },
+        { lat: parsedLat, lng: parsedLng, updatedAt: new Date(now) },
+      ).catch((err) =>
+        logger.warn(
+          `[LiveLocation] update DB failed for ${uid}: ${err.message}`,
+        ),
+      );
+
+      // Broadcast to the entire room (sender included — client handles dedup).
+      // Strip socketId — internal server state, must not be sent to clients.
+      const { socketId: _sid, ...publicUpdated } = updated;
+      io.to(LOCATION_ROOM).emit("location:userUpdated", publicUpdated);
+    } catch (err) {
+      logger.error(`[LiveLocation] location:update error: ${err.message}`);
+    }
+  });
+
+  // ── location:leave ─────────────────────────────────────────────────────────
+  socket.on("location:leave", (data) => {
+    try {
+      // Safe property access: protect against null/undefined event payload
+      // which would otherwise throw on destructuring and crash the handler.
+      const leaveUserId = data?.userId ?? userId;
+      handleLocationLeave(leaveUserId?.toString());
+    } catch (err) {
+      logger.error(`[LiveLocation] location:leave error: ${err.message}`);
     }
   });
 
   // Cleanup active calls on disconnect
-  socket.on("disconnect", (reason) => {
-    // Track disconnection for rate limit metrics
-    trackSocketDisconnection(socket);
-
-    logger.debug("Socket user disconnected", {
-      socketId: socket.id,
-      userId: userId,
-      reason,
-    });
+  socket.on("disconnect", () => {
+    // console.log("🔌 [SOCKET] User disconnecting:", {
+    //   socketId: socket.id,
+    //   userId: userId,
+    // });
 
     // Clean up any pending calls where this user was the caller
     if (userId) {
@@ -2520,61 +1679,54 @@ io.on("connection", async (socket) => {
         if (pendingCall.callerId.toString() === userIdStr) {
           clearTimeout(pendingCall.timeoutId);
           pendingCalls.delete(callId);
-          logger.debug("Cleaned up pending call on disconnect", {
-            callId,
-            userId: userIdStr,
-          });
         }
       }
     }
 
-    // MULTI-DEVICE: Remove only THIS socket from user's set
-    if (userId) {
-      const userIdStr = userId.toString();
-      const hadSocketsBefore = getAllUserSocketIds(userIdStr).length;
-      removeUserSocket(userIdStr, socket.id);
-      const hasSocketsAfter = getAllUserSocketIds(userIdStr).length;
+    let disconnectedUserId = null;
+    for (const [userId, socketId] of userSockets.entries()) {
+      if (socketId === socket.id) {
+        disconnectedUserId = userId;
+        userSockets.delete(userId);
+        // console.log("❌ [SOCKET] Removed user mapping:", {
+        //   userId,
+        //   socketId: socket.id,
+        //   remainingConnections: userSockets.size,
+        // });
+        break;
+      }
+    }
 
-      logger.debug("Removed socket from user", {
-        userId: userIdStr,
-        socketId: socket.id,
-        remainingDevices: hasSocketsAfter,
-        wasLastDevice: hadSocketsBefore > 0 && hasSocketsAfter === 0,
-      });
-
-      // MULTI-DEVICE: Only cleanup calls if this was the SPECIFIC socket in the call
-      // Check if this socket was the answering socket for any active call
+    // Cleanup active calls where user was participating
+    if (disconnectedUserId) {
+      // Cleanup 1-on-1 calls
       for (const [callId, callInfo] of activeCalls.entries()) {
-        // Only end call if this specific socket was the one in the call
-        const wasCallerSocket = callInfo.callerId.toString() === userIdStr;
-        const wasAnsweringSocket = callInfo.answeredBySocketId === socket.id;
+        if (
+          callInfo.callerId.toString() === disconnectedUserId.toString() ||
+          callInfo.receiverId.toString() === disconnectedUserId.toString()
+        ) {
+          // Notify other party
+          const otherPartyId =
+            callInfo.callerId.toString() === disconnectedUserId.toString()
+              ? callInfo.receiverId
+              : callInfo.callerId;
+          const otherPartySocketId = getReceiverSocketId(otherPartyId);
 
-        if (wasCallerSocket || wasAnsweringSocket) {
-          // This socket was actively in the call - notify other party
-          const otherPartyId = wasCallerSocket
-            ? callInfo.receiverId
-            : callInfo.callerId;
-
-          // MULTI-DEVICE: Notify ALL devices of other party
-          emitToUser(otherPartyId, "call:ended", {
-            callId,
-            reason: "User disconnected",
-          });
+          if (otherPartySocketId) {
+            io.to(otherPartySocketId).emit("call:ended", {
+              callId,
+              reason: "User disconnected",
+            });
+          }
 
           activeCalls.delete(callId);
-          logger.info("Call ended due to socket disconnect", {
-            callId,
-            disconnectedSocket: socket.id,
-            wasCallerSocket,
-            wasAnsweringSocket,
-          });
         }
       }
 
-      // Cleanup group calls - only remove this specific socket
+      // Cleanup group calls
       for (const [roomId, room] of groupCallRooms.entries()) {
         const participantIndex = room.participants.findIndex(
-          (p) => p.socketId === socket.id,
+          (p) => p.userId === disconnectedUserId.toString(),
         );
 
         if (participantIndex !== -1) {
@@ -2584,7 +1736,7 @@ io.on("connection", async (socket) => {
           room.participants.forEach((participant) => {
             io.to(participant.socketId).emit("groupcall:participant-left", {
               roomId,
-              userId: userIdStr,
+              userId: disconnectedUserId.toString(),
             });
           });
 
@@ -2595,29 +1747,13 @@ io.on("connection", async (socket) => {
         }
       }
 
-      // MULTI-DEVICE: Only clean up location/broadcast offline if NO devices remain
-      if (hasSocketsAfter === 0) {
-        // Clean up location data
-        userLocations.delete(userIdStr);
-        // Remove from all location rooms
-        locationRooms.forEach((userSet, roomId) => {
-          userSet.delete(userIdStr);
-          if (userSet.size === 0) {
-            locationRooms.delete(roomId);
-          }
-        });
+      // Live location cleanup on disconnect.
+      handleLocationLeave(disconnectedUserId);
 
-        // Notify others that user went offline (only when ALL devices disconnected)
-        socket.broadcast.emit("location:offline", {
-          userId: userIdStr,
-        });
-
-        const onlineUserIds = Array.from(userSockets.keys());
-        io.emit("getOnlineUsers", onlineUserIds);
-      }
+      const onlineUserIds = Array.from(userSockets.keys());
+      io.emit("getOnlineUsers", onlineUserIds);
     }
   });
 });
 
-// Note: getReceiverSocketId is already exported as function declaration
-export { io, app, server, activeCalls, pendingCalls, emitToUser };
+export { io, app, server, activeCalls, pendingCalls };
